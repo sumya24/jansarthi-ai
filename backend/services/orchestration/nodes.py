@@ -477,12 +477,21 @@ def _resolve_location(state: GraphState, config: RunnableConfig) -> LocationReso
 
 def location_node(state: GraphState, config: RunnableConfig) -> dict[str, Any]:
     resolution = _resolve_location(state, config)
+    ctx = _ctx(config)
+    # True only when the citizen gave an EXPLICIT location signal (the "Use current location"/
+    # "Select location" UI, or typed free text passed as ctx.location_text) that still didn't
+    # resolve to anywhere recognizable -- distinct from never having given one at all. See
+    # clarification_flow_node's default branch for why this distinction has its own message.
+    explicit_signal_unresolved = bool(ctx.location_text) and not (
+        resolution.city or resolution.state or resolution.is_ambiguous
+    )
     return {
         "location_city": resolution.city,
         "location_state": resolution.state,
         "location_source": resolution.source,
         "location_is_ambiguous": resolution.is_ambiguous,
         "location_ambiguous_candidates": resolution.ambiguous_candidates,
+        "location_explicit_signal_unresolved": explicit_signal_unresolved,
     }
 
 
@@ -676,8 +685,17 @@ def clarification_flow_node(state: GraphState, config: RunnableConfig) -> dict[s
             "sources": [],
         }
 
-    # Default: location missing entirely.
-    question = "What is the location? This helps me give you the correct local information."
+    # Location missing entirely -- two different situations collapsed into one branch:
+    # (a) the citizen never gave a location signal of any kind, vs. (b) they explicitly picked
+    # one (via "Use current location"/"Select location", or typed free text) and it simply
+    # didn't resolve to anywhere recognizable. Without distinguishing these, a citizen who just
+    # picked a location sees the EXACT SAME "What is the location?" question again with no
+    # acknowledgment anything happened -- indistinguishable from the assistant ignoring their
+    # answer, live-reported as feeling like a stuck loop. (b) gets its own honest wording instead.
+    if state.get("location_explicit_signal_unresolved"):
+        question = "I couldn't recognize that as a location. Please try typing a city or area name, or use \"Use current location\"."
+    else:
+        question = "What is the location? This helps me give you the correct local information."
     return {
         "response_text": _localize(_image_context_prefix(state) + question, state, config),
         "follow_up_required": True,

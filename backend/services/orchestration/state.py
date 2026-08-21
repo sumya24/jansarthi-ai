@@ -71,6 +71,14 @@ class GraphState(TypedDict, total=False):
     location_source: str  # "text" | "gps" | "conversation_history" | "citizen_home_ward" | "none"
     location_is_ambiguous: bool
     location_ambiguous_candidates: list[str]
+    # True only when the citizen gave an EXPLICIT location signal (the "Use current location"/
+    # "Select location" UI, or typed free text passed as RequestContext.location_text) that still
+    # didn't resolve to anywhere recognizable -- e.g. picking a ward whose name isn't a real city
+    # the location gazetteer knows. Distinct from location_source == "none" alone, which is also
+    # true when the citizen simply never gave any location signal at all -- see
+    # clarification_flow_node's default branch, which uses this field to show an honest
+    # "I couldn't recognize that" message instead of repeating the exact same first-ask question.
+    location_explicit_signal_unresolved: bool
 
     # --- routing (route_intent conditional edge) ---
     route: str  # "complaint" | "rag" | "status" | "clarification" | "out_of_scope"

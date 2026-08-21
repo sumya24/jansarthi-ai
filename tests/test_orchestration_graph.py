@@ -230,6 +230,46 @@ def test_category_recovery_returns_none_when_history_has_no_category():
     assert _recover_category_from_history(state) is None
 
 
+# --- location clarification: explicit-but-unrecognized location gets an honest, distinct message ---
+
+
+def test_clarification_gives_honest_message_when_explicit_location_unresolved(client, monkeypatch, make_citizen):
+    """Live-reported bug: a citizen picks an explicit location (the "Select location"/"Use
+    current location" UI passes this through as location_text) that isn't a real place the
+    gazetteer recognizes -- e.g. a leftover test ward name with no real city in it. Previously
+    this fell through to the exact same "What is the location?" first-ask question, which reads
+    to the citizen as the assistant ignoring what they just did (a stuck-loop feeling reported
+    live). Must now get a distinct, honest message instead."""
+    _install_real_service(monkeypatch)
+    token, _ = make_citizen(phone="9100000040")
+
+    resp = _ask(
+        client, token, "How do I report a garbage collection issue?",
+        location_text="Notif Test Ward 1786400621684 (unrelated)",
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["follow_up_required"] is True
+    answer_lower = body["answer"].lower()
+    assert "couldn't recognize" in answer_lower
+    assert answer_lower != "what is the location? this helps me give you the correct local information."
+
+
+def test_clarification_default_message_unchanged_when_no_location_given_at_all(client, monkeypatch, make_citizen):
+    """Regression check: a citizen who has given NO location signal at all (never picked
+    anything, nothing in the message/history/profile) must still get the original, unchanged
+    first-ask question -- the new honest message is only for the "picked something real-looking
+    but unrecognized" case, never a general replacement for this one."""
+    _install_real_service(monkeypatch)
+    token, _ = make_citizen(phone="9100000041")
+
+    resp = _ask(client, token, "How do I report a garbage collection issue?")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["follow_up_required"] is True
+    assert body["answer"] == "What is the location? This helps me give you the correct local information."
+
+
 # --- error handling: a node exception must not silently produce a fabricated answer ---
 
 
