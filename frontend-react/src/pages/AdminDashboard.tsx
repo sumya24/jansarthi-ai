@@ -201,8 +201,10 @@ export default function AdminDashboard() {
     let list = complaintFilter === "all" ? complaints : complaints.filter((c) => c.status === complaintFilter);
     const q = complaintSearch.trim().toLowerCase();
     if (q) {
+      const qId = q.replace(/^#/, ""); // "#15" and "15" both match complaint id 15
       list = list.filter(
         (c) =>
+          String(c.id).includes(qId) ||
           (c.ward ?? "").toLowerCase().includes(q) ||
           (c.display_summary || c.summary || "").toLowerCase().includes(q) ||
           (c.assigned_worker_name ?? "").toLowerCase().includes(q)
@@ -288,20 +290,23 @@ export default function AdminDashboard() {
                 })}
               </div>
 
-              <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: "auto", flexShrink: 0 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: "auto", flex: "0 1 380px", minWidth: 0, maxWidth: 380 }}>
                 {selectedIds.size > 0 && (
                   <button className="btn btn-danger btn-sm" onClick={() => setBulkDeleteConfirm(true)}>
                     {t(lang, "admin.deleteSelected")} ({selectedIds.size})
                   </button>
                 )}
-                {/* Was width: 380 with flexShrink: 0 -- an unshrinkable 380px child forces its
-                    flex-item parent (this div, sized to its content since it has no width of its
-                    own) to that same minimum width, which is wider than a 390px mobile viewport
-                    once the page's own side padding is added, causing a real (if small, ~18px)
-                    page-level horizontal scroll. width: 100% capped by maxWidth lets it shrink
-                    like a normal flex item on narrow screens while still capping at 380px on
-                    wide ones -- same visual target width on desktop, just able to shrink now. */}
-                <div className="field" style={{ margin: 0, width: "100%", maxWidth: 380 }}>
+                {/* This row's own width now comes from `flex: 0 1 380px` above (with `minWidth: 0`
+                    so shrinking below content size is actually allowed -- flex items default to
+                    `min-width: auto` otherwise) -- a real, definite size the flex algorithm can
+                    shrink on a narrow viewport (was: a 380px child forcing an unshrinkable content-
+                    sized parent, which caused ~18px of page-level horizontal scroll on mobile) or
+                    wrap onto its own line on. `width: 100%` here now resolves against that real
+                    size instead of an indefinite one -- previously it silently resolved to
+                    whatever sliver of space happened to be left on the flex line, squeezing the
+                    input (and its placeholder text) far narrower than the intended 380px even when
+                    the line hadn't actually wrapped. */}
+                <div className="field" style={{ margin: 0, width: "100%" }}>
                   <input
                     type="text"
                     aria-label={t(lang, "admin.searchComplaintsAndWorkers")}
@@ -462,7 +467,7 @@ export default function AdminDashboard() {
 
       {assignComplaintTarget && (
         <AssignWorkerModal
-          complaintId={assignComplaintTarget.id}
+          complaint={assignComplaintTarget}
           workers={workers}
           onClose={() => setAssignComplaintTarget(null)}
           onAssigned={load}

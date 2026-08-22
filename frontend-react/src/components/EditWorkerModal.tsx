@@ -5,6 +5,8 @@ import { SUPPORTED_LANGUAGES, t, type LangCode } from "../lib/i18n";
 import { api, ApiError, type WorkerSummary } from "../lib/api";
 import { useToast } from "../lib/toast";
 import { useModalA11y } from "../lib/useModalA11y";
+import WorkerLocationPicker, { type WorkerLocationValue } from "./WorkerLocationPicker";
+import EmailVerifyField, { type EmailVerifyValue } from "./EmailVerifyField";
 
 /** Edits a worker's profile (name/ward/language) and, optionally in the same submit, resets
  * their password -- two separate backend calls (PATCH .../workers/{id} and POST
@@ -23,9 +25,11 @@ export default function EditWorkerModal({
   const { token } = useAuth();
   const { lang } = useUiLang();
   const [fullName, setFullName] = useState(worker.full_name);
-  const [ward, setWard] = useState(worker.ward ?? "");
+  const [location, setLocation] = useState<WorkerLocationValue>({ ward: worker.ward ?? "" });
+  const [emailValue, setEmailValue] = useState<EmailVerifyValue>({ email: worker.email ?? "", verified: worker.email_verified, token: null });
   const [language, setLanguage] = useState<LangCode>((worker.preferred_language as LangCode) || "en");
   const [newPassword, setNewPassword] = useState("");
+  const [confirmNewPassword, setConfirmNewPassword] = useState("");
   const [fieldErrors, setFieldErrors] = useState<Record<string, boolean>>({});
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -37,8 +41,10 @@ export default function EditWorkerModal({
 
     const errors: Record<string, boolean> = {};
     if (!fullName.trim()) errors.fullName = true;
-    if (!ward.trim()) errors.ward = true;
+    if (!location.ward.trim()) errors.ward = true;
     if (newPassword && newPassword.length < 6) errors.newPassword = true;
+    else if (newPassword && confirmNewPassword !== newPassword) errors.confirmNewPassword = true;
+    if (emailValue.email.trim() && !emailValue.verified) errors.email = true;
     setFieldErrors(errors);
     if (Object.keys(errors).length > 0) return;
 
@@ -47,8 +53,12 @@ export default function EditWorkerModal({
     try {
       await api.updateWorker(token, worker.id, {
         full_name: fullName.trim(),
-        ward: ward.trim(),
+        ward: location.ward,
+        ward_id: location.ward_id,
+        locality_id: location.locality_id,
         preferred_language: language,
+        email: emailValue.email.trim(),
+        email_verification_token: emailValue.token ?? undefined,
       });
       if (newPassword) {
         await api.resetWorkerPassword(token, worker.id, newPassword);
@@ -84,10 +94,31 @@ export default function EditWorkerModal({
             {fieldErrors.fullName && <div className="field-error">{t(lang, "common.fieldRequired")}</div>}
           </div>
           <div className={`field ${fieldErrors.ward ? "has-error" : ""}`}>
-            <label htmlFor="edit-worker-ward">{t(lang, "addWorker.ward")}</label>
-            <input id="edit-worker-ward" type="text" value={ward} onChange={(e) => setWard(e.target.value)} />
+            <label>{t(lang, "addWorker.ward")}</label>
+            <WorkerLocationPicker
+              lang={lang}
+              onChange={setLocation}
+              hasError={fieldErrors.ward}
+              initial={{
+                stateId: worker.state_id ?? undefined,
+                districtId: worker.district_id ?? undefined,
+                wardId: worker.ward_id ?? undefined,
+                localityId: worker.locality_id ?? undefined,
+              }}
+            />
             {fieldErrors.ward && <div className="field-error">{t(lang, "common.fieldRequired")}</div>}
           </div>
+          <EmailVerifyField
+            lang={lang}
+            idPrefix="worker-edit"
+            onChange={setEmailValue}
+            hasError={fieldErrors.email}
+            initialEmail={worker.email ?? undefined}
+            initialVerified={worker.email_verified}
+            sendCode={(email) => api.sendWorkerEmailCode(token!, email)}
+            verifyCode={async (email, code) => (await api.verifyWorkerEmailCode(token!, email, code)).email_verification_token}
+          />
+          {fieldErrors.email && <div className="field-error">{t(lang, "auth.signup.verifyEmailFirst")}</div>}
           <div className="field">
             <label id="edit-worker-language-label">{t(lang, "addWorker.preferredLanguage")}</label>
             <div className="langpills">
@@ -118,6 +149,22 @@ export default function EditWorkerModal({
               <p style={{ fontSize: 11.5, color: "var(--ink-3)", marginTop: 5 }}>{t(lang, "admin.editWorkerPasswordHint")}</p>
             )}
           </div>
+          {newPassword && (
+            <div className={`field ${fieldErrors.confirmNewPassword ? "has-error" : ""}`}>
+              <label htmlFor="edit-worker-confirm-password">{t(lang, "auth.field.confirmPassword")}</label>
+              <input
+                id="edit-worker-confirm-password"
+                type="text"
+                value={confirmNewPassword}
+                onChange={(e) => setConfirmNewPassword(e.target.value)}
+              />
+              {fieldErrors.confirmNewPassword && (
+                <div className="field-error">
+                  {t(lang, confirmNewPassword ? "auth.field.passwordMismatch" : "common.fieldRequired")}
+                </div>
+              )}
+            </div>
+          )}
 
           <div className="modal-actions">
             <button type="button" className="btn btn-ghost" onClick={onClose} disabled={saving}>

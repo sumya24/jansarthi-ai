@@ -471,6 +471,27 @@ def test_l_existing_ward_text_assignment_still_works(client, monkeypatch, make_c
     assert body["assigned_worker_name"] == worker_user["full_name"]
 
 
+def test_ward_text_match_is_case_insensitive(client, monkeypatch, make_citizen, make_worker):
+    """A worker's ward is "Kolhapur" (as an admin typed it); a citizen files with "kolhapur" --
+    different casing must still match the same real place, not be treated as two different wards.
+    Found via a live-data audit: two accounts with different capitalization of the same city name
+    silently failed to match under the old exact-match comparison (see
+    LOCATION_DATA_MOCK_VS_REAL_FINDINGS.md §2)."""
+    monkeypatch.setattr(complaints_module, "_agent", Mock(create_complaint=_fake_agent_create_complaint))
+    worker_token, worker_user = make_worker(phone="9000000036", ward="Kolhapur")
+    citizen_token, _ = make_citizen(phone="9000000037")
+
+    response = client.post(
+        "/complaints",
+        headers={"Authorization": f"Bearer {citizen_token}"},
+        data={"language": "en", "text": "Streetlight broken", "ward": "kolhapur"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "assigned"
+    assert body["assigned_worker_name"] == worker_user["full_name"]
+
+
 # --- Full worker-assignment matrix (spec §10) ---
 
 

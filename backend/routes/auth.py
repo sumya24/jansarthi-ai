@@ -250,8 +250,9 @@ class UserResponse(BaseModel):
     ward: str | None
     # The structured counterpart of `ward` -- exposed so a citizen's current residence can be
     # pre-filled back into the cascading state/city/ward/area picker when editing it in Settings
-    # (see MeUpdateRequest's own docstring). Always null for workers/admins, same as `ward_id`
-    # itself (see User.state_id's own model docstring).
+    # (see MeUpdateRequest's own docstring), and so a worker's operational area can likewise be
+    # pre-filled when a super admin edits it (see routes/admin.py's update_worker()). Null until
+    # that picker has actually been used for this user.
     state_id: int | None = None
     district_id: int | None = None
     ward_id: int | None = None

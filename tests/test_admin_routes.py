@@ -1,5 +1,7 @@
 """Integration tests for /admin/workers — the only place a worker account can be created."""
 
+from tests.test_location_system import _seed_full_hierarchy
+
 
 def _login(client, phone, password):
     response = client.post("/auth/login", json={"identifier": phone, "password": password})
@@ -197,6 +199,110 @@ def test_edit_worker_not_found(client, make_admin):
         json={"full_name": "Someone"},
     )
     assert response.status_code == 404
+
+
+# --- PATCH /admin/workers/{id} with the structured ward_id/locality_id picker ---
+
+
+def test_edit_worker_ward_id_sets_full_structured_chain_and_derives_ward_text(client, make_admin, make_worker, db_session):
+    make_admin(phone="9999999999", password="adminpass")
+    admin_token = _login(client, "9999999999", "adminpass")
+    _, worker = make_worker(phone="9000000002", ward="Old Free-Text Ward")
+
+    db = db_session()
+    chain = _seed_full_hierarchy(db)
+    ward_id = chain["ward"].id
+    locality_id = chain["locality"].id
+    state_id = chain["state"].id
+    district_id = chain["district"].id
+    ulb_id = chain["ulb"].id
+    db.close()
+
+    response = client.patch(
+        f"/admin/workers/{worker['id']}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"ward_id": ward_id},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ward_id"] == ward_id
+    assert body["locality_id"] == locality_id  # auto-derived: the ward's one seeded locality
+    assert body["district_id"] == district_id
+    assert body["state_id"] == state_id
+    assert body["ward"] != "Old Free-Text Ward"  # derived display text replaces the stale free text
+
+    db = db_session()
+    from backend.models import User
+    updated = db.query(User).filter(User.id == worker["id"]).first()
+    assert updated.ulb_id == ulb_id
+    db.close()
+
+
+def test_edit_worker_explicit_ward_text_overrides_derived_text(client, make_admin, make_worker, db_session):
+    """An admin can send `ward` alongside `ward_id` -- the explicit text always wins over the
+    auto-derived one (see UpdateWorkerRequest's own docstring)."""
+    make_admin(phone="9999999999", password="adminpass")
+    admin_token = _login(client, "9999999999", "adminpass")
+    _, worker = make_worker(phone="9000000002", ward="Old Ward")
+
+    db = db_session()
+    chain = _seed_full_hierarchy(db)
+    ward_id = chain["ward"].id
+    db.close()
+
+    response = client.patch(
+        f"/admin/workers/{worker['id']}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"ward_id": ward_id, "ward": "My Custom Label"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ward"] == "My Custom Label"
+    assert body["ward_id"] == ward_id
+
+
+def test_edit_worker_locality_id_must_belong_to_the_given_ward(client, make_admin, make_worker, db_session):
+    make_admin(phone="9999999999", password="adminpass")
+    admin_token = _login(client, "9999999999", "adminpass")
+    _, worker = make_worker(phone="9000000002")
+
+    db = db_session()
+    chain = _seed_full_hierarchy(db)
+    ward_id = chain["ward"].id
+    db.close()
+
+    response = client.patch(
+        f"/admin/workers/{worker['id']}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"ward_id": ward_id, "locality_id": 999999},
+    )
+    assert response.status_code == 400
+
+
+def test_edit_worker_nonexistent_ward_id_is_400(client, make_admin, make_worker):
+    make_admin(phone="9999999999", password="adminpass")
+    admin_token = _login(client, "9999999999", "adminpass")
+    _, worker = make_worker(phone="9000000002")
+
+    response = client.patch(
+        f"/admin/workers/{worker['id']}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"ward_id": 999999},
+    )
+    assert response.status_code == 400
+
+
+def test_edit_worker_locality_id_without_ward_id_is_400(client, make_admin, make_worker):
+    make_admin(phone="9999999999", password="adminpass")
+    admin_token = _login(client, "9999999999", "adminpass")
+    _, worker = make_worker(phone="9000000002")
+
+    response = client.patch(
+        f"/admin/workers/{worker['id']}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"locality_id": 1},
+    )
+    assert response.status_code == 400
 
 
 def test_citizen_cannot_edit_worker(client, make_citizen, make_worker):
@@ -653,3 +759,313 @@ def test_citizen_cannot_assign_complaint(client, make_citizen, make_worker, db_s
         json={"worker_id": worker["id"]},
     )
     assert response.status_code == 403
+
+
+# --- worker email (OTP-proven, same underlying mechanism as citizen signup -- see
+# backend/routes/admin.py's send_worker_email_code/verify_worker_email_code, which reuse
+# create_signup_email_otp/verify_signup_email_otp/consume_signup_email_verification directly) ---
+
+
+def _fake_send_otp_email(monkeypatch):
+    sent = []
+
+    def _fake(to_email, code, purpose):
+        sent.append((to_email, code, purpose))
+
+    monkeypatch.setattr("backend.routes.admin.send_otp_email", _fake)
+    return sent
+
+
+def _get_worker_email_token(client, monkeypatch, admin_token: str, email: str) -> str:
+    """Drives POST /admin/workers/email/send-code -> POST /admin/workers/email/verify-code and
+    returns the proof token, for tests that only care about the final create/update call."""
+    sent = _fake_send_otp_email(monkeypatch)
+    send_response = client.post(
+        "/admin/workers/email/send-code",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"email": email},
+    )
+    assert send_response.status_code == 204, send_response.text
+    code = sent[-1][1]
+
+    verify_response = client.post(
+        "/admin/workers/email/verify-code",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"email": email, "code": code},
+    )
+    assert verify_response.status_code == 200, verify_response.text
+    return verify_response.json()["email_verification_token"]
+
+
+def test_send_worker_email_code_emails_a_code_and_creates_no_user_yet(client, make_admin, monkeypatch, db_session):
+    make_admin(phone="9999999999", password="adminpass")
+    admin_token = _login(client, "9999999999", "adminpass")
+    sent = _fake_send_otp_email(monkeypatch)
+
+    response = client.post(
+        "/admin/workers/email/send-code",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"email": "ramesh.kadam@example.com"},
+    )
+    assert response.status_code == 204
+    assert len(sent) == 1
+    assert sent[0][0] == "ramesh.kadam@example.com"
+
+    db = db_session()
+    from backend.models import User
+    assert db.query(User).filter(User.email == "ramesh.kadam@example.com").count() == 0
+
+
+def test_citizen_cannot_send_worker_email_code(client, make_citizen):
+    token, _ = make_citizen(phone="9000000001")
+    response = client.post(
+        "/admin/workers/email/send-code",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"email": "someone@example.com"},
+    )
+    assert response.status_code == 403
+
+
+def test_verify_worker_email_code_rejects_wrong_code(client, make_admin, monkeypatch):
+    make_admin(phone="9999999999", password="adminpass")
+    admin_token = _login(client, "9999999999", "adminpass")
+    _fake_send_otp_email(monkeypatch)
+    client.post(
+        "/admin/workers/email/send-code",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"email": "ramesh.kadam@example.com"},
+    )
+    response = client.post(
+        "/admin/workers/email/verify-code",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"email": "ramesh.kadam@example.com", "code": "000000"},
+    )
+    assert response.status_code == 400
+
+
+def test_admin_can_create_worker_with_otp_verified_email(client, make_admin, monkeypatch):
+    make_admin(phone="9999999999", password="adminpass")
+    admin_token = _login(client, "9999999999", "adminpass")
+    token = _get_worker_email_token(client, monkeypatch, admin_token, "ramesh.kadam@example.com")
+
+    response = client.post(
+        "/admin/workers",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "full_name": "Ramesh Kadam",
+            "phone": "9000000002",
+            "password": "secret123!",
+            "ward": "Ward 14",
+            "preferred_language": "hi",
+            "email": "ramesh.kadam@example.com",
+            "email_verification_token": token,
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["email"] == "ramesh.kadam@example.com"
+    assert body["email_verified"] is True
+
+    # and the new worker can log in with that email too
+    worker_login = client.post("/auth/login", json={"identifier": "ramesh.kadam@example.com", "password": "secret123!"})
+    assert worker_login.status_code == 200
+
+
+def test_create_worker_rejects_email_with_no_verification_token(client, make_admin):
+    """An admin can't just type an email and skip the OTP round trip -- same standard citizen
+    signup already holds itself to (see SignupRequest.email_verification_token)."""
+    make_admin(phone="9999999999", password="adminpass")
+    admin_token = _login(client, "9999999999", "adminpass")
+
+    response = client.post(
+        "/admin/workers",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "full_name": "Ramesh Kadam",
+            "phone": "9000000002",
+            "password": "secret123!",
+            "ward": "Ward 14",
+            "preferred_language": "hi",
+            "email": "ramesh.kadam@example.com",
+        },
+    )
+    assert response.status_code == 400
+
+
+def test_create_worker_rejects_malformed_email(client, make_admin):
+    make_admin(phone="9999999999", password="adminpass")
+    admin_token = _login(client, "9999999999", "adminpass")
+
+    response = client.post(
+        "/admin/workers/email/send-code",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"email": "not-an-email"},
+    )
+    assert response.status_code == 400
+
+
+def test_create_worker_rejects_duplicate_email(client, make_admin, make_citizen, monkeypatch):
+    make_admin(phone="9999999999", password="adminpass")
+    admin_token = _login(client, "9999999999", "adminpass")
+    make_citizen(phone="9000000001", email="taken@example.com")
+
+    response = client.post(
+        "/admin/workers/email/send-code",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"email": "taken@example.com"},
+    )
+    assert response.status_code == 409
+
+
+def test_admin_can_set_worker_email_via_edit(client, make_admin, make_worker, monkeypatch):
+    make_admin(phone="9999999999", password="adminpass")
+    admin_token = _login(client, "9999999999", "adminpass")
+    _, worker = make_worker(phone="9000000002")
+    token = _get_worker_email_token(client, monkeypatch, admin_token, "worker@example.com")
+
+    response = client.patch(
+        f"/admin/workers/{worker['id']}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"email": "worker@example.com", "email_verification_token": token},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["email"] == "worker@example.com"
+    assert body["email_verified"] is True
+
+
+def test_edit_worker_rejects_new_email_with_no_verification_token(client, make_admin, make_worker):
+    make_admin(phone="9999999999", password="adminpass")
+    admin_token = _login(client, "9999999999", "adminpass")
+    _, worker = make_worker(phone="9000000002")
+
+    response = client.patch(
+        f"/admin/workers/{worker['id']}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"email": "worker@example.com"},
+    )
+    assert response.status_code == 400
+
+
+def test_admin_can_clear_worker_email_via_edit(client, make_admin, make_worker, db_session):
+    make_admin(phone="9999999999", password="adminpass")
+    admin_token = _login(client, "9999999999", "adminpass")
+    _, worker = make_worker(phone="9000000002")
+
+    db = db_session()
+    from backend.models import User
+    row = db.query(User).filter(User.id == worker["id"]).first()
+    row.email = "worker@example.com"
+    row.email_verified = True
+    db.commit()
+    db.close()
+
+    response = client.patch(
+        f"/admin/workers/{worker['id']}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"email": ""},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["email"] is None
+    assert body["email_verified"] is False
+
+
+def test_edit_worker_rejects_duplicate_email(client, make_admin, monkeypatch):
+    """Once worker A's email is taken, even asking for a fresh OTP for the same address on
+    worker B's behalf is rejected immediately (send-code's own pre-check) -- never gets far
+    enough to need a second, wasted OTP round trip just to be told the PATCH would fail too."""
+    make_admin(phone="9999999999", password="adminpass")
+    admin_token = _login(client, "9999999999", "adminpass")
+
+    def _create_worker(phone, full_name):
+        resp = client.post(
+            "/admin/workers",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={"full_name": full_name, "phone": phone, "password": "secret123!", "ward": "Ward 14", "preferred_language": "en"},
+        )
+        assert resp.status_code == 200
+        return resp.json()["id"]
+
+    worker_a_id = _create_worker("9000000002", "Worker A")
+    _create_worker("9000000003", "Worker B")
+    token_a = _get_worker_email_token(client, monkeypatch, admin_token, "worker@example.com")
+
+    client.patch(
+        f"/admin/workers/{worker_a_id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"email": "worker@example.com", "email_verification_token": token_a},
+    )
+
+    _fake_send_otp_email(monkeypatch)
+    response = client.post(
+        "/admin/workers/email/send-code",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"email": "worker@example.com"},
+    )
+    assert response.status_code == 409
+
+
+def test_edit_worker_patch_time_duplicate_check_catches_a_race_after_the_token_was_issued(
+    client, make_admin, monkeypatch, db_session
+):
+    """TOCTOU: the email is still free when the OTP token is issued, but taken by someone else by
+    the time the PATCH actually runs -- update_worker()'s own duplicate check (not send-code's
+    pre-check, which already passed) must still catch it, same tradeoff signup() itself accepts
+    (see backend/routes/auth.py's own comment on this)."""
+    make_admin(phone="9999999999", password="adminpass")
+    admin_token = _login(client, "9999999999", "adminpass")
+
+    def _create_worker(phone, full_name):
+        resp = client.post(
+            "/admin/workers",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={"full_name": full_name, "phone": phone, "password": "secret123!", "ward": "Ward 14", "preferred_language": "en"},
+        )
+        assert resp.status_code == 200
+        return resp.json()["id"]
+
+    worker_a_id = _create_worker("9000000002", "Worker A")
+    worker_b_id = _create_worker("9000000003", "Worker B")
+
+    token = _get_worker_email_token(client, monkeypatch, admin_token, "worker@example.com")
+
+    db = db_session()
+    from backend.models import User
+    row = db.query(User).filter(User.id == worker_b_id).first()
+    row.email = "worker@example.com"
+    row.email_verified = True
+    db.commit()
+    db.close()
+
+    response = client.patch(
+        f"/admin/workers/{worker_a_id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"email": "worker@example.com", "email_verification_token": token},
+    )
+    assert response.status_code == 409
+
+
+def test_edit_worker_keeping_same_email_is_not_a_conflict_with_itself_and_needs_no_token(
+    client, make_admin, make_worker, monkeypatch
+):
+    make_admin(phone="9999999999", password="adminpass")
+    admin_token = _login(client, "9999999999", "adminpass")
+    _, worker = make_worker(phone="9000000002")
+    token = _get_worker_email_token(client, monkeypatch, admin_token, "worker@example.com")
+
+    client.patch(
+        f"/admin/workers/{worker['id']}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"email": "worker@example.com", "email_verification_token": token, "full_name": "First Save"},
+    )
+    # Resending the SAME already-verified email with NO token -- must succeed as a no-op, not a
+    # 400 "not verified" (see UpdateWorkerRequest's own docstring on this).
+    response = client.patch(
+        f"/admin/workers/{worker['id']}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"email": "worker@example.com", "full_name": "Second Save"},
+    )
+    assert response.status_code == 200
+    assert response.json()["email"] == "worker@example.com"
+    assert response.json()["email_verified"] is True

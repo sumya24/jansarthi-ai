@@ -92,20 +92,54 @@ def test_embedding_batch_matches_individual_embeddings():
 def test_chroma_collection_opens_and_reports_expected_size():
     store = _real_store()
     assert store.is_loaded
-    # 866, not the earlier 842 -- round 11 closed 2 of 3 zero-coverage cities left over from early
-    # rounds. Howrah (West Bengal) and Jodhpur (Rajasthan) both moved from 0 to full 4-category
-    # coverage via general (SLA-not-found) channels: Howrah via howrah.gov.in's own Public Utility
-    # listing (a genuinely different, working domain from the 403-blocked myhmc.in), Jodhpur via
-    # Rajasthan's statewide LSG portal naming a real Commissioner as nodal officer (jodhpurmc.org
-    # itself stayed unretried, confirmed dead in an earlier round). Vijayawada (Andhra Pradesh)
-    # stayed at 0 VERIFIED -- its last plausible angle, 2 services.india.gov.in URLs, were
-    # confirmed to redirect to a generic landing page (the whole detail-page URL structure is
-    # retired), joining its already-confirmed-dead client-rendered shell and connection-refused
-    # domains -- see data/rag_knowledge_base/sources/candidate_urls.md's "Round 11" section for
-    # the full log. Confirmed by actually running `scripts/build_rag_embeddings.py` against the
-    # real embedding model (intfloat/multilingual-e5-small) and reading the resulting ChromaDB
-    # collection size directly -- not counted by hand.
-    assert store.size == 866
+    # 923, not the earlier 899 -- Goa's remaining Streetlights gap closed, plus 2 more states
+    # moved off the zero-coverage list (see RAG_REAL_VS_SYNTHETIC_RESEARCH_PREP.md):
+    # - Goa Streetlights: goaelectricity.gov.in's own "Open Access & Streetlight Matters" page
+    #   confirms the Electricity Department (not the municipal ULB) is responsible; used its
+    #   general contact channel (toll-free 1912) since the page itself is legal/billing content
+    #   with no dedicated complaint form.
+    # - Jharkhand (Ranchi, all 4 categories, general channel): Smart Ranchi's 24x7 connect
+    #   center (smartranchi.in), linked directly from Ranchi Municipal Corporation's own site --
+    #   phone, WhatsApp, and email all confirmed.
+    # - Uttarakhand (Dehradun, 3 of 4 -- Roads/Potholes explicitly NOT found): Nagar Nigam
+    #   Dehradun's own Services page names Street Light, Drainage Complaint, and Sanitation as
+    #   real service items; no Roads/Potholes item exists on that page, so it was left unclaimed
+    #   rather than assumed from a generic "Public Works Department" mention.
+    # See knowledge_records/verified/goa/statewide.json (now 4 records),
+    # knowledge_records/verified/jharkhand/ranchi.json,
+    # knowledge_records/verified/uttarakhand/dehradun.json, and sources/inventory.json's
+    # corresponding entries. Confirmed by actually running `scripts/build_rag_embeddings.py`
+    # against the real embedding model (intfloat/multilingual-e5-small) and reading the
+    # resulting ChromaDB collection size directly -- not counted by hand.
+    # 953, not the earlier 926 -- 3 more states moved off the zero-coverage list (see
+    # RAG_REAL_VS_SYNTHETIC_RESEARCH_PREP.md):
+    # - Chhattisgarh (Raipur, 3 of 4 -- Streetlights explicitly NOT found): Raipur Municipal
+    #   Corporation's own Contact Us page, naming a main line plus 10 zones' Executive Engineers
+    #   with direct mobile numbers (used for Roads/Potholes, same PWD-equivalent reasoning as
+    #   Uttarakhand's record).
+    # - Himachal Pradesh (Shimla, full 4/4): MC Shimla's own Citizen Charter explicitly describes
+    #   each department's function (Road & Building; Water System & Sewerage; Health Branch for
+    #   sanitation), plus a dedicated Street Light Complaint toll-free number (1800-180-3580)
+    #   confirmed verbatim on the homepage, independently re-checked before trusting it.
+    # - Puducherry (Oulgaret, 2 of 4 -- Roads/Potholes and Streetlights explicitly NOT found):
+    #   Oulgaret Municipality's own Grievance Redressal page, with genuinely category-specific
+    #   phone numbers for Garbage/Side-drain and Underground Drainage (PWD) complaints.
+    # See knowledge_records/verified/chhattisgarh/raipur.json,
+    # knowledge_records/verified/himachal_pradesh/shimla.json,
+    # knowledge_records/verified/puducherry/oulgaret.json, and sources/inventory.json's
+    # corresponding entries.
+    # 971, not the earlier 953 -- Puducherry's remaining Roads/Streetlights gap closed (Oulgaret
+    # Municipality's own "Engineering" services page explicitly names "Street Lighting" and
+    # "Construction and maintenance of public streets" -- both now 4/4), plus Jammu and Kashmir
+    # added (Srinagar, all 4 categories, via Srinagar Municipal Corporation's own homepage
+    # description of its Grievance Redressal/JK SAMADHAN portal, verbatim-confirmed via 2
+    # independent fetches). Chhattisgarh's Streetlights gap was also explicitly retried this round
+    # (checked the district electricity utility listing, the power company's own site, and a
+    # since-dead RMC domain) and remains genuinely open -- no source found, not claimed.
+    # See knowledge_records/verified/puducherry/oulgaret.json (now 4 records),
+    # knowledge_records/verified/jammu_and_kashmir/srinagar.json, and sources/inventory.json's
+    # corresponding entries.
+    assert store.size == 971
 
 
 def test_chroma_persist_dir_is_configurable_not_hardcoded():

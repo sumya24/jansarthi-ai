@@ -185,9 +185,11 @@ export default function AdminWorkerDetail() {
                   <tbody>
                     {filteredComplaints.map((c, i) => (
                       <tr key={c.id} className="table-row-hover enter" style={{ "--stagger": Math.min(i, 6) } as React.CSSProperties}>
-                        <td className="mono" style={{ padding: "12px 16px", borderBottom: "1px solid var(--line)", color: "var(--ink-2)" }}>#{c.id}</td>
+                        <td className="mono" style={{ padding: "12px 16px", borderBottom: "1px solid var(--line)" }}>
+                          <Link to={`/admin/complaints/${c.id}`} style={{ color: "var(--accent-fg)" }}>#{c.id}</Link>
+                        </td>
                         <td style={{ padding: "12px 16px", borderBottom: "1px solid var(--line)", maxWidth: 340, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                          {c.display_summary || c.summary}
+                          <Link to={`/admin/complaints/${c.id}`} style={{ color: "inherit" }}>{c.display_summary || c.summary}</Link>
                         </td>
                         <td style={{ padding: "12px 16px", borderBottom: "1px solid var(--line)" }}>
                           <StatusBadge status={c.status} label={t(lang, COMPLAINT_STATUS_LABEL_KEY[c.status])} />

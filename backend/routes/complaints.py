@@ -145,6 +145,13 @@ class ComplaintResponse(BaseModel):
     location_state: str | None
     location_district: str | None
     location_ulb: str | None
+    # The same resolution, as ids -- so a caller (the admin "assign worker" picker, see
+    # AssignWorkerModal.tsx) can match this complaint's own location against a worker's
+    # state_id/district_id/ward_id without a name-based lookup of its own. Straight off the
+    # Complaint row already loaded above, not a fresh query.
+    state_id: int | None
+    district_id: int | None
+    ward_id: int | None
     assigned_worker_name: str | None
     # Deliberately withheld until the assigned worker accepts — see _to_response.
     assigned_worker_phone: str | None
@@ -338,6 +345,9 @@ def _to_response(db: Session, complaint: Complaint, display_language: str | None
         location_state=location_state,
         location_district=location_district,
         location_ulb=location_ulb,
+        state_id=complaint.state_id,
+        district_id=complaint.district_id,
+        ward_id=complaint.ward_id,
         assigned_worker_name=assigned_worker_name,
         assigned_worker_phone=assigned_worker_phone,
         rejection_count=rejection_count,

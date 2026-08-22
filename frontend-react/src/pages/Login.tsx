@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useUiLang } from "../lib/uiLang";
 import { useAuth } from "../lib/auth";
 import { t } from "../lib/i18n";
@@ -13,6 +13,13 @@ export default function Login() {
   const { lang } = useUiLang();
   const { setSession } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
+  // Set by ProtectedRoute when it bounced an unauthenticated visit here (e.g. a "View complaint"
+  // link from an email) -- go back to that page instead of always landing on the generic
+  // dashboard. Not further validated against the logged-in user's role: if it doesn't apply to
+  // them, ProtectedRoute re-checks role on render and redirects to their own home anyway, so a
+  // mismatched `from` is at worst one harmless extra bounce, never a wrong page shown.
+  const from = (location.state as { from?: string } | null)?.from;
 
   const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
@@ -34,7 +41,7 @@ export default function Login() {
     try {
       const { access_token, refresh_token, user } = await api.login({ identifier: identifier.trim(), password });
       setSession(access_token, refresh_token, user);
-      navigate(user.role === "citizen" ? "/citizen" : user.role === "worker" ? "/worker" : "/admin");
+      navigate(from || (user.role === "citizen" ? "/citizen" : user.role === "worker" ? "/worker" : "/admin"));
     } catch (err) {
       setFormError(err instanceof ApiError ? err.message : t(lang, "common.somethingWrong"));
     } finally {

@@ -182,10 +182,11 @@ export interface UserProfile {
   role: "citizen" | "worker" | "admin";
   preferred_language: string;
   ward: string | null;
-  // Structured counterpart of `ward` -- always null for a worker/admin, only ever set for a
-  // citizen who's gone through the cascading state/city/ward/area picker (signup, or editing it
-  // later in Settings). Lets that picker be pre-filled with the citizen's current selection
-  // instead of always starting blank -- see HomeLocationPicker.tsx's `initial` prop.
+  // Structured counterpart of `ward` -- set for a citizen who's gone through the cascading
+  // state/city/ward/area picker (signup, or editing it later in Settings), and for a worker whose
+  // operational area an admin has picked via the same cascading picker (Edit Worker). Lets that
+  // picker be pre-filled with the current selection instead of always starting blank -- see
+  // HomeLocationPicker.tsx's `initial` prop.
   state_id: number | null;
   district_id: number | null;
   ward_id: number | null;
@@ -226,6 +227,12 @@ export interface Complaint {
   location_state: string | null;
   location_district: string | null;
   location_ulb: string | null;
+  // The same resolution, as ids -- lets AssignWorkerModal default its hierarchical picker to
+  // this complaint's own location without a name-based lookup. Same null-when-unresolved rule
+  // as the name fields above.
+  state_id: number | null;
+  district_id: number | null;
+  ward_id: number | null;
   assigned_worker_name: string | null;
   // Only populated once the assigned worker has accepted (or resolved) — see backend/routes/complaints.py.
   assigned_worker_phone: string | null;
@@ -598,15 +605,43 @@ export const api = {
   markNotificationRead: (token: string, id: number) =>
     request<AppNotification>(`/notifications/${id}/read`, { method: "POST", token }),
 
+  // Same OTP round trip as sendSignupEmailCode/verifySignupEmailCode above, reusing the identical
+  // backend proof-token mechanism (see backend/routes/admin.py's own send_worker_email_code/
+  // verify_worker_email_code) -- admin-authenticated instead of public, since these are only ever
+  // reached from inside the admin-only Add/Edit Worker forms (see EmailVerifyField.tsx).
+  sendWorkerEmailCode: (token: string, email: string) =>
+    request<void>("/admin/workers/email/send-code", { method: "POST", token, body: { email } }),
+
+  verifyWorkerEmailCode: (token: string, email: string, code: string) =>
+    request<{ email_verification_token: string }>("/admin/workers/email/verify-code", { method: "POST", token, body: { email, code } }),
+
   createWorker: (
     token: string,
-    body: { full_name: string; phone: string; password: string; ward: string; preferred_language: string }
+    body: {
+      full_name: string; phone: string; password: string; ward: string; preferred_language: string;
+      email?: string;
+      // Proof that verifyWorkerEmailCode above already succeeded for `email` -- required whenever
+      // `email` is sent, same as signup() itself requires it (see backend/routes/admin.py's
+      // CreateWorkerRequest docstring).
+      email_verification_token?: string;
+    }
   ) => request<UserProfile>("/admin/workers", { method: "POST", token, body }),
 
   listWorkers: (token: string) => request<WorkerSummary[]>("/admin/workers", { token }),
 
-  updateWorker: (token: string, id: number, body: { full_name?: string; ward?: string; preferred_language?: string }) =>
-    request<UserProfile>(`/admin/workers/${id}`, { method: "PATCH", token, body }),
+  updateWorker: (
+    token: string,
+    id: number,
+    body: {
+      full_name?: string; ward?: string; preferred_language?: string; ward_id?: number; locality_id?: number;
+      // "" clears the worker's email; omitting the key leaves it untouched -- see
+      // backend/routes/admin.py's UpdateWorkerRequest docstring. Re-sending the worker's own
+      // current (already-verified) email back unchanged needs no token; only an actual change
+      // does -- same docstring.
+      email?: string;
+      email_verification_token?: string;
+    }
+  ) => request<UserProfile>(`/admin/workers/${id}`, { method: "PATCH", token, body }),
 
   resetWorkerPassword: (token: string, id: number, newPassword: string) =>
     request<UserProfile>(`/admin/workers/${id}/reset-password`, { method: "POST", token, body: { new_password: newPassword } }),

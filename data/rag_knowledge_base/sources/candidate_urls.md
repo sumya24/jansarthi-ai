@@ -1,5 +1,135 @@
 # RAG Knowledge Base — Source Research Log
 
+## Round 18 (2026-08-21, session 12 continued): Puducherry closed to 4/4; Chhattisgarh Streetlights retried (still open); Jammu and Kashmir added (4/4)
+
+Explicit follow-up on Round 17's 2 open threads (Puducherry, Chhattisgarh), then continued to a
+new state.
+
+| Gap | Angle tried | Result | Notes |
+|---|---|---|---|
+| **Oulgaret, Puducherry — Roads/Potholes and Streetlights (Round 17's open threads)** | oulmun.in's own "Engineering" services page (oulmun.in/engineering.php), not previously checked (only the Grievance Redressal page was checked in Round 17) | **PROMOTED TO VERIFIED (both)** | **[PROMOTED TO VERIFIED — see knowledge_records/verified/puducherry/oulgaret.json (PY_OULMUN_ROADS_POTHOLES, PY_OULMUN_STREETLIGHTS). Fetched directly. Explicitly, verbatim lists 'Construction and maintenance of public streets and drains' and 'Street Lighting' as named Engineering Section services -- direct confirmation, not inferred. Named contact: Web Information Manager S. Paramesvary, dpa-om@py.gov.in, 0413 2200812. Puducherry (Oulgaret) now full 4/4.]** |
+| **Raipur, Chhattisgarh — Streetlights (Round 17's open thread)** | raipur.gov.in's district electricity public-utility listing; CSPDCL's (Chhattisgarh's power company) own site; rmc.nic.in/streetLight.html (a differently-titled page surfaced via search) | **CONFIRMED DEAD END (this round's angles)** | **[CHECKED — raipur.gov.in/en/public-utility-category/electricity/ names only a general CSPDCL contact (0771-2574166, webadmin@cspc.co.in), with no streetlight-specific text. cspdcl.co.in itself was searched explicitly for "street light"/"streetlight" and found zero matches -- it's a bare redirect shell. rmc.nic.in/streetLight.html (a real-looking, specifically-titled page) was confirmed dead via direct curl (connection refused), independent of WebFetch. No Raipur-specific streetlight department or number was found. Streetlights remains open for Chhattisgarh.]** |
+| **Srinagar, Jammu and Kashmir — all 4 categories (previously 0 coverage)** | Srinagar Municipal Corporation's own homepage (smcsrinagar.jk.gov.in), specifically its Grievance Redressal/JK SAMADHAN description | **PROMOTED TO VERIFIED (all 4)** | **[PROMOTED TO VERIFIED — see knowledge_records/verified/jammu_and_kashmir/srinagar.json (JK_SMC_* x4). Fetched directly, twice (once for navigation, once re-checking the exact wording before trusting it) -- both agree verbatim: "Register and track grievances related to civic services, sanitation, water supply, roads, street lighting, and other municipal issues," linking to the state's unified grievance system JK SAMADHAN (samadhan.jk.gov.in/login, login-gated beyond this point). SMC's own separate "Sanitation Services" and "Drinking Water" menu items independently corroborate 2 of the 4 categories as real administered services. No dedicated Roads/PWD-equivalent contact found separately (unlike Uttarakhand/Chhattisgarh's Executive Engineer pattern) -- Roads and Streetlights rely on the general description alone, disclosed honestly in both records.]** |
+
+### Net result of Round 18
+
+6 new VERIFIED records (158 -> 164; 270 -> 276 total records; 953 -> 971 chunks in the live
+ChromaDB index). Puducherry reaches full 4/4 (the 5th state fully closed this session). Jammu and
+Kashmir moves from 0 to full 4/4. Chhattisgarh's Streetlights gap remains genuinely open after a
+real, logged attempt. 11 states remain at zero coverage (down from 12 at the start of this round).
+
+## Round 17 (2026-08-21, session 12 continued): 3 more zero-coverage states -- Chhattisgarh (3/4), Himachal Pradesh (4/4), Puducherry (2/4)
+
+Continued down the zero-coverage list, picking states with likely-larger populations/more national
+visibility per explicit instruction to prioritize "popular" ones first.
+
+| Gap | Angle tried | Result | Notes |
+|---|---|---|---|
+| **Raipur, Chhattisgarh — 3 of 4 (previously 0 coverage)** | nagarnigamraipur.nic.in's own Contact Us page | **PROMOTED TO VERIFIED (3 of 4 -- Streetlights explicitly NOT found)** | **[PROMOTED TO VERIFIED — see knowledge_records/verified/chhattisgarh/raipur.json. Real main line (+91-771-2535780-2535790), named Additional Commissioners, and 10 zones each with a named Zone Commissioner + Executive Engineer with direct mobile numbers. Waste/Water used the general channel (same tier as Chandigarh); Roads/Potholes used the zone Executive Engineers (same PWD-equivalent reasoning as Uttarakhand's record). The official state grievance portal (nidaan.cg.gov.in, "NIDAAN 1100") and Smart City Raipur (smartcityraipur.cgstate.gov.in) were both checked but are JS-rendered SPA shells with nothing fetchable beyond a phone number -- not used. No Streetlight-specific department or number found anywhere.]** |
+| **Shimla, Himachal Pradesh — all 4 categories (previously 0 coverage)** | MC Shimla's own Citizen Charter (shimlamc.hp.gov.in/CitizenCharter/Index) plus its homepage flash-news | **PROMOTED TO VERIFIED (all 4)** | **[PROMOTED TO VERIFIED — see knowledge_records/verified/himachal_pradesh/shimla.json. The Citizen Charter is a real government document (same tier as Odisha's HUDD Citizen Charter) explicitly describing each department's function in its own words: Road & Building Department, Water System & Sewerage Department, and Health Branch (explicitly "door to door garbage collection, Street Sweeping"). Separately, the homepage's own flash-news carousel verbatim states "Street Light Complaint Toll Free Number 1800-180-3580" -- independently re-confirmed on the official domain (not just trusted from a third-party aggregator that first surfaced the claim). No numeric SLA found for any department -- the Charter itself says so.]** |
+| **Oulgaret, Puducherry — 2 of 4 (previously 0 coverage)** | oulmun.in's own Grievance Redressal page | **PROMOTED TO VERIFIED (2 of 4 -- Roads/Potholes and Streetlights explicitly NOT found)** | **[PROMOTED TO VERIFIED — see knowledge_records/verified/puducherry/oulgaret.json. Genuinely category-specific contacts, not one general line reused: "Garbage & Side drain Complaints" (91183 83911, 10 AM-6 PM) and "Underground Drainage Complaints (PWD)" (0413-2336076/2336068, office hours). Explicitly searched the full page text for "road"/"pothole"/"street light" -- only an unrelated "Road Classification" government-order document link found, no complaint channel for either category. Pondicherry Municipality's own equivalent page only links to a bare login-gated portal (lgredressal.py.gov.in/pgrs/) with no category detail visible.]** |
+
+### Net result of Round 17
+
+9 new VERIFIED records (149 -> 158; 261 -> 270 total records; 926 -> 953 chunks in the live
+ChromaDB index). Himachal Pradesh reaches full 4/4 (the 4th state fully closed this session,
+alongside Chandigarh, Jharkhand, and Uttarakhand). Chhattisgarh and Puducherry move from 0 to
+partial coverage, each with an honestly-disclosed remaining gap. 12 states remain at zero coverage
+(down from 15 at the start of this round).
+
+## Round 16 (2026-08-21, session 12 continued): Uttarakhand's Roads/Potholes closed -- Dehradun reaches 4/4
+
+Explicit follow-up on Round 15's one open thread for Dehradun.
+
+| Gap | Angle tried | Result | Notes |
+|---|---|---|---|
+| **Dehradun, Uttarakhand — Roads/Potholes (the one category Round 15 left open)** | nagarnigamdehradun.com/public-work-department.php -- a second official Nagar Nigam Dehradun web presence, linked from nndehradun.uk.gov.in's own Contact Us page | **PROMOTED TO VERIFIED** | **[PROMOTED TO VERIFIED — see knowledge_records/verified/uttarakhand/dehradun.json (UK_NNDDN_ROADS_POTHOLES). Fetched directly, twice (once for contacts, once explicitly checking for a departmental-remit description). Names 3 real officers with direct contact: Executive Engineer Rajit Kothyal (9997943221), 2 Junior Engineers, department line +91-135-2653572. Honest caveat logged in the record itself: the page has no explicit "this department handles roads/potholes" sentence -- this record relies on "Public Work Department" (PWD) being standard, well-established Indian municipal terminology for the roads/civil-infrastructure department, the same evidentiary tier as WELL_ESTABLISHED_PUBLIC_GEOGRAPHY facts already used elsewhere in this project, not a stretch from unrelated wording the way NDMC's Round-10 case was found to be.]** |
+
+### Net result of Round 16
+
+1 new VERIFIED record (148 -> 149; 260 -> 261 total records; 923 -> 926 chunks in the live
+ChromaDB index). Uttarakhand reaches full 4/4 -- the 3rd state closed to completion this session
+(alongside Chandigarh and Goa; Jharkhand also already at 4/4).
+
+## Round 15 (2026-08-21, session 12 continued): Goa's Streetlights closed; Jharkhand (4/4) and Uttarakhand (3/4) added
+
+Explicit follow-up on Round 14's one open thread (Goa Streetlights), then continued down the
+zero-coverage list.
+
+| Gap | Angle tried | Result | Notes |
+|---|---|---|---|
+| **Goa — Streetlights (the one category Round 14 left open)** | goaelectricity.gov.in (Electricity Department, Government of Goa) -- a genuinely different department from the municipal ULB portal used for Goa's other 3 categories | **PROMOTED TO VERIFIED** | **[PROMOTED TO VERIFIED — see knowledge_records/verified/goa/statewide.json (GA_ELECTRICITY_STREETLIGHTS, appended as a 4th record). The department's own site has a section literally titled "Open Access & Streetlight Matters", confirmed via direct fetch -- establishing this (not the ULB portal, which has no streetlight option) as the correct department. That specific page is legal/billing content (Public Lighting Duty Act) with no dedicated complaint form, so the department's general contact channel is used instead: toll-free 1912, 91-832-2485500 (outside Goa), customersupport@goaelectricity.gov.in -- all confirmed on the same domain's Contact Us page. Goa now has all 4 categories.]** |
+| **Ranchi, Jharkhand — all 4 categories (previously 0 coverage)** | Smart Ranchi 24x7 connect center (smartranchi.in), linked directly from Ranchi Municipal Corporation's own official site | **PROMOTED TO VERIFIED (general channel, all 4)** | **[PROMOTED TO VERIFIED — see knowledge_records/verified/jharkhand/ranchi.json (JH_SMART_RANCHI_* x4), sources/inventory.json. Fetched directly; names 4 real channels (online form, 24x7 phone 1800-570-1235, WhatsApp +91 8141231235, email support@smartranchi.in). Independently cross-checked against ranchi.nic.in (district government site), which separately publishes RMC's own phone number, confirming this is a real, currently-active city administration. No category-specific SLA published.]** |
+| **Dehradun, Uttarakhand — 3 of 4 categories (previously 0 coverage)** | Nagar Nigam Dehradun's own Services page (nndehradun.uk.gov.in) | **PROMOTED TO VERIFIED (3 of 4 -- Roads/Potholes explicitly NOT found)** | **[PROMOTED TO VERIFIED — see knowledge_records/verified/uttarakhand/dehradun.json (UK_NNDDN_WASTE_SANITATION, UK_NNDDN_WATER_DRAINAGE, UK_NNDDN_STREETLIGHTS). Services page fetched and reproduced verbatim: Street Light, Drainage Complaint, Light Complaint, Sanitation, and Door to Door Waste Collection are all explicitly named items (individual sub-pages are placeholder-only, but the category names and their own department navigation entries, e.g. "Departments > Street Light Department", confirm these are real administered services). Also used the Urban Development Department's separate, dedicated solid-waste complaint portal (vlts-udd.uk.gov.in) for Waste specifically -- confirmed live and functional (reached a real mobile-OTP verification step). No Roads/Potholes item exists anywhere on the Services page (only a generic "Public Works Department" nav mention, not pursued further) -- left open rather than assumed. General contact (+91-135-2714074, nagarnigam.ddn@gmail.com) independently confirmed on the official .uk.gov.in domain, matching what third-party aggregators had separately reported.]** |
+
+### Net result of Round 15
+
+8 new VERIFIED records (140 -> 148; 252 -> 260 total records; 899 -> 923 chunks in the live
+ChromaDB index). Goa reaches full 4/4. Jharkhand moves from 0 to full 4/4. Uttarakhand moves from
+0 to 3/4 (Roads/Potholes stays open, honestly -- no source found this round that names it). 15
+states remain at zero coverage (down from 17 at the start of this round).
+
+## Round 14 (2026-08-21, session 12 continued): 2 zero-coverage states closed -- Chandigarh (4/4) and Goa (3/4)
+
+First attempt at the 19-state "zero coverage" list (states/UTs with no knowledge-base data at
+all, as opposed to a synthetic/verified ratio problem -- see
+RAG_REAL_VS_SYNTHETIC_RESEARCH_PREP.md). Picked 2 candidates likely to have solid municipal web
+presence (a Union Territory capital, and a tourism-economy state) rather than working the list in
+order.
+
+| Gap | Angle tried | Result | Notes |
+|---|---|---|---|
+| **Chandigarh (UT) — all 4 categories (previously 0 coverage)** | mcchandigarh.gov.in's own Complaints and Grievance.aspx pages | **PROMOTED TO VERIFIED (general channel, all 4)** | **[PROMOTED TO VERIFIED — see knowledge_records/verified/chandigarh/mcc_general_channel.json (CH_MCC_*_GRIEVANCE_CHANNEL x4), sources/inventory.json. Both pages fetched directly, the second time asking for verbatim raw text. Both name the same 3 real contact channels: toll-free 14420 (8 AM-8 PM), direct line 0172-2787200, and email comm-mcc-chd@nic.in. No category-specific SLA published on either page for any category -- general channel only, same quality tier as Howrah/Jodhpur's promotions.]** |
+| **Goa (state) — Waste & Water (previously 0 coverage)** | goaulbservice.gov.in/Complaints.aspx -- a real, working statewide complaint form | **PROMOTED TO VERIFIED (2 of 4 categories)** | **[PROMOTED TO VERIFIED — see knowledge_records/verified/goa/statewide.json (GA_ULB_SERVICE_WASTE_SANITATION, GA_ULB_SERVICE_WATER_DRAINAGE), sources/inventory.json. Fetched directly, dropdown options reproduced verbatim: Website Related, Misconduct of Employees, Garbage Related, Illegal Construction, Choked Gutters, Dead Animals, House Tax. "Garbage Related" and "Choked Gutters" map cleanly to WASTE_SANITATION/WATER_DRAINAGE. Roads/Potholes and Streetlights are genuinely absent from this specific form's category list -- not claimed here, covered separately below/left open respectively.]** |
+| **Goa (state) — Roads/Potholes (previously 0 coverage)** | cmhelpline.dpg.goa.gov.in -- Government of Goa's CM Helpline 1905 | **PROMOTED TO VERIFIED (1 category)** | **[PROMOTED TO VERIFIED — see knowledge_records/verified/goa/statewide.json (GA_CMHELPLINE_ROADS_POTHOLES). Fetched directly, named toll-free 1905 and verbatim-quoted "Infrastructure issues (roads, electricity, water supply)" plus a live example ("I need to report a pothole issue on Main Street") and a sample "Road Maintenance" resolved case. A second, explicit fetch searched the page for the words "streetlight"/"street light"/"lamp" and found zero matches -- so this source was NOT used to also claim Streetlights, even though "infrastructure"/"electricity" could plausibly be stretched to cover it. Goa's Streetlights gap remains open, honestly.]** |
+
+### Net result of Round 14
+
+7 new VERIFIED records (133 -> 140; 245 -> 252 total records; 878 -> 899 chunks in the live
+ChromaDB index after re-running `scripts/build_rag_embeddings.py`). Chandigarh moves from 0 to
+full 4-category coverage. Goa moves from 0 to 3-of-4 (Streetlights still open -- no source found
+this round that verbatim supports it). 17 states remain at zero coverage (down from 19).
+
+## Round 13 (2026-08-21, session 12 continued): 2 next-worst states targeted, 0 new records -- honest negative round
+
+Targeted the 2 states with the next-worst verified:synthetic ratio after Round 12's Andhra Pradesh
+fix: Karnataka (Bengaluru's Roads/Streetlights specifically) and Madhya Pradesh (Bhopal, 0
+VERIFIED). Both gaps were already-confirmed dead ends from earlier rounds (Round 10 for both) --
+this round tried only genuinely new angles, not a re-hit of anything already logged dead.
+
+| Gap | New angle tried | Result | Notes |
+|---|---|---|---|
+| **Bengaluru, Karnataka — Roads & Streetlights** | BBMP's own "Sahaaya" citizen-grievance portal (bbmp.sahaaya.in / nammabengaluru.org.in), surfaced fresh via WebSearch, not a domain tried in Rounds 4/9/10; BESCOM (Bangalore Electricity Supply Co.) as a genuinely different department for streetlights specifically | **CONFIRMED DEAD END (both new angles exhausted)** | **[CHECKED — bbmp.sahaaya.in's TLS certificate doesn't match its own hostname (cert is for *.nammabengaluru.org.in), and following that redirect lands on a bare client-rendered shell with no fetchable content (same SPA-shell failure class as bbmp.gov.in-family domains in earlier rounds). BESCOM was checked as a genuinely different angle since streetlights could plausibly be an electricity-company matter, not a municipal one -- but BESCOM's own official account, responding to a citizen, states streetlight issues are BBMP's remit, not BESCOM's ("street light issues pertains to BBMP please contact the BBMP customer care number 080-22660000/22221188"), routing back to BBMP rather than opening a new department. That phone number could not be independently confirmed on a fetchable BBMP-family webpage (bbmp.gov.in/en/contact-us returns HTTP 404, confirmed via direct curl, not just WebFetch) -- the project's schema has no source_type for a social-media post, so it wasn't used as a citable source per the established evidentiary bar. Bengaluru Roads/Streetlights remains open; this is now the 4th round (4, 9, 10, 13) to confirm every angle tried is exhausted.]** |
+| **Bhopal, Madhya Pradesh — all 4 categories (still 0 VERIFIED)** | Madhya Pradesh's Directorate of Urban Administration & Development's own GIS/geoportal presence (geoportal.mp.gov.in/UADD_New/), surfaced fresh via a targeted site-scoped search, genuinely different from smartbhopal.city/mpenagarpalika.gov.in/bhopal.nic.in (all confirmed dead in Round 10) | **CONFIRMED DEAD END (this round's angle)** | **[CHECKED — geoportal.mp.gov.in's root domain is live (HTTP 200, confirmed via direct curl), but the specific UADD_New path returns HTTP 404 -- a stale/incorrect path, not a working page. mpenagarpalika.gov.in was independently re-checked via direct curl this round (not just re-trusting Round 10's finding) and is still unreachable (connection timeout), confirming it's a durable outage, not a one-time fluke. A toll-free number (18002335522) and Bhopal address for the Directorate surfaced via WebSearch, but only through third-party aggregator sites (complainthub.org-style pages), never confirmed on an actual official .gov.in page reachable by direct fetch -- per the project's standing rule against citing anything not independently checked, this was not used to build a record. Bhopal remains at 0 VERIFIED, still exhausted per Round 10 plus this round's new angle.]** |
+
+### Net result of Round 13
+
+0 new VERIFIED records (133 unchanged, 245 total records unchanged). Both gaps remain open, each
+now backed by a 4th (Bengaluru) or 2nd (Bhopal, new-angle) round of genuinely different attempts,
+not just repeated guesses. Per the project's honesty rule, a negative round is still logged in
+full -- no record was forced to close these gaps, and the accumulated close-but-not-quite leads
+(BESCOM's phone number, the toll-free DUAD number) are recorded here for whoever picks this up
+next, rather than silently dropped.
+
+## Round 12 (2026-08-21, session 12): Andhra Pradesh's worst-ratio state, 1 new state-wide general channel found
+
+Targeted Andhra Pradesh specifically (the state with the worst verified:synthetic ratio, 4V+8S
+across all 4 categories -- see DATA_COVERAGE_TRACKER.md). Vijayawada (0 VERIFIED, previously
+confirmed a fully exhausted dead end in Round 11) and Visakhapatnam (4 VERIFIED already, via GVMC)
+were the 2 cities in scope.
+
+| Gap | Angle tried | Result | Notes |
+|---|---|---|---|
+| **Andhra Pradesh — all 4 categories (state-wide)** | cdma.ap.gov.in (the Commissioner & Director of Municipal Administration's own state portal) -- a genuinely different domain from every Vijayawada-specific angle tried in Round 11 | **PROMOTED TO VERIFIED (general channel, all 4, state-wide)** | **[PROMOTED TO VERIFIED — see knowledge_records/verified/andhra_pradesh/cdma_statewide.json (AP_CDMA_STATEWIDE_GRIEVANCE_* x4), sources/inventory.json. cdma.ap.gov.in/services/grievances/ is real and live; fetched twice independently (once for a summary, once explicitly asking for verbatim raw text with no paraphrasing) to guard against a misread, per the project's own standing caution about not overclaiming -- both fetches agree exactly. The page names 5 grievance categories with sub-items (Sanitation: Garbage Not Collected/Street Cleaning/Public Toilet Maintenance; Water Supply: Disruption/Leakage/Quality; Roads: Potholes/Road Damage/Speed Breakers; Parks & Greenery -- not one of ours; Street Lighting: Not Working/Electrical Hazards/New Installation) and states submission is via "the Puramithra App or Citizen Portal". No numeric SLA: the page's own sibling "Grievance SLAs" sub-page (cdma.ap.gov.in/resources/grievance-sla/) was checked directly and returned "Showing 0 of 0 SLA items" -- a genuinely empty results table, not a fetch failure. 3 documents linked from a third CDMA page (others/portal-info/citizen-charter/) -- G.O Ms.No.198, the Citizen's Charter .doc, and the Puraseva Centre User Manual -- were each checked directly via curl (not just WebFetch) and are dead links (HTTP 404, 400, 404 respectively). The ULB Web Directory page (cdma.ap.gov.in/ulb-web-directory) was also checked for a direct VMC link -- it's a client-side/AJAX-loaded shell ("Loading ULB data...") that static fetching can't populate, the same SPA-shell failure class documented for other AP/Karnataka domains in earlier rounds. Recorded as city=null/geographic_scope=STATE (NOT attributed to Vijayawada specifically) since the source page itself makes no Vijayawada-specific claim -- applies generally to every ULB under CDMA. Vijayawada's own city-specific 0-VERIFIED gap is therefore still open; this closes a different, real gap (AP had no state-wide general channel at all before this).]** |
+
+### Net result of Round 12
+
+4 new VERIFIED records (129 -> 133; 241 -> 245 total records; 866 -> 878 chunks in the live
+ChromaDB index after re-running `scripts/build_rag_embeddings.py`). Andhra Pradesh's ratio
+improves from 4V+8S to 8V+8S across the state. Vijayawada's own city-specific gap (0 VERIFIED)
+remains open and is still a confirmed dead end per Round 11 -- closing it specifically would need
+a genuinely new angle beyond cdma.ap.gov.in (already used here) and everything tried in Round 11.
+
 ## Round 11 (2026-08-16, session 11): 3 zero-coverage cities from early rounds, 2 closed via general channels
 
 Targeted 3 cities with 0 VERIFIED records each, last touched in rounds 2/3 before later rounds'

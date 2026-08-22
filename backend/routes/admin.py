@@ -6,6 +6,7 @@ worker or admin account — provisioning staff is exclusively a super admin acti
 """
 
 import logging
+import re
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -14,15 +15,32 @@ from sqlalchemy.orm import Session
 
 from backend.config import settings
 from backend.database import get_db
-from backend.deps import require_role
-from backend.models import Complaint, ComplaintRejection, ComplaintStatusHistory, ComplaintTranslation, ComplaintUpdate, User
+from backend.deps import require_otp_rate_limit, require_role
+from backend.models import Complaint, ComplaintRejection, ComplaintStatusHistory, ComplaintTranslation, ComplaintUpdate, Locality, ULB, User, Ward
 from backend.repositories import ai_request_log_repository, complaint_workflow_repository
-from backend.routes.auth import MIN_PASSWORD_LENGTH, UserResponse
-from backend.services.auth_service import hash_password
+from backend.routes.auth import _dev_cache_otp, MIN_PASSWORD_LENGTH, UserResponse
+from backend.services.auth_service import (
+    consume_signup_email_verification,
+    create_signup_email_otp,
+    hash_password,
+    verify_signup_email_otp,
+)
+from backend.services.email_service import EmailServiceError, send_otp_email
+from backend.services.location_resolver import LocationResolver
 from backend.services.observability import tracing
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin", tags=["admin"])
+_location_resolver = LocationResolver()
+
+# Same shape as auth.py's own (private) _EMAIL_PATTERN -- kept as a separate constant here rather
+# than importing that one across modules, since it's underscore-named there specifically to signal
+# "not a cross-module contract".
+_EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+# Same value as auth.py's own (private) _VERIFY_EMAIL_PURPOSE -- see send_otp_email's own purpose
+# parameter; only affects which email template/copy is used, not the OTP logic itself.
+_VERIFY_EMAIL_PURPOSE = "verify_email"
 
 # "Open" = assigned to a worker but not yet resolved, at any stage of the worker's own workflow
 # (see routes/complaints.py's `_STATUS_ACCEPTED`/`_STATUS_IN_PROGRESS`). Named once here so
@@ -33,13 +51,24 @@ _OPEN_COMPLAINT_STATUSES = ("assigned", "accepted", "in_progress")
 
 
 class CreateWorkerRequest(BaseModel):
-    """Request body for a super admin creating a new worker account."""
+    """Request body for a super admin creating a new worker account.
+
+    `email`: optional, unlike `phone` -- a worker account is fully usable with phone-only login,
+    same as a citizen's (see auth.py's LoginRequest docstring). When given, it must be PROVEN via
+    the same OTP round trip citizen signup uses (POST /admin/workers/email/send-code ->
+    POST /admin/workers/email/verify-code -> `email_verification_token` here), not merely typed --
+    an admin can assert a worker's phone number and temporary password on their behalf with no
+    verification step, but an email inbox is something only whoever holds it can actually prove,
+    so this endpoint holds itself to the same standard signup already does rather than a laxer one
+    just because an admin is the one submitting the form."""
 
     full_name: str
     phone: str
     password: str
     ward: str
     preferred_language: str
+    email: str | None = None
+    email_verification_token: str | None = None
 
 
 class WorkerSummary(UserResponse):
@@ -53,11 +82,33 @@ class UpdateWorkerRequest(BaseModel):
     """Request body for a super admin editing a worker's profile. Every field optional -- only
     the fields actually sent are changed (a PATCH, not a full replace). Deliberately excludes
     `phone` -- it's the login identifier and changing it has uniqueness/re-login implications
-    this endpoint doesn't take on; nothing in this app currently needs that."""
+    this endpoint doesn't take on; nothing in this app currently needs that.
+
+    `ward_id`/`locality_id`: the structured counterpart of `ward`, picked from the same cascading
+    State/City/Ward/Area lookups already used on Signup (see routes/locations.py) -- reused here
+    so an admin assigns a worker's operational area from real, structured data instead of typing
+    free text. `state_id`/`district_id` aren't accepted here: update_worker() derives the full
+    parent chain itself from `ward_id` (see LocationResolver.location_chain_for_ward), so the
+    intermediate picks the frontend cascades through never need to reach this endpoint. Optional
+    and independent of `ward`: a caller can still send `ward` alone (the plain-text path keeps
+    working unchanged), or `ward_id` alone (the display `ward` text is then derived from it), or
+    both (an explicit `ward` always wins over the derived text).
+
+    `email`: same OTP-proof requirement as CreateWorkerRequest.email -- but only when actually
+    CHANGING to a new, different address; re-sending the worker's own already-verified current
+    email back unchanged is always a no-op requiring no token (nothing to prove that isn't already
+    proven), so a save that touches unrelated fields (ward, language, ...) can safely resend the
+    unchanged email alongside them without forcing a fresh OTP round trip. An empty string ("")
+    clears it back to no email; omitting the field entirely leaves it untouched, same PATCH
+    semantics as every other field here."""
 
     full_name: str | None = None
     ward: str | None = None
     preferred_language: str | None = None
+    ward_id: int | None = None
+    locality_id: int | None = None
+    email: str | None = None
+    email_verification_token: str | None = None
 
 
 class ResetWorkerPasswordRequest(BaseModel):
@@ -66,6 +117,81 @@ class ResetWorkerPasswordRequest(BaseModel):
     recovery path."""
 
     new_password: str
+
+
+class SendWorkerEmailCodeRequest(BaseModel):
+    """Request body for POST /admin/workers/email/send-code."""
+
+    email: str
+
+
+class VerifyWorkerEmailCodeRequest(BaseModel):
+    """Request body for POST /admin/workers/email/verify-code."""
+
+    email: str
+    code: str
+
+
+class VerifyWorkerEmailCodeResponse(BaseModel):
+    """Response for POST /admin/workers/email/verify-code -- the proof token
+    create_worker()/update_worker() need to actually attach `email` to a worker account."""
+
+    email_verification_token: str
+
+
+@router.post(
+    "/workers/email/send-code",
+    status_code=204,
+    dependencies=[Depends(require_otp_rate_limit)],
+)
+def send_worker_email_code(
+    body: SendWorkerEmailCodeRequest,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_role("admin")),
+) -> None:
+    """Send a 6-digit OTP to a candidate email address for a worker being added or edited --
+    behind the same inline "Send code" button UX as Signup.tsx (see EmailVerifyField.tsx), reusing
+    the exact same create_signup_email_otp/verify_signup_email_otp/consume_signup_email_verification
+    functions citizen signup already uses (backend/services/auth_service.py), rather than a second
+    copy of that logic: "prove this address before attaching it to an account" is the same
+    requirement whether the account is a citizen signing themselves up or a worker a super admin
+    is provisioning, so it's the same underlying mechanism -- only the route/auth wrapper differs
+    (admin-authenticated here, since this is reached only from inside the admin-only Add/Edit
+    Worker forms, vs. fully public+per-IP-rate-limited at actual signup)."""
+    email = body.email.strip().lower()
+    if not _EMAIL_PATTERN.match(email):
+        raise HTTPException(status_code=400, detail="Enter a valid email address.")
+    if db.query(User).filter(User.email == email).first() is not None:
+        raise HTTPException(status_code=409, detail="An account with this email already exists.")
+
+    code = create_signup_email_otp(db, email)
+    # Unlike _EMAIL_PATTERN above (a stateless constant, safe to keep a separate copy of), this is
+    # THE SAME stateful dev-only cache GET /auth/dev/otp-code already reads from -- populating a
+    # second, separate dict here would make that endpoint unable to see codes this route issues,
+    # so this reuses auth.py's actual cache rather than a duplicate.
+    _dev_cache_otp(email, code)
+    try:
+        send_otp_email(email, code, _VERIFY_EMAIL_PURPOSE)
+    except EmailServiceError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    logger.info("Worker email verification code sent (admin_id=%s)", admin.id)
+
+
+@router.post("/workers/email/verify-code", response_model=VerifyWorkerEmailCodeResponse)
+def verify_worker_email_code(
+    body: VerifyWorkerEmailCodeRequest,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_role("admin")),
+) -> VerifyWorkerEmailCodeResponse:
+    """Confirm the OTP from POST /admin/workers/email/send-code and issue the same kind of
+    one-time proof token citizen signup's own POST /auth/signup/email/verify-code issues --
+    create_worker()/update_worker() redeem it via the identical
+    consume_signup_email_verification() call signup() itself uses."""
+    email = body.email.strip().lower()
+    proof_token = verify_signup_email_otp(db, email, body.code.strip())
+    if proof_token is None:
+        raise HTTPException(status_code=400, detail="Invalid or expired code.")
+    return VerifyWorkerEmailCodeResponse(email_verification_token=proof_token)
 
 
 @router.post("/workers", response_model=UserResponse)
@@ -95,6 +221,19 @@ def create_worker(
     if db.query(User).filter(User.phone == phone).first() is not None:
         raise HTTPException(status_code=409, detail="An account with this phone number already exists.")
 
+    email = body.email.strip().lower() if body.email else None
+    if email:
+        if not _EMAIL_PATTERN.match(email):
+            raise HTTPException(status_code=400, detail="Enter a valid email address.")
+        if db.query(User).filter(User.email == email).first() is not None:
+            raise HTTPException(status_code=409, detail="An account with this email already exists.")
+        if not body.email_verification_token or not consume_signup_email_verification(
+            db, email, body.email_verification_token.strip()
+        ):
+            raise HTTPException(
+                status_code=400, detail="Email is not verified. Please verify the email address first."
+            )
+
     worker = User(
         full_name=full_name,
         phone=phone,
@@ -102,6 +241,8 @@ def create_worker(
         role="worker",
         preferred_language=body.preferred_language,
         ward=ward,
+        email=email,
+        email_verified=email is not None,
     )
     db.add(worker)
     db.commit()
@@ -149,8 +290,8 @@ def update_worker(
     db: Session = Depends(get_db),
     admin: User = Depends(require_role("admin")),
 ) -> UserResponse:
-    """Edit a worker's profile (name/ward/preferred language). Super admin only. Only fields
-    actually present in the request body are changed."""
+    """Edit a worker's profile (name/ward/preferred language/email). Super admin only. Only
+    fields actually present in the request body are changed."""
     worker = db.query(User).filter(User.id == worker_id, User.role == "worker").first()
     if worker is None:
         raise HTTPException(status_code=404, detail="Worker not found.")
@@ -160,15 +301,74 @@ def update_worker(
         if not full_name:
             raise HTTPException(status_code=400, detail="Full name cannot be empty.")
         worker.full_name = full_name
+
+    if body.ward_id is not None:
+        ward_row = db.query(Ward).filter(Ward.id == body.ward_id).first()
+        if ward_row is None:
+            raise HTTPException(status_code=400, detail="Ward not found.")
+        chain = _location_resolver.location_chain_for_ward(db, ward_row)
+        if body.locality_id is not None:
+            locality_row = (
+                db.query(Locality)
+                .filter(Locality.id == body.locality_id, Locality.ward_id == ward_row.id)
+                .first()
+            )
+            if locality_row is None:
+                raise HTTPException(status_code=400, detail="Locality does not belong to the selected ward.")
+            chain["locality_id"] = locality_row.id
+        for field, value in chain.items():
+            setattr(worker, field, value)
+        if body.ward is None:
+            # No explicit free-text override -- derive the display string the same way the
+            # signup picker does (see HomeLocationPicker.tsx), so `ward` (still what assignment's
+            # text-match fallback keys on -- see assignment_service.py) stays in sync with the
+            # structured pick instead of going stale.
+            locality_row = (
+                db.query(Locality).filter(Locality.id == chain["locality_id"]).first()
+                if chain["locality_id"] is not None
+                else None
+            )
+            ulb_row = db.query(ULB).filter(ULB.id == ward_row.ulb_id).first()
+            worker.ward = (
+                f"{ward_row.name} — {locality_row.name}, {ulb_row.name}"
+                if locality_row is not None and ulb_row is not None
+                else ward_row.name
+            )
+    elif body.locality_id is not None:
+        raise HTTPException(status_code=400, detail="locality_id requires ward_id.")
+
     if body.ward is not None:
         ward = body.ward.strip()
         if not ward:
             raise HTTPException(status_code=400, detail="Ward cannot be empty.")
         worker.ward = ward
+
     if body.preferred_language is not None:
         if body.preferred_language not in settings.SUPPORTED_LANGUAGES:
             raise HTTPException(status_code=400, detail=f"Unsupported language: {body.preferred_language}")
         worker.preferred_language = body.preferred_language
+
+    if body.email is not None:
+        email = body.email.strip().lower()
+        if not email:
+            worker.email = None
+            worker.email_verified = False
+        elif worker.email is not None and email == worker.email.lower():
+            pass  # unchanged from the current, already-(un)verified address -- nothing to prove
+        else:
+            if not _EMAIL_PATTERN.match(email):
+                raise HTTPException(status_code=400, detail="Enter a valid email address.")
+            existing = db.query(User).filter(User.email == email, User.id != worker.id).first()
+            if existing is not None:
+                raise HTTPException(status_code=409, detail="An account with this email already exists.")
+            if not body.email_verification_token or not consume_signup_email_verification(
+                db, email, body.email_verification_token.strip()
+            ):
+                raise HTTPException(
+                    status_code=400, detail="Email is not verified. Please verify the email address first."
+                )
+            worker.email = email
+            worker.email_verified = True
 
     db.commit()
     db.refresh(worker)

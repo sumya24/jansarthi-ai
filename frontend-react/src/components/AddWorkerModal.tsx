@@ -5,6 +5,7 @@ import { SUPPORTED_LANGUAGES, t, type LangCode } from "../lib/i18n";
 import { api, ApiError } from "../lib/api";
 import { useToast } from "../lib/toast";
 import { useModalA11y } from "../lib/useModalA11y";
+import EmailVerifyField, { type EmailVerifyValue } from "./EmailVerifyField";
 
 export default function AddWorkerModal({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
   const { token } = useAuth();
@@ -12,6 +13,8 @@ export default function AddWorkerModal({ onClose, onCreated }: { onClose: () => 
   const [fullName, setFullName] = useState("");
   const [phone, setPhone] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [emailValue, setEmailValue] = useState<EmailVerifyValue>({ email: "", verified: false, token: null });
   const [ward, setWard] = useState("");
   // Defaults to the admin's own current UI language, same convention Signup.tsx uses for a
   // citizen's preferred_language -- was previously hardcoded to "mr" regardless of who was
@@ -31,7 +34,10 @@ export default function AddWorkerModal({ onClose, onCreated }: { onClose: () => 
     if (!fullName.trim()) errors.fullName = true;
     if (!phone.trim()) errors.phone = true;
     if (!password) errors.password = true;
+    if (!confirmPassword) errors.confirmPassword = true;
+    else if (confirmPassword !== password) errors.confirmPassword = true;
     if (!ward.trim()) errors.ward = true;
+    if (emailValue.email.trim() && !emailValue.verified) errors.email = true;
     setFieldErrors(errors);
     if (Object.keys(errors).length > 0) return;
 
@@ -44,6 +50,7 @@ export default function AddWorkerModal({ onClose, onCreated }: { onClose: () => 
         password,
         ward: ward.trim(),
         preferred_language: language,
+        ...(emailValue.email.trim() && { email: emailValue.email.trim(), email_verification_token: emailValue.token ?? undefined }),
       });
       toast.success(`${t(lang, "addWorker.createdToast")} ${fullName.trim()}`);
       onCreated();
@@ -88,6 +95,27 @@ export default function AddWorkerModal({ onClose, onCreated }: { onClose: () => 
             <input id="worker-password" type="text" value={password} onChange={(e) => setPassword(e.target.value)} />
             {fieldErrors.password && <div className="field-error">{t(lang, "common.fieldRequired")}</div>}
           </div>
+          <div className={`field ${fieldErrors.confirmPassword ? "has-error" : ""}`}>
+            <label htmlFor="worker-confirm-password">{t(lang, "auth.field.confirmPassword")}</label>
+            <input
+              id="worker-confirm-password"
+              type="text"
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+            />
+            {fieldErrors.confirmPassword && (
+              <div className="field-error">{t(lang, confirmPassword ? "auth.field.passwordMismatch" : "common.fieldRequired")}</div>
+            )}
+          </div>
+          <EmailVerifyField
+            lang={lang}
+            idPrefix="worker-add"
+            onChange={setEmailValue}
+            hasError={fieldErrors.email}
+            sendCode={(email) => api.sendWorkerEmailCode(token!, email)}
+            verifyCode={async (email, code) => (await api.verifyWorkerEmailCode(token!, email, code)).email_verification_token}
+          />
+          {fieldErrors.email && <div className="field-error">{t(lang, "auth.signup.verifyEmailFirst")}</div>}
           <div className={`field ${fieldErrors.ward ? "has-error" : ""}`}>
             <label htmlFor="worker-ward">{t(lang, "addWorker.ward")}</label>
             <input id="worker-ward" type="text" value={ward} onChange={(e) => setWard(e.target.value)} placeholder={t(lang, "addWorker.wardPlaceholder")} />

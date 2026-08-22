@@ -8,10 +8,16 @@ worker until an admin adds one or an existing one's ward changes.
 
 Location migration note: candidates are matched by structured `ward_id` when the complaint has
 one (set by routes/complaints.py at creation time, via LocationResolver), falling back to the
-original exact-text `ward` match otherwise. This is additive, not a behavior change — every
-complaint/worker pair that matched by text before this migration still matches by text now
-(nothing here removes that path); `ward_id` matching only ever adds coverage for rows the new
-location system has actually resolved. See docs/location_migration_plan.md §H.
+text `ward` match otherwise. This is additive, not a behavior change — every complaint/worker
+pair that matched by text before this migration still matches by text now (nothing here removes
+that path); `ward_id` matching only ever adds coverage for rows the new location system has
+actually resolved. See docs/location_migration_plan.md §H.
+
+The text `ward` match is case-insensitive ("Kolhapur" and "kolhapur" are the same ward) —
+originally an exact, case-sensitive match, changed after a live-data audit found two citizens'
+complaints going unmatched purely over letter casing (see LOCATION_DATA_MOCK_VS_REAL_FINDINGS.md
+§2). Still a plain text comparison otherwise -- no trimming, no punctuation normalization, since
+those weren't the reported problem.
 
 Worker-workflow phase: this is also the sole place that creates a `Notification` (NEW_ASSIGNMENT
 for a fresh assignment, REASSIGNED after a rejection) and appends a `ComplaintStatusHistory` row
@@ -28,6 +34,7 @@ snippet and ward instead -- real data already on hand, nothing inferred.
 
 import logging
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from backend.models import Complaint, ComplaintRejection, User
@@ -43,7 +50,7 @@ def _candidates(db: Session, complaint: Complaint) -> list[User]:
 
     Tries `ward_id` first (structured, only possible where both the complaint and the worker
     resolved to the same seeded ward) — if that yields zero candidates, falls back to the
-    original exact `ward` text match, so a worker who hasn't been through location migration
+    case-insensitive `ward` text match, so a worker who hasn't been through location migration
     (or a ward the new system couldn't resolve) is never silently excluded.
     """
     if complaint.ward_id is not None:
@@ -56,9 +63,14 @@ def _candidates(db: Session, complaint: Complaint) -> list[User]:
         if by_id:
             return by_id
 
+    if complaint.ward is None:
+        ward_filter = User.ward.is_(None)
+    else:
+        ward_filter = func.lower(User.ward) == func.lower(complaint.ward)
+
     return (
         db.query(User)
-        .filter(User.role == "worker", User.ward == complaint.ward)
+        .filter(User.role == "worker", ward_filter)
         .order_by(User.id.asc())
         .all()
     )
