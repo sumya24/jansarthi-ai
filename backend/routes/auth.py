@@ -17,6 +17,7 @@ can present that proof token -- a bare client-side "verified: true" claim is nev
 
 import logging
 import re
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict
@@ -95,6 +96,23 @@ _dev_otp_cache: dict[str, str] = {}
 def _dev_cache_otp(email: str, code: str) -> None:
     if settings.ENVIRONMENT != "production":
         _dev_otp_cache[email] = code
+
+
+# LIVE-REPORTED GAP: every one of the three routes below used to unconditionally call the real
+# send_otp_email -- fine normally, but the one Gmail account this app sends OTPs through has hit
+# Gmail's own daily sending-limit quota TWICE during heavy local/E2E testing (confirmed live, 3
+# days apart -- see PLAYWRIGHT_TEST_REPORT.md), blocking every signup-dependent test each time
+# with no code-level fix available until the quota reset on its own. settings.EMAIL_DEV_MODE (see
+# its own docstring in config.py) lets a local/E2E run skip the real send entirely -- the code is
+# still generated and cached via _dev_cache_otp exactly as before, so GET /auth/_dev/otp-code
+# still works unchanged; only the actual SMTP round-trip is skipped. Requires
+# ENVIRONMENT != "production" in addition to the flag itself, same belt-and-suspenders posture as
+# _dev_cache_otp/_dev/otp-code above -- a stray true value can never suppress a real send in prod.
+def _send_otp_email_or_skip(email: str, code: str, purpose: Literal["verify_email", "reset_password"]) -> None:
+    if settings.EMAIL_DEV_MODE and settings.ENVIRONMENT != "production":
+        logger.info("EMAIL_DEV_MODE: skipping real send for %s (purpose=%s); code only cached for /auth/_dev/otp-code", email, purpose)
+        return
+    send_otp_email(email, code, purpose)
 
 
 class SignupRequest(BaseModel):
@@ -405,7 +423,7 @@ def signup_send_email_code(body: SendSignupEmailCodeRequest, db: Session = Depen
     code = create_signup_email_otp(db, email)
     _dev_cache_otp(email, code)
     try:
-        send_otp_email(email, code, _VERIFY_EMAIL_PURPOSE)
+        _send_otp_email_or_skip(email, code, _VERIFY_EMAIL_PURPOSE)
     except EmailServiceError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     logger.info("Signup email verification code sent (email=%s)", email)
@@ -594,7 +612,7 @@ def send_email_verification(
     code = create_email_otp(db, current_user.id, email, _VERIFY_EMAIL_PURPOSE)
     _dev_cache_otp(email, code)
     try:
-        send_otp_email(email, code, _VERIFY_EMAIL_PURPOSE)
+        _send_otp_email_or_skip(email, code, _VERIFY_EMAIL_PURPOSE)
     except EmailServiceError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     logger.info("Email verification code sent (user_id=%s)", current_user.id)
@@ -646,7 +664,7 @@ def forgot_password(body: ForgotPasswordRequest, db: Session = Depends(get_db)) 
     code = create_email_otp(db, user.id, email, _RESET_PASSWORD_PURPOSE)
     _dev_cache_otp(email, code)
     try:
-        send_otp_email(email, code, _RESET_PASSWORD_PURPOSE)
+        _send_otp_email_or_skip(email, code, _RESET_PASSWORD_PURPOSE)
     except EmailServiceError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     logger.info("Password reset code requested (user_id=%s)", user.id)

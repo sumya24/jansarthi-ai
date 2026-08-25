@@ -87,10 +87,14 @@ function silentRefresh(): Promise<{ access_token: string; refresh_token: string;
   return refreshInFlight;
 }
 
-async function request<T>(
+/** Shared core of request()/requestPaginated() below -- fetch + silent-refresh-and-retry-once on
+ * a 401 + non-2xx error unwrapping, returning both the parsed body AND the raw Response so a
+ * caller that needs a response header (see requestPaginated()'s X-Total-Count read) doesn't have
+ * to re-implement this same auth/retry/error dance itself. */
+async function _fetchJson(
   path: string,
-  options: { method?: string; body?: unknown; token?: string | null; formData?: FormData } = {}
-): Promise<T> {
+  options: { method?: string; body?: unknown; token?: string | null; formData?: FormData; signal?: AbortSignal } = {}
+): Promise<{ response: Response; data: unknown }> {
   const headers: Record<string, string> = {};
   if (options.token) headers["Authorization"] = `Bearer ${options.token}`;
 
@@ -104,8 +108,13 @@ async function request<T>(
 
   let response: Response;
   try {
-    response = await fetch(`${API_URL}${path}`, { method: options.method || "GET", headers, body });
-  } catch {
+    response = await fetch(`${API_URL}${path}`, { method: options.method || "GET", headers, body, signal: options.signal });
+  } catch (err) {
+    // A deliberate cancellation (see AskJanMitra.tsx's stop-generation button) rejects `fetch`
+    // with a DOMException named "AbortError" -- re-thrown as-is, not wrapped in ApiError, so the
+    // caller can tell "the citizen chose to stop this" apart from "the network genuinely failed"
+    // and skip showing an error bubble for the former.
+    if (err instanceof DOMException && err.name === "AbortError") throw err;
     throw new ApiError(0, "Could not reach the server. Check your connection and try again.");
   }
 
@@ -116,7 +125,7 @@ async function request<T>(
   if (response.status === 401 && options.token) {
     const refreshed = await silentRefresh();
     if (refreshed) {
-      return request<T>(path, { ...options, token: refreshed.access_token });
+      return _fetchJson(path, { ...options, token: refreshed.access_token });
     }
   }
 
@@ -131,8 +140,31 @@ async function request<T>(
     throw new ApiError(response.status, detail);
   }
 
-  if (response.status === 204) return undefined as T;
-  return (await response.json()) as T;
+  if (response.status === 204) return { response, data: undefined };
+  return { response, data: await response.json() };
+}
+
+async function request<T>(
+  path: string,
+  options: { method?: string; body?: unknown; token?: string | null; formData?: FormData; signal?: AbortSignal } = {}
+): Promise<T> {
+  const { data } = await _fetchJson(path, options);
+  return data as T;
+}
+
+/** Like request(), but for an endpoint whose real total row count (before any page/page_size
+ * slicing) rides in the `X-Total-Count` response header rather than the JSON body itself -- see
+ * backend/routes/complaints.py's `_paginate()` docstring. Falls back to the returned array's own
+ * length when the header is absent (an unpaginated call -- i.e. page/page_size were never sent --
+ * legitimately omits it, since the array already IS the whole result in that case). */
+async function requestPaginated<T>(
+  path: string,
+  options: { method?: string; token?: string | null; signal?: AbortSignal } = {}
+): Promise<{ items: T[]; total: number }> {
+  const { response, data } = await _fetchJson(path, options);
+  const items = (data as T[] | undefined) ?? [];
+  const headerTotal = response.headers.get("X-Total-Count");
+  return { items, total: headerTotal !== null ? Number(headerTotal) : items.length };
 }
 
 /** Fetch a binary (PDF) response, rather than JSON -- used only by downloadComplaintReport().
@@ -220,6 +252,10 @@ export interface Complaint {
   display_summary: string;
   photo_path: string | null;
   status: ComplaintStatus;
+  // LIVE-REPORTED GAP: this has always been classified at filing time (Ask Sarthi's own routing,
+  // the Report an Issue wizard's 3-layer classifier) but was never persisted until now -- None
+  // for a complaint filed before this field existed, or when classification itself was unsure.
+  service_category: ServiceCategory | null;
   ward: string | null;
   address: string | null;
   // Human-readable names for whatever structured location could be resolved -- None at any
@@ -248,6 +284,7 @@ export interface Complaint {
 export interface AreaComplaintSummary {
   id: number;
   status: ComplaintStatus;
+  service_category: ServiceCategory | null;
   display_text: string;
   created_at: string;
   status_updated_at: string;
@@ -259,6 +296,10 @@ export interface AreaSummary {
   in_progress_count: number;
   resolved_count: number;
   complaints: AreaComplaintSummary[];
+  // Total complaints matching the request's own `search` (or every complaint in the ward, with
+  // no search) -- NOT necessarily complaints.length once page/pageSize are used, since that
+  // array is only the current page. See backend's AreaSummaryResponse docstring.
+  total: number;
 }
 
 // Worker complaint-resolution workflow -- see backend/routes/complaints.py's
@@ -502,12 +543,27 @@ export const api = {
   changePassword: (token: string, body: { current_password: string; new_password: string }) =>
     request<void>("/auth/change-password", { method: "POST", token, body }),
 
-  listComplaints: (token: string, lang?: string, workerId?: number) => {
+  // LIVE-REPORTED GAP: this used to always fetch every complaint the caller's role can see in
+  // one response -- fine at demo scale, not fine once a citizen/worker/admin has hundreds. `page`/
+  // `pageSize` are opt-in (see backend's `_paginate()` docstring): passed together, the backend
+  // returns a real bounded slice plus an accurate `total` (read from `X-Total-Count`); omitted,
+  // behavior is unchanged (every matching row, `total` falls back to that same array's length).
+  listComplaints: (
+    token: string,
+    opts: {
+      lang?: string; workerId?: number; status?: string; category?: string; search?: string; page?: number; pageSize?: number;
+    } = {}
+  ) => {
     const params = new URLSearchParams();
-    if (lang) params.set("lang", lang);
-    if (workerId !== undefined) params.set("worker_id", String(workerId));
+    if (opts.lang) params.set("lang", opts.lang);
+    if (opts.workerId !== undefined) params.set("worker_id", String(opts.workerId));
+    if (opts.status) params.set("status", opts.status);
+    if (opts.category) params.set("category", opts.category);
+    if (opts.search) params.set("search", opts.search);
+    if (opts.page !== undefined) params.set("page", String(opts.page));
+    if (opts.pageSize !== undefined) params.set("page_size", String(opts.pageSize));
     const qs = params.toString();
-    return request<Complaint[]>(`/complaints${qs ? `?${qs}` : ""}`, { token });
+    return requestPaginated<Complaint>(`/complaints${qs ? `?${qs}` : ""}`, { token });
   },
 
   // Deliberately no required token -- GET /complaints/wards is unauthenticated (see its own
@@ -523,8 +579,22 @@ export const api = {
   listWardsForCity: (districtId: number) => request<LocationOption[]>(`/locations/cities/${districtId}/wards`, {}),
   listLocalitiesForWard: (wardId: number) => request<LocationOption[]>(`/locations/wards/${wardId}/localities`, {}),
 
-  getAreaSummary: (token: string, lang?: string) =>
-    request<AreaSummary>(`/complaints/area-summary${lang ? `?lang=${lang}` : ""}`, { token }),
+  getAreaSummary: (
+    token: string,
+    opts: {
+      lang?: string; status?: string; category?: string; search?: string; page?: number; pageSize?: number;
+    } = {}
+  ) => {
+    const params = new URLSearchParams();
+    if (opts.lang) params.set("lang", opts.lang);
+    if (opts.status) params.set("status", opts.status);
+    if (opts.category) params.set("category", opts.category);
+    if (opts.search) params.set("search", opts.search);
+    if (opts.page !== undefined) params.set("page", String(opts.page));
+    if (opts.pageSize !== undefined) params.set("page_size", String(opts.pageSize));
+    const qs = params.toString();
+    return request<AreaSummary>(`/complaints/area-summary${qs ? `?${qs}` : ""}`, { token });
+  },
 
   createComplaint: (token: string, form: FormData) =>
     request<Complaint>("/complaints", { method: "POST", token, formData: form }),
@@ -627,7 +697,32 @@ export const api = {
     }
   ) => request<UserProfile>("/admin/workers", { method: "POST", token, body }),
 
-  listWorkers: (token: string) => request<WorkerSummary[]>("/admin/workers", { token }),
+  // LIVE-REPORTED GAP: this used to always fetch every worker in one response, then filter/
+  // paginate all of it client-side -- same gap the complaint dashboards had (see
+  // backend/routes/admin.py's list_workers docstring). `search`/`page`/`pageSize` are opt-in and
+  // additive: omitting page/pageSize returns every matching worker unchanged (so
+  // AdminWorkerDetail.tsx's own unpaginated call keeps working). `totalOpenComplaints`/
+  // `totalResolvedComplaints` are aggregate sums across EVERY worker (never affected by
+  // search/page) -- back AdminWorkers.tsx's own two stat tiles.
+  listWorkers: async (
+    token: string,
+    opts: { search?: string; page?: number; pageSize?: number } = {}
+  ): Promise<{ items: WorkerSummary[]; total: number; totalOpenComplaints: number; totalResolvedComplaints: number }> => {
+    const params = new URLSearchParams();
+    if (opts.search) params.set("search", opts.search);
+    if (opts.page !== undefined) params.set("page", String(opts.page));
+    if (opts.pageSize !== undefined) params.set("page_size", String(opts.pageSize));
+    const qs = params.toString();
+    const { response, data } = await _fetchJson(`/admin/workers${qs ? `?${qs}` : ""}`, { token });
+    const items = (data as WorkerSummary[] | undefined) ?? [];
+    const headerTotal = response.headers.get("X-Total-Count");
+    return {
+      items,
+      total: headerTotal !== null ? Number(headerTotal) : items.length,
+      totalOpenComplaints: Number(response.headers.get("X-Total-Open-Complaints") ?? "0"),
+      totalResolvedComplaints: Number(response.headers.get("X-Total-Resolved-Complaints") ?? "0"),
+    };
+  },
 
   updateWorker: (
     token: string,
@@ -677,8 +772,9 @@ export const api = {
       // (see backend/schemas/ask_janmitra.py's AskJanMitraRequest.was_voice_input); never changes
       // routing/behavior.
       was_voice_input?: boolean;
-    }
-  ) => request<AskJanMitraResponse>("/ask-janmitra", { method: "POST", token, body }),
+    },
+    signal?: AbortSignal
+  ) => request<AskJanMitraResponse>("/ask-janmitra", { method: "POST", token, body, signal }),
 
   // Same request as askJanMitra(), plus one attached photo -- multipart because it carries a
   // file (see backend/routes/ask_janmitra.py's POST /ask-janmitra/image). conversation_history
@@ -695,7 +791,8 @@ export const api = {
       conversation_history?: AskJanMitraConversationTurn[];
       image: File;
       was_voice_input?: boolean;
-    }
+    },
+    signal?: AbortSignal
   ) => {
     const form = new FormData();
     form.append("question", body.question);
@@ -706,7 +803,7 @@ export const api = {
     form.append("conversation_history", JSON.stringify(body.conversation_history ?? []));
     if (body.was_voice_input) form.append("was_voice_input", "true");
     form.append("image", body.image);
-    return request<AskJanMitraResponse>("/ask-janmitra/image", { method: "POST", token, formData: form });
+    return request<AskJanMitraResponse>("/ask-janmitra/image", { method: "POST", token, formData: form, signal });
   },
 
   // The voice-to-voice assistant turn ("Mic 2") -- one or more recorded audio segments (see

@@ -2,10 +2,13 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import TopBar from "../components/TopBar";
 import StatusBadge from "../components/StatusBadge";
+import CategoryBadge from "../components/CategoryBadge";
 import { useAuth } from "../lib/auth";
 import { useUiLang } from "../lib/uiLang";
 import { t } from "../lib/i18n";
 import { api, ApiError, type AreaSummary } from "../lib/api";
+import type { ServiceCategory } from "../lib/ragTypes";
+import { useDebouncedValue } from "../lib/useDebouncedValue";
 import { SERVICE_CATEGORY_DEFS } from "../lib/serviceCategories";
 import "../styles/dashboard.css";
 
@@ -23,10 +26,32 @@ const STATUS_LABEL_KEY = {
   resolved: "citizen.statusResolved",
 } as const;
 
-// The most recent 15 -- a ward's total complaint history could grow large; "My Area" is meant
-// to be a quick, scannable neighborhood snapshot, not a full searchable archive (that already
-// exists, scoped to the citizen's own complaints, on "My Complaints").
-const MAX_LISTED = 15;
+// LIVE-REPORTED GAP: this used to be a hard `.slice(0, MAX_LISTED)` with no way to see anything
+// past the first 15 -- fine while a ward had few complaints, but a real ward (everyone's
+// complaints, not just this citizen's own) can outgrow that fast. Search and pagination are now
+// real backend queries (GET /complaints/area-summary's own `search`/`page`/`page_size` params),
+// not a client-side filter over an already-fetched full list -- same reasoning as
+// CitizenDashboard.tsx's "My Complaints" and the Admin/Worker dashboards.
+const AREA_PAGE_SIZE = 10;
+
+// Same 3 citizen-legible buckets as the stat cards above the list (pending groups the raw
+// pending/assigned/accepted statuses into one "hasn't started" bucket -- see backend's
+// get_area_summary docstring) -- LIVE-REPORTED GAP: Admin/Worker/Citizen dashboards all got a
+// status filter, this page hadn't. `status` sent to the backend is the comma-separated raw set
+// GET /complaints/area-summary's own `status` param now accepts (see _parse_status_filter).
+const AREA_FILTERS = ["all", "pending", "in_progress", "resolved"] as const;
+type AreaFilter = (typeof AREA_FILTERS)[number];
+const AREA_FILTER_STATUS_PARAM: Record<Exclude<AreaFilter, "all">, string> = {
+  pending: "pending,assigned,accepted",
+  in_progress: "in_progress",
+  resolved: "resolved",
+};
+const AREA_FILTER_LABEL_KEY: Record<AreaFilter, string> = {
+  all: "admin.filterAll",
+  pending: "admin.pendingStat",
+  in_progress: "worker.filterInProgress",
+  resolved: "citizen.resolved",
+};
 
 /**
  * My Area (P1, Task 10, extended): a ward-wide neighborhood dashboard -- every complaint filed
@@ -48,8 +73,25 @@ export default function MyArea() {
   const [summary, setSummary] = useState<AreaSummary | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
+  const [page, setPage] = useState(1);
+  const [filter, setFilter] = useState<AreaFilter>("all");
+  // LIVE-REPORTED REQUEST: a per-service (Waste/Water/Roads/Streetlights) dashboard view --
+  // picking one reframes the 3 stat cards into THAT service's own pending/in_progress/resolved
+  // breakdown (see backend's get_area_summary docstring), and narrows the list below it, too.
+  // Deliberately a SEPARATE row from the 4 service cards further down (which still just link to
+  // Report an Issue, unchanged) -- the user explicitly chose keeping those two concerns apart
+  // rather than repurposing the cards themselves into filters.
+  const [categoryFilter, setCategoryFilter] = useState<ServiceCategory | "all">("all");
+  const debouncedSearch = useDebouncedValue(search);
 
   const ward = user?.ward ?? null;
+
+  // A search edit or filter-chip click always jumps back to page 1 -- the previous page number
+  // almost never still makes sense against a newly-narrowed result set.
+  useEffect(() => {
+    setPage(1);
+  }, [debouncedSearch, filter, categoryFilter]);
 
   useEffect(() => {
     if (!token || !ward) {
@@ -59,11 +101,20 @@ export default function MyArea() {
     setLoading(true);
     setLoadError(null);
     api
-      .getAreaSummary(token, lang)
+      .getAreaSummary(token, {
+        lang,
+        status: filter === "all" ? undefined : AREA_FILTER_STATUS_PARAM[filter],
+        category: categoryFilter === "all" ? undefined : categoryFilter,
+        search: debouncedSearch || undefined,
+        page,
+        pageSize: AREA_PAGE_SIZE,
+      })
       .then(setSummary)
       .catch((err) => setLoadError(err instanceof ApiError ? err.message : t(lang, "area.emptyNoWard")))
       .finally(() => setLoading(false));
-  }, [token, lang, ward]);
+  }, [token, lang, ward, filter, categoryFilter, debouncedSearch, page]);
+
+  const pageCount = Math.max(1, Math.ceil((summary?.total ?? 0) / AREA_PAGE_SIZE));
 
   function statusDateLabel(status: string): string {
     if (status === "resolved") return t(lang, "area.completedOn");
@@ -82,24 +133,72 @@ export default function MyArea() {
           </div>
         </div>
 
-        {ward && !loading && !loadError && summary && (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12, marginBottom: 30 }}>
-            <div className="surface-card hoverable stat-card">
-              <div className="stat-label">{t(lang, "admin.pendingStat")}</div>
-              <div className="display stat-value" style={{ color: "var(--status-critical)" }}>{summary.pending_count}</div>
-            </div>
-            <div className="surface-card hoverable stat-card">
-              <div className="stat-label">{t(lang, "worker.filterInProgress")}</div>
-              <div className="display stat-value" style={{ color: "var(--status-open)" }}>{summary.in_progress_count}</div>
-            </div>
-            <div className="surface-card hoverable stat-card">
-              <div className="stat-label">{t(lang, "citizen.resolved")}</div>
-              <div className="display stat-value" style={{ color: "var(--status-resolved)" }}>{summary.resolved_count}</div>
+        {/* LIVE-REPORTED REQUEST: picking a service reframes the WHOLE mini-dashboard below (the
+            3 stat cards) into that service's own breakdown, not just the list -- so this selector
+            comes first, right under the page head, ahead of the stats it controls. Each chip
+            carries its own service icon/color (matching the top-accent bar and the Report an
+            Issue service cards) so it reads as "which lens am I viewing" rather than one more
+            generic filter row. */}
+        {ward && (
+          <div style={{ marginBottom: 22 }}>
+            <div className="section-label" style={{ marginTop: 0 }}>{t(lang, "area.categoryFilterLabel")}</div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+              <button
+                className={`filter-chip btn btn-sm ${categoryFilter === "all" ? "btn-primary" : "btn-ghost"}`}
+                onClick={() => setCategoryFilter("all")}
+              >
+                {t(lang, "admin.filterAll")}
+              </button>
+              {SERVICE_CATEGORY_DEFS.map((def) => {
+                const active = categoryFilter === def.id;
+                return (
+                  <button
+                    key={def.id}
+                    className={`filter-chip btn btn-sm ${active ? "btn-primary" : "btn-ghost"}`}
+                    onClick={() => setCategoryFilter(def.id)}
+                    // LIVE-REPORTED DECISION: tried a glow on the active chip, then explicitly
+                    // reverted it -- inconsistent with the plain "All" chip right next to it, and
+                    // a calmer/more restrained active-state reads better for a civic/government
+                    // app than a glowing effect. Plain solid fill only, same treatment as "All".
+                    style={active ? { background: `var(--service-${def.color})`, borderColor: `var(--service-${def.color})`, color: "#fff" } : undefined}
+                  >
+                    <span className="filter-chip-icon">{def.icon}</span>
+                    {t(lang, def.titleKey)}
+                  </button>
+                );
+              })}
             </div>
           </div>
         )}
 
-        <div className="section-label" style={{ marginTop: 0 }}>{t(lang, "area.servicesLabel")}</div>
+        {ward && !loading && !loadError && summary && (
+          <>
+            <p style={{ fontSize: 12, color: "var(--ink-2)", margin: "0 0 8px" }}>
+              {t(lang, "area.showingLabel")}:{" "}
+              <strong style={{ color: "var(--ink)" }}>
+                {categoryFilter === "all"
+                  ? t(lang, "area.allServicesLabel")
+                  : t(lang, SERVICE_CATEGORY_DEFS.find((d) => d.id === categoryFilter)?.titleKey ?? "area.allServicesLabel")}
+              </strong>
+            </p>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12, marginBottom: 30 }}>
+              <div className="surface-card hoverable stat-card">
+                <div className="stat-label">{t(lang, "admin.pendingStat")}</div>
+                <div className="display stat-value" style={{ color: "var(--status-critical)" }}>{summary.pending_count}</div>
+              </div>
+              <div className="surface-card hoverable stat-card">
+                <div className="stat-label">{t(lang, "worker.filterInProgress")}</div>
+                <div className="display stat-value" style={{ color: "var(--status-open)" }}>{summary.in_progress_count}</div>
+              </div>
+              <div className="surface-card hoverable stat-card">
+                <div className="stat-label">{t(lang, "citizen.resolved")}</div>
+                <div className="display stat-value" style={{ color: "var(--status-resolved)" }}>{summary.resolved_count}</div>
+              </div>
+            </div>
+          </>
+        )}
+
+        <div className="section-label">{t(lang, "area.servicesLabel")}</div>
         <div className="service-grid" style={{ marginBottom: 30 }}>
           {SERVICE_CATEGORY_DEFS.map((def) => (
             <Link key={def.id} to={`/citizen/report?service=${def.id}`} className={`service-card service-card-${def.color} surface-card hoverable`}>
@@ -110,7 +209,33 @@ export default function MyArea() {
           ))}
         </div>
 
-        <div className="section-label">{t(lang, "area.recentLabel")}</div>
+        <div className="section-label" style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 10 }}>
+          <span>{t(lang, "area.recentLabel")}</span>
+          {ward && (
+            <div className="field" style={{ margin: 0, width: "100%", maxWidth: 320 }}>
+              <input
+                type="text"
+                aria-label={t(lang, "area.searchComplaints")}
+                placeholder={t(lang, "area.searchComplaints")}
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
+            </div>
+          )}
+        </div>
+        {ward && (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 14 }}>
+            {AREA_FILTERS.map((f) => (
+              <button
+                key={f}
+                className={`filter-chip btn btn-sm ${filter === f ? "btn-primary" : "btn-ghost"}`}
+                onClick={() => setFilter(f)}
+              >
+                {t(lang, AREA_FILTER_LABEL_KEY[f])}
+              </button>
+            ))}
+          </div>
+        )}
         {loading && (
           <div className="surface-card" style={{ padding: "14px 16px" }}>
             <div className="skeleton" style={{ width: "60%", height: 14 }} />
@@ -122,26 +247,55 @@ export default function MyArea() {
           </div>
         )}
         {!loading && ward && loadError && <div className="banner-error">{loadError}</div>}
-        {!loading && ward && !loadError && summary && summary.complaints.length === 0 && (
+        {!loading && ward && !loadError && summary && summary.total === 0 && filter === "all" && categoryFilter === "all" && !debouncedSearch && (
           <div className="surface-card" style={{ padding: 20, color: "var(--ink-2)", fontSize: 13 }}>
             {t(lang, "area.emptyNoComplaints")}
           </div>
         )}
-        {!loading && ward && !loadError && summary && summary.complaints.length > 0 && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            {summary.complaints.slice(0, MAX_LISTED).map((c) => (
-              <div key={c.id} className="surface-card" style={{ padding: "12px 16px", display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                <div>
-                  <div className="mono" style={{ fontSize: 11, color: "var(--ink-3)" }}>JM-{String(c.id).padStart(5, "0")}</div>
-                  <div style={{ fontSize: 13, fontWeight: 600 }}>{c.display_text}</div>
-                  <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 2 }}>
-                    {statusDateLabel(c.status)} {new Date(c.status_updated_at).toLocaleDateString()}
-                  </div>
-                </div>
-                <StatusBadge status={c.status} label={t(lang, STATUS_LABEL_KEY[c.status])} />
-              </div>
-            ))}
+        {!loading && ward && !loadError && summary && summary.total === 0 && (filter !== "all" || categoryFilter !== "all" || debouncedSearch) && (
+          <div className="surface-card" style={{ padding: 20, color: "var(--ink-2)", fontSize: 13 }}>
+            {t(lang, "admin.noComplaintsFiltered")}
           </div>
+        )}
+        {!loading && ward && !loadError && summary && summary.total > 0 && (
+          <>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {summary.complaints.map((c) => (
+                <div key={c.id} className="surface-card" style={{ padding: "12px 16px", display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                  <div>
+                    <div className="mono" style={{ fontSize: 11, color: "var(--ink-3)" }}>JM-{String(c.id).padStart(5, "0")}</div>
+                    <div style={{ fontSize: 13, fontWeight: 600 }}>{c.display_text}</div>
+                    <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 2, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                      <span>{statusDateLabel(c.status)} {new Date(c.status_updated_at).toLocaleDateString()}</span>
+                      <CategoryBadge category={c.service_category} lang={lang} />
+                    </div>
+                  </div>
+                  <StatusBadge status={c.status} label={t(lang, STATUS_LABEL_KEY[c.status])} />
+                </div>
+              ))}
+            </div>
+            {pageCount > 1 && (
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 4px" }}>
+                <button
+                  className="btn btn-ghost btn-sm"
+                  disabled={page <= 1}
+                  onClick={() => setPage((p) => Math.max(1, p - 1))}
+                >
+                  {t(lang, "admin.paginationPrev")}
+                </button>
+                <span style={{ fontSize: 12, color: "var(--ink-2)" }}>
+                  {page} / {pageCount}
+                </span>
+                <button
+                  className="btn btn-ghost btn-sm"
+                  disabled={page >= pageCount}
+                  onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
+                >
+                  {t(lang, "admin.paginationNext")}
+                </button>
+              </div>
+            )}
+          </>
         )}
       </div>
     </div>

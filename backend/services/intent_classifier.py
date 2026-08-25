@@ -414,19 +414,59 @@ _CATEGORY_KEYWORDS: dict[ServiceCategory, dict[str, list[str]]] = {
         "hi": ["पानी", "नाला", "नाले", "पाइप"], "mr": ["पाणी", "पाण्या"], "or": ["ପାଣି"],
         "gu": ["પાણી", "ગટર"], "bn": ["পানি", "জল", "নর্দমা"],
     },
+    # STREETLIGHTS is checked BEFORE ROADS_POTHOLES -- deliberately reordered (was after), because
+    # "first match wins" (see classify()'s own loop) otherwise systematically favors ROADS_POTHOLES
+    # for the single most common way people phrase a streetlight complaint: naming the road a
+    # streetlight is ON. Live-reproduced across FOUR of this app's five non-English languages by
+    # direct classify() probing, not just the one live-reported case (Odia): "सड़क की बत्ती खराब है"
+    # (hi), "રસ્તાની બત્તી બંધ છે" (gu), "রাস্তার বাতি নষ্ট হয়ে গেছে" (bn), and "ରାସ୍ତା-ଆଲୁଅ...
+    # (streetlight)" (or, the original report) all misclassified as ROADS_POTHOLES purely because
+    # ROADS_POTHOLES's own road-word matched as a substring first -- even gu's existing genitive-
+    # only narrowing (રસ્તાન, added for a DIFFERENT reason below) still matches રસ્તાની, since
+    # "રસ્તાન" is itself a substring of "રસ્તાની". Narrowing each language's road-keyword further
+    # to dodge every possible "road's X" phrasing is a losing, whack-a-mole fight (a road-owned
+    # streetlight can be phrased a dozen ways); reordering fixes the whole class at once, generally,
+    # because the asymmetry is structural, not per-language: a streetlight complaint very commonly
+    # names "road" (it's describing WHERE the light is), but a genuine road/pothole complaint
+    # essentially never mentions "light/bulb/lamp" words at all. Verified this reorder doesn't
+    # regress the OTHER direction: no en/hi/mr/or/gu/bn STREETLIGHTS keyword appears in this file's
+    # existing ROADS_POTHOLES-only regression phrases.
+    ServiceCategory.STREETLIGHTS: {
+        "en": ["streetlight", "street light", "street lamp", "lamp post"],
+        # CONVERSATION & REQUEST/RESPONSE ALIGNMENT AUDIT: each non-English transliteration of
+        # "street light" below previously only had the SPACED two-word form -- a real, measured
+        # gap caught by this audit's own live testing: "मोहाली में स्ट्रीटलाइट खराब है।" (written
+        # as one compound word, at least as natural a way to type an English loanword as with a
+        # space) matched no category at all, only the generic "is broken" state keyword, so the
+        # citizen was asked "what issue would you like to report?" despite having already named
+        # one. Same fix, same reasoning, applied consistently to every language whose existing
+        # entry was the spaced form (hi/mr share Devanagari; gu/bn have their own scripts).
+        # LIVE-REPORTED GAP: "स्ट्रीट लाईट"/"स्ट्रीटलाईट" (long ई) added alongside the existing
+        # "स्ट्रीट लाइट"/"स्ट्रीटलाइट" (short इ) -- both are genuinely common ways to spell this
+        # English loanword's second syllable in casual Hindi/Marathi typing (the long-ई form
+        # actually reads closer to how "light" is pronounced), and only the short-इ form was
+        # covered -- a real citizen's "...स्ट्रीट लाईट खराब आहे..." matched no STREETLIGHTS
+        # keyword at all, only the generic "is broken" state, so they were asked "what issue would
+        # you like to report?" despite having already named one.
+        "hi": ["स्ट्रीट लाइट", "स्ट्रीटलाइट", "स्ट्रीट लाईट", "स्ट्रीटलाईट", "बत्ती"],
+        "mr": ["स्ट्रीट लाइट", "स्ट्रीटलाइट", "स्ट्रीट लाईट", "स्ट्रीटलाईट", "दिवा", "दिव्या"],
+        # ଆଲୁଅ added alongside the existing ଆଲୋକ -- live-reported gap: a real citizen question,
+        # "...ରାସ୍ତା-ଆଲୁଅ (streetlight) ବିଷୟରେ...", used this everyday colloquial word for "light"
+        # (ଆଲୋକ is the more formal/literary register) and matched neither the old single Odia
+        # entry nor, until the reorder above, would reordering alone have been enough -- the text
+        # never matched ANY streetlight keyword at all before this addition, so it fell all the way
+        # through to ROADS_POTHOLES's bare "ରାସ୍ତା" regardless of check order.
+        "or": ["ଆଲୋକ", "ଆଲୁଅ"],
+        "gu": ["સ્ટ્રીટ લાઈટ", "સ્ટ્રીટલાઈટ", "બત્તી"],
+        "bn": ["স্ট্রিট লাইট", "স্ট্রিটলাইট", "বাতি"],
+    },
     ServiceCategory.ROADS_POTHOLES: {
         "en": ["road", "pothole", "footpath", "pavement", "civil work"],
         # mr "रस्त्याच" (genitive-only, e.g. रस्त्याची/रस्त्याचा/रस्त्याचे -- "of/about the road"),
         # deliberately narrower than the bare oblique stem "रस्त्या" used for the other nouns in
         # this file: रस्ता's locative form "रस्त्यावर"/"रस्त्यावरचा" ("on the road") is an
         # extremely common way to LOCATE a completely different complaint (a streetlight or a
-        # pothole ON the road, garbage ON the road), not a complaint about the road itself. A bare
-        # "रस्त्या" match caught during this fix's own regression check: "रस्त्यावरचा दिवा बंद
-        # आहे" ("the streetlight on the road is off") flipped from the correct STREETLIGHTS to
-        # ROADS_POTHOLES, because ROADS_POTHOLES is checked first in _CATEGORY_KEYWORDS's
-        # iteration order and "रस्त्या" is a substring of "रस्त्यावरचा" too. The genitive-only
-        # substring still catches the real gap ("रस्त्याची तक्रार") without swallowing every
-        # other complaint that merely happens to be located on a road.
+        # pothole ON the road, garbage ON the road), not a complaint about the road itself.
         "hi": ["सड़क", "गड्ढा", "गड्ढे"], "mr": ["रस्ता", "रस्त्याच", "खड्डा", "खड्ड्या"], "or": ["ରାସ୍ତା"],
         # gu "રસ્તાન" (genitive-only stem, covers રસ્તાની/રસ્તાનો/રસ્તાનું -- "of the road"),
         # same narrowing as mr "रस्त्याच" above and for the same reason: Gujarati masculine nouns
@@ -437,27 +477,12 @@ _CATEGORY_KEYWORDS: dict[ServiceCategory, dict[str, list[str]]] = {
         # stayed WASTE_SANITATION, not ROADS_POTHOLES, precisely because "રસ્તાન" does NOT match
         # the locative "રસ્તા પર"/"રસ્તામાં" forms). ખાડાની ("of the pothole") added as a literal
         # rather than a stem, matching કચરાની's precedent above -- ખાડો has no comparable
-        # generic-location idiom, so the extra caution wasn't needed there.
+        # generic-location idiom, so the extra caution wasn't needed there. (The STREETLIGHTS-vs-
+        # ROADS_POTHOLES collision this same "રસ્તાન" also turned out to have, against "રસ્તાની
+        # બત્તી", is now handled by the category CHECK ORDER above instead -- no further narrowing
+        # needed here.)
         "gu": ["રસ્તો", "રસ્તાન", "ખાડો", "ખાડાની"],
         "bn": ["রাস্তা", "গর্ত"],
-    },
-    ServiceCategory.STREETLIGHTS: {
-        "en": ["streetlight", "street light", "street lamp", "lamp post"],
-        # CONVERSATION & REQUEST/RESPONSE ALIGNMENT AUDIT: each non-English transliteration of
-        # "street light" below previously only had the SPACED two-word form -- a real, measured
-        # gap caught by this audit's own live testing: "मोहाली में स्ट्रीटलाइट खराब है।" (written
-        # as one compound word, at least as natural a way to type an English loanword as with a
-        # space) matched no category at all, only the generic "is broken" state keyword, so the
-        # citizen was asked "what issue would you like to report?" despite having already named
-        # one. Same fix, same reasoning, applied consistently to every language whose existing
-        # entry was the spaced form (hi/mr share Devanagari; gu/bn have their own scripts) --
-        # Odia's "ଆଲୋକ" is a native word, not a transliteration, so it has no such compound-word
-        # gap and needed no change.
-        "hi": ["स्ट्रीट लाइट", "स्ट्रीटलाइट", "बत्ती"],
-        "mr": ["स्ट्रीट लाइट", "स्ट्रीटलाइट", "दिवा", "दिव्या"],
-        "or": ["ଆଲୋକ"],
-        "gu": ["સ્ટ્રીટ લાઈટ", "સ્ટ્રીટલાઈટ", "બત્તી"],
-        "bn": ["স্ট্রিট লাইট", "স্ট্রিটলাইট", "বাতি"],
     },
 }
 
@@ -574,6 +599,13 @@ def _looks_like_question(text: str) -> bool:
 
 
 _CONFIRMATION_EXACT_WORDS: dict[str, set[str]] = {
+    # DELIBERATELY does NOT include "sure" -- tried once (manual test round's own "yes please"
+    # gap fix), reverted after this file's own EXISTING test suite caught it:
+    # test_confirmation_bare_sure_with_pending_draft_does_not_confirm and the parametrized
+    # test_ambiguous_replies_still_safely_reask_not_misread_as_fresh_complaints[sure] both
+    # already document, deliberately, that "sure" is grouped with "okay"/"maybe"/"fine" as a
+    # plausible-sounding but NOT unambiguous affirmative -- must re-ask, never guess. Respecting
+    # that earlier, already-tested judgment call rather than overriding it.
     "en": {"yes", "yeah", "yep", "yup", "submit", "confirm"},
     "hi": {"haan", "ha", "हाँ", "हां", "हा"},
     "mr": {"हो"},
@@ -594,6 +626,16 @@ _CONFIRMATION_PHRASES: dict[str, list[str]] = {
         "file it", "file the complaint", "register it", "register the complaint",
         "create it", "create the complaint", "please submit", "please file",
         "please register", "go ahead and submit", "go ahead and file",
+        # Live-reported gap (manual test round): "yes please" repeated the confirmation prompt
+        # instead of filing -- added here alongside the other natural phrasings this allowlist was
+        # missing. "go ahead" (bare, no "and submit"/"and file" after it) is the same unambiguous
+        # register as the "go ahead and submit" pair already above. "ok submit it"/"okay, submit
+        # it" and "confirm it" are the same "action word present, no real ambiguity" shape as
+        # "submit it"/"yes confirm" already here -- "confirm" alone is deliberately excluded from
+        # `_CONFIRMATION_EXACT_WORDS`'s own lookahead (see that dict's comment), so "confirm it"
+        # needed its own exact-phrase entry instead.
+        "yes please", "yes, please", "go ahead", "ok submit it", "ok, submit it",
+        "okay submit it", "okay, submit it", "confirm it",
         "haan submit karo", "ha submit karo", "haan, submit karo", "haan complaint register karo",
         "ha, complaint register karo",
     ],
@@ -720,6 +762,40 @@ def is_explicit_cancellation(text: str) -> bool:
     # "cancel ..." reply, not just the specific wording tested.
     no_words = {w for words in _CANCELLATION_EXACT_WORDS.values() for w in words}
     return first_word in no_words
+
+
+def looks_like_an_attempted_yes_or_no(text: str) -> bool:
+    """LIVE-REPORTED BUG (voice input): "Yes, can you submit please?" -- a natural, SPOKEN way to
+    confirm, unlike the terser typed/button "yes, submit it" -- ends in "?", so
+    `is_explicit_confirmation` correctly declines to auto-confirm it (a "yes" that's part of a
+    further question is deliberately never auto-confirmed, e.g. "yes, what are the rules?" must
+    never silently file anything -- that safety boundary is right and untouched here). The actual
+    gap this closes is elsewhere: nodes.py's `intent_node` needs to decide whether an ambiguous
+    reply mid-confirmation should even be ROUTED to complaint_flow_node's own safe re-ask logic at
+    all (which neither confirms nor cancels on its own, just safely re-asks) -- and routing based
+    on `_awaiting_confirmation` alone is too broad: a genuinely unrelated question mid-confirmation
+    ("What is the current time?") would ALSO get routed there and re-shown the stale confirmation,
+    reading as an odd non-answer to a real question, not just "safe but incomplete" -- live-caught
+    by this project's own regression suite.
+
+    Narrower than "is this an explicit confirm/cancel": true only when the reply's own FIRST WORD
+    is a recognized yes/no word in any supported language, regardless of question-shape or
+    trailing content -- "Yes, can you submit please?" and "Yes, what are the rules?" both qualify
+    (this function only decides whether to ROUTE toward the safe re-ask, never whether to actually
+    treat either as a confirmation -- `is_explicit_confirmation` alone still gates that, and still
+    correctly declines the second one); "What is the current time?" does not start with a yes/no
+    word at all, so it correctly falls through to UNCLEAR exactly as before this fix."""
+    normalized = _normalize_for_confirmation(text)
+    if not normalized:
+        return False
+    first_word = normalized.split(" ", 1)[0].strip(",")
+    yes_or_no_words = {
+        w
+        for words in (*_CONFIRMATION_EXACT_WORDS.values(), *_CANCELLATION_EXACT_WORDS.values())
+        for w in words
+        if w not in {"submit", "confirm"}
+    }
+    return first_word in yes_or_no_words
 
 
 def classify(question: str) -> ClassificationResult:

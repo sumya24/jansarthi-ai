@@ -70,6 +70,18 @@ export type AskJanMitraIntent =
   | "CAPABILITIES"
   | "UNCLEAR";
 
+/** A reference to a photo already validated and saved to disk (backend/schemas/ask_janmitra.py's
+ * PhotoEvidenceRef, mirroring evidence_service.SavedFile) -- round-tripped on
+ * AskJanMitraConversationTurn so a LATER turn with no photo of its own (e.g. a typed "yes, submit
+ * it") can still have the SAME real file attached to the complaint it eventually creates. See
+ * AskJanMitra.tsx's `historyForRequest` for where this gets echoed back. */
+export interface PhotoEvidenceRef {
+  filename: string;
+  original_name: string;
+  content_type: string;
+  size: number;
+}
+
 export interface AskJanMitraResponse {
   answer: string;
   intent: AskJanMitraIntent;
@@ -81,6 +93,13 @@ export interface AskJanMitraResponse {
   follow_up_required: boolean;
   follow_up_question: string | null;
   follow_up_options: string[];
+  /** Same length/order as `follow_up_options`, translated into `language` for DISPLAY only --
+   * `follow_up_options` itself always stays the canonical English text a click sends back (see
+   * backend/services/orchestration/nodes.py's `_localize_options` docstring for why). null
+   * whenever the backend didn't produce localized labels for this turn (no follow-up at all, or
+   * the dynamic ambiguous-location city-name options, deliberately left untranslated) -- render
+   * code should fall back to `follow_up_options` itself in that case. */
+  follow_up_options_labels: string[] | null;
   insufficient_knowledge: boolean;
   routed_to:
     | "RAG"
@@ -94,11 +113,29 @@ export interface AskJanMitraResponse {
    * message with enough information now files a real complaint via the same pipeline the
    * dedicated complaint form uses, instead of only answering from RAG. */
   complaint_id: number | null;
+  /** Set whenever a photo was validated and saved to disk THIS turn -- see PhotoEvidenceRef's own
+   * docstring. Echoed back via AskJanMitraConversationTurn.photo_evidence so a LATER turn (no
+   * photo of its own) can still recover and attach the SAME file to a complaint. */
+  photo_evidence?: PhotoEvidenceRef | null;
+  /** One of "DRAFT" | "AWAITING_CONFIRMATION" | "CONFIRMED" | "CANCELLED", or null when this turn
+   * wasn't complaint-shaped at all -- see backend/schemas/ask_janmitra.py's own docstring.
+   * LIVE-REPORTED BUG this closes: this field existed on the backend from the start specifically
+   * so Sarthi could recognize its own confirmation/terminal turns as DATA rather than by
+   * re-parsing this response's own (possibly translated) `answer` text -- but this TS type never
+   * declared it, so it silently never round-tripped. Every one of those checks fell back to
+   * matching fixed ENGLISH substrings against `answer`, which a citizen conversing in Hindi/
+   * Marathi/Odia/Gujarati/Bengali never produces, so a FILED complaint's own turn was never
+   * recognized as a boundary -- a brand-new complaint in a DIFFERENT city, right after, silently
+   * reused the already-closed one's ward/category instead of resolving fresh. Echoed back via
+   * AskJanMitraConversationTurn.complaint_workflow_state, exactly like photo_evidence above. */
+  complaint_workflow_state?: string | null;
 }
 
 export interface AskJanMitraConversationTurn {
   role: "user" | "assistant";
   content: string;
+  photo_evidence?: PhotoEvidenceRef | null;
+  complaint_workflow_state?: string | null;
 }
 
 /** POST /ask-janmitra/voice's response (backend/schemas/ask_janmitra.py's AskVoiceResponse) --

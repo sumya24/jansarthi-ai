@@ -57,6 +57,7 @@ test("full complaint lifecycle: reject reassigns to the next worker, accept unlo
     await page.getByLabel("Full name").fill(name);
     await page.getByLabel("Phone number").fill(phone);
     await page.getByLabel("Temporary password").fill("workerpass123");
+    await page.getByLabel("Confirm password").fill("workerpass123");
     await page.getByLabel("Assign to ward").fill(WARD);
     await page.getByRole("button", { name: "English", exact: true }).click();
     await page.getByRole("button", { name: "Add worker", exact: true }).click();
@@ -96,7 +97,10 @@ test("full complaint lifecycle: reject reassigns to the next worker, accept unlo
 
   // Photo step (skip) -> AI Understanding (wait for the brief mock classification) -> Preview -> submit.
   await page.getByRole("button", { name: "Next" }).click();
-  await expect(page.getByText(/Development preview/)).toBeVisible({ timeout: 3000 });
+  // AI Understanding step's badge text depends on which classification layer succeeded (real
+  // model vs. keyword fallback, see ReportIssue.tsx) -- assert on the stable .dev-badge class
+  // instead of either layer's specific wording.
+  await expect(page.locator(".dev-badge")).toBeVisible({ timeout: 3000 });
   await page.getByRole("button", { name: "Next" }).click();
   await page.getByRole("button", { name: "Submit complaint" }).click();
   // The real Sarvam AI pipeline (translate -> normalize -> summarize) takes ~20-25s end-to-end

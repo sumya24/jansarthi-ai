@@ -76,6 +76,34 @@ class SarvamClient:
             logger.error("STT failed (language=%s): %s", language_code, exc, exc_info=True)
             raise AIServiceError("Speech-to-text service failed. Please try again.") from exc
 
+    def identify_language(self, text: str) -> str | None:
+        """Detects the actual language of typed/transcribed text via Sarvam's dedicated
+        language-identification model -- used so Ask Sarthi can answer in whatever language a
+        citizen actually asked in, ChatGPT/Claude-style, rather than blindly trusting a possibly
+        stale UI language toggle (see orchestration/nodes.py's `language_node` docstring for the
+        live-reported mismatch this closes).
+
+        Best-effort by design, unlike this class's other methods: a bilingual citizen asking one
+        question is not worth failing the whole turn over if this specific signal is unavailable,
+        so this returns None (never raises) on any failure -- including no API key configured --
+        and callers fall back to the caller-supplied language in that case.
+
+        Args:
+            text: The text to detect the language of.
+
+        Returns:
+            The detected BCP-47 language code (e.g. "mr-IN"), or None if detection failed or the
+            service returned nothing usable.
+        """
+        if self._client is None:
+            return None
+        try:
+            response = self._client.text.identify_language(input=text)
+            return response.language_code
+        except Exception as exc:
+            logger.warning("Language identification failed, falling back to caller-supplied language: %s", exc)
+            return None
+
     def synthesize_speech(
         self, text: str, language_code: str, speaker: str | None = None, model: str | None = None
     ) -> str:

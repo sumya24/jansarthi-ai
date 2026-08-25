@@ -17,10 +17,10 @@ import VoiceAssistantOverlay from "../components/VoiceAssistantOverlay";
 import LocationPicker, { type LocationValue } from "../components/LocationPicker";
 import { useUiLang } from "../lib/uiLang";
 import { useAuth } from "../lib/auth";
-import { t } from "../lib/i18n";
+import { t, toLangCode } from "../lib/i18n";
 import { api, ApiError } from "../lib/api";
 import { useSpeechToText } from "../lib/useSpeechToText";
-import type { AskJanMitraResponse, AskJanMitraConversationTurn } from "../lib/ragTypes";
+import type { AskJanMitraResponse, AskJanMitraConversationTurn, PhotoEvidenceRef } from "../lib/ragTypes";
 
 const SUGGESTED_KEYS = ["waterLeak", "pothole", "garbage", "streetlight"] as const;
 
@@ -31,9 +31,40 @@ interface ChatMessage {
   id: number;
   role: "user" | "assistant";
   text: string;
+  /** Wall-clock epoch ms this message was created -- a user message's own send time, or an
+   * assistant message's own arrival time. Shown under every bubble (see the render below) as a
+   * local clock time (e.g. "9:00 AM"), the same always-visible timestamp any ordinary chat app
+   * shows -- live-reported request: a HOVER-only tooltip wasn't discoverable/visible enough on
+   * its own. Optional only so a conversation restored from BEFORE this field existed degrades
+   * gracefully (no timestamp shown) instead of rendering a broken date -- every new message always
+   * sets it. */
+  timestamp?: number;
   /** User messages only -- an object URL for the attached photo, so the citizen sees exactly
-   * what they sent. Revoked on unmount (see the cleanup effect below), not on every render. */
+   * what they sent. Revoked on unmount (see the cleanup effect below), not on every render.
+   * Tied to THIS page load's memory -- never persisted (see loadChatHistory/saveChatHistory) --
+   * `photoRef` below is what makes the same photo survive a reload. */
   imagePreview?: string;
+  /** User messages only -- the REAL, server-saved reference for this turn's photo (backend
+   * already wrote it to disk the moment it was uploaded -- see PhotoEvidenceRef's own docstring),
+   * filled in once the paired response comes back (see runQuery's success branch). Unlike
+   * `imagePreview`, this is a small serializable object, not a blob -- it DOES round-trip through
+   * storage (see PersistedChatMessage), so the photo itself keeps showing (via `api.photoUrl`)
+   * after a reload, instead of only ever existing for the tab that sent it. LIVE-REPORTED BUG this
+   * closes: a citizen's own attached photo vanished (leaving a broken-image icon, then -- once
+   * `imagePreview` was correctly excluded from storage -- nothing at all) the moment the page
+   * reloaded, even though the file was safely on disk the whole time. */
+  photoRef?: PhotoEvidenceRef;
+  /** User messages only -- LIVE-REPORTED BUG: clicking a translated quick-reply button (see
+   * `_localize_options`'s own docstring for why the button always SENDS its canonical English
+   * value) displayed that same canonical English text in the citizen's own bubble too -- reading
+   * as if they'd typed English mid-Hindi-conversation, even though they only ever saw and clicked
+   * a Hindi label. Set (by `handleFollowUpOption`) whenever `text` shows a translated label that
+   * differs from the canonical value actually sent -- `historyForRequest` echoes THIS value, not
+   * `text`, as this turn's conversation-history content, so the canonical English keyword the
+   * backend's confirm/cancel/category detection already recognizes still round-trips correctly on
+   * a LATER turn, while the citizen only ever sees their own language on screen. Absent (falls
+   * back to `text`) for an ordinary typed message, where the two are identical anyway. */
+  historyContent?: string;
   /** Assistant messages only -- the full backend response, so sources/follow-up/complaint
    * outcome can render without a second shape to keep in sync with `text`. */
   response?: AskJanMitraResponse;
@@ -43,9 +74,19 @@ interface ChatMessage {
    * single-turn UI did with its one top-level `asked` variable -- just now per-message instead
    * of global, since multiple turns are visible at once. */
   originalQuestion?: string;
+  /** Assistant messages only -- wall-clock milliseconds from the moment this turn's request was
+   * sent to the moment its response (success, error, or stop) came back. Shown as a hover tooltip
+   * on the bubble (see the render below) -- live-reported request, useful for noticing a
+   * particular turn was unusually slow (e.g. photo captioning) without needing to check the
+   * backend logs. */
+  durationMs?: number;
   /** Set when this turn's request failed -- `text` is the error message in that case, and
    * `retry` (bound to this exact question/options at send time) re-issues the same request. */
   isError?: boolean;
+  /** Set when the citizen deliberately cancelled this turn via the Stop button (see runQuery's
+   * AbortController) -- distinct from `isError`: this isn't a failure, so it gets its own neutral
+   * (not red) styling, though `retry` still works the same way for it. */
+  isStopped?: boolean;
   retry?: () => void;
 }
 
@@ -114,15 +155,19 @@ function WelcomeMascot({ state, size }: { state: MascotState; size: number }) {
  * below):
  *  - `imagePreview` is a `URL.createObjectURL()` blob URL tied to this page load's memory -- it's
  *    already invalid the instant the page reloads, so persisting it would just leave a broken
- *    <img> behind. The photo itself was never kept anywhere retrievable even before this change
- *    (the File object is dropped once the request completes) -- an inherent browser limitation,
- *    not something a storage change can fix without also storing the raw image bytes, which isn't
- *    worth it just to restore a thumbnail.
+ *    <img> behind. LIVE-REPORTED FOLLOW-UP: excluding it correctly stopped the broken icon, but
+ *    also meant a citizen's own attached photo simply vanished after a reload -- even though the
+ *    real file was safely saved to disk the whole time (see PhotoEvidenceRef's own docstring).
+ *    `photoRef` (below) is the fix: the REAL, server-backed reference to that same file, filled in
+ *    once the response confirms it (see runQuery's success branch) -- it DOES round-trip through
+ *    storage, so the render below can fall back to `api.photoUrl(photoRef.filename)` once the
+ *    ephemeral blob is gone, and the photo keeps showing indefinitely, exactly like ChatGPT/
+ *    Claude's own attached-image history.
  *  - `retry` is a live closure -- can't survive serialization. A restored error turn still shows
  *    its message, just without a working "Try again" button (the existing render already checks
  *    `msg.retry` before showing that button, so restoring it as `undefined` needs no extra guard).
  */
-type PersistedChatMessage = Pick<ChatMessage, "id" | "role" | "text" | "response" | "originalQuestion" | "isError">;
+type PersistedChatMessage = Pick<ChatMessage, "id" | "role" | "text" | "response" | "originalQuestion" | "isError" | "isStopped" | "durationMs" | "timestamp" | "photoRef" | "historyContent">;
 
 const CHAT_HISTORY_VERSION = "v1";
 const CHAT_HISTORY_MAX_MESSAGES = 200;
@@ -137,7 +182,15 @@ function loadChatHistory(userId: number | undefined): ChatMessage[] {
     const raw = localStorage.getItem(chatHistoryKey(userId));
     if (!raw) return [];
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? (parsed as ChatMessage[]) : [];
+    if (!Array.isArray(parsed)) return [];
+    // LIVE-REPORTED BUG: `saveChatHistory` was fixed to stop WRITING `imagePreview` (a
+    // `URL.createObjectURL()` blob tied to the page load that created it -- see that function's
+    // own docstring), but a citizen's browser may already hold an OLDER entry, saved before that
+    // fix existed, that still has one -- and JSON.parse doesn't know the field is stale, so it
+    // comes back as a real-looking string that then fails to load, rendering as the browser's
+    // broken-image icon. Strip it defensively on every load, not just going forward, so a photo
+    // preview NEVER survives past the page load that created it, regardless of when it was saved.
+    return (parsed as ChatMessage[]).map(({ imagePreview: _imagePreview, retry: _retry, ...rest }) => rest);
   } catch {
     return [];
   }
@@ -147,13 +200,32 @@ function saveChatHistory(userId: number | undefined, messages: ChatMessage[]) {
   if (userId == null) return;
   const persisted: PersistedChatMessage[] = messages
     .slice(-CHAT_HISTORY_MAX_MESSAGES)
-    .map(({ id, role, text, response, originalQuestion, isError }) => ({ id, role, text, response, originalQuestion, isError }));
+    .map(({ id, role, text, response, originalQuestion, isError, isStopped, durationMs, timestamp, photoRef, historyContent }) => ({
+      id, role, text, response, originalQuestion, isError, isStopped, durationMs, timestamp, photoRef, historyContent,
+    }));
   try {
     localStorage.setItem(chatHistoryKey(userId), JSON.stringify(persisted));
   } catch {
     // Storage full/unavailable (private browsing, quota) -- the conversation still works for this
     // tab, it just won't survive a reload. Not worth surfacing as a user-facing error for that.
   }
+}
+
+/** "2.3s" under a minute, "1m 12s" at/above one minute -- photo captioning on this deployment's
+ * CPU-only vision model can genuinely take several minutes (see runQuery's own comment), so a
+ * bare seconds count alone would read strangely for those replies. */
+function formatDuration(ms: number): string {
+  const totalSeconds = ms / 1000;
+  if (totalSeconds < 60) return `${totalSeconds.toFixed(1)}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = Math.round(totalSeconds % 60);
+  return `${minutes}m ${seconds}s`;
+}
+
+/** Local clock time, e.g. "9:00 AM" -- the browser's own locale/24-hour preference, not a fixed
+ * format, same as how a phone's own clock would show it. */
+function formatClockTime(ms: number): string {
+  return new Date(ms).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 }
 
 /** Imperative surface for the one action a parent legitimately needs to trigger from outside --
@@ -217,6 +289,13 @@ export const AskJanMitraContent = forwardRef<AskJanMitraHandle, AskJanMitraConte
   }
   const imagePreviewUrlsRef = useRef<string[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  // The in-flight request's own cancellation handle, so the citizen can stop waiting on a slow
+  // reply (photo captioning in particular can take several minutes on this deployment's CPU-only
+  // vision model -- see MultiPhotoUpload's caller) instead of being stuck until it resolves on its
+  // own, the same "Stop" affordance ChatGPT/Claude-style composers offer. Only ever one request in
+  // flight at a time (the composer disables further submits while `loading`), so a single ref is
+  // enough -- no need for a per-request map.
+  const abortControllerRef = useRef<AbortController | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   function nextId() {
@@ -263,7 +342,7 @@ export const AskJanMitraContent = forwardRef<AskJanMitraHandle, AskJanMitraConte
   useEffect(() => {
     if (loading) return;
     const last = messages[messages.length - 1];
-    if (!last || last.role !== "assistant" || last.isError) return;
+    if (!last || last.role !== "assistant" || last.isError || last.isStopped) return;
     setShowSuccess(true);
     const timer = setTimeout(() => setShowSuccess(false), 1200);
     return () => clearTimeout(timer);
@@ -318,16 +397,46 @@ export const AskJanMitraContent = forwardRef<AskJanMitraHandle, AskJanMitraConte
 
   async function runQuery(
     q: string,
-    opts: { locationText?: string; lat?: number; lng?: number; displayText?: string } = {}
+    opts: { locationText?: string; lat?: number; lng?: number; displayText?: string; historyText?: string } = {}
   ) {
     if (!token) return;
     const trimmed = q.trim();
     const imageToSend = attachedImage[0];
     if (!trimmed && !imageToSend) return;
 
+    // Live-reported bug: submitting a message while Mic 1 was still actively listening (e.g. the
+    // citizen dictated a question, then pressed Enter/Send instead of tapping the mic again to
+    // stop it first) left the browser's SpeechRecognition session running in the background for
+    // the rest of the turn -- visibly, via Chrome's own tab-level "mic in use" recording
+    // indicator, well past the point the citizen had already sent their message and moved on.
+    // Every submission path (typed+Enter, typed+Send click, a quick-reply chip, the location
+    // picker) funnels through this one shared function, so stopping it here -- once, the moment a
+    // message actually goes out -- covers all of them, matching the same "sending your message
+    // ends dictation" expectation ChatGPT-style voice-to-text composers already set.
+    if (speech.status === "recording") speech.stop();
+
     // Everything already on screen, in order -- exactly what the backend should treat as prior
     // context for this new turn (see the class docstring on why this replaces a separate list).
-    const historyForRequest: AskJanMitraConversationTurn[] = messages.map((m) => ({ role: m.role, content: m.text }));
+    // LIVE-REPORTED REQUEST: `photo_evidence` (assistant turns only) is echoed straight back from
+    // `m.response` -- see backend/services/orchestration/nodes.py's
+    // `_recover_photo_evidence_from_history` for why: a photo attached on an earlier turn needs
+    // this reference to still reach a complaint confirmed several messages later.
+    //
+    // LIVE-REPORTED BUG: `complaint_workflow_state` (assistant turns only) was never echoed here
+    // at all -- this field has existed on the backend from the start specifically so a FILED/
+    // CANCELLED complaint's own turn (and a pending confirmation prompt) can be recognized as
+    // DATA, not by re-parsing `answer`'s own (possibly translated) text (see ragTypes.ts's own
+    // docstring). Without it, every one of those checks silently fell back to matching fixed
+    // ENGLISH substrings that a Hindi/Marathi/Odia/Gujarati/Bengali conversation never produces --
+    // a complaint filed in one city, then a brand-new complaint described in a DIFFERENT city
+    // right after (same chat, no "New chat" click), silently reused the FIRST one's already-closed
+    // ward/category instead of resolving fresh.
+    const historyForRequest: AskJanMitraConversationTurn[] = messages.map((m) => ({
+      role: m.role,
+      content: m.historyContent ?? m.text,
+      photo_evidence: m.role === "assistant" ? m.response?.photo_evidence ?? undefined : undefined,
+      complaint_workflow_state: m.role === "assistant" ? m.response?.complaint_workflow_state ?? undefined : undefined,
+    }));
 
     let imagePreview: string | undefined;
     if (imageToSend) {
@@ -346,47 +455,101 @@ export const AskJanMitraContent = forwardRef<AskJanMitraHandle, AskJanMitraConte
     // parallel history list) -- showing the real answer here also makes conversation_history read
     // (and resolve, e.g. via nodes.py's own conversation-history location fallback) correctly on
     // any LATER turn, rather than re-showing the original question a second time in history too.
-    setMessages((prev) => [...prev, { id: nextId(), role: "user", text: opts.displayText ?? trimmed, imagePreview }]);
+    // Captured (not inlined) so the success branch below can find this EXACT user turn again once
+    // the response confirms the photo was saved, and attach its durable `photoRef` -- see
+    // ChatMessage.photoRef's own docstring.
+    const userMessageId = nextId();
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: userMessageId, role: "user", text: opts.displayText ?? trimmed,
+        historyContent: opts.historyText, imagePreview, timestamp: Date.now(),
+      },
+    ]);
     setQuestion("");
     setLocationPickerValue({ ward: "", coords: null });
+    // LIVE-REPORTED BUG: this used to only clear on a SUCCESSFUL response (see the try block
+    // below), on purpose -- so a failed request left the photo attached for an easy retry. But
+    // photo captioning can take several minutes (see backend/services/vision_service.py's own
+    // moondream2 model -- CPU-only inference, no fast path), so the attached-photo thumbnail sat
+    // in the composer, still looking "not yet sent", for that whole wait -- confusing, since the
+    // photo genuinely was already sent and is sitting in the chat transcript above. Same fix as
+    // Mic 1's own "sending ends dictation" behavior: clear the moment the message actually goes
+    // out, not only once a response comes back. The retry-convenience this trades away is real
+    // but minor (re-attaching one photo after a failure) next to several minutes of a misleading
+    // "still attached" thumbnail on the (much more common) success path.
+    setAttachedImage([]);
+    setShowAttach(false);
     setLoading(true);
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+    // LIVE-REPORTED REQUEST: wall-clock time for THIS turn specifically -- shown as a hover
+    // tooltip on the reply (see the render below), separate from the "Thinking..." indicator,
+    // which only shows a request is in flight, not how long it actually took once it's done.
+    const sentAt = performance.now();
 
     try {
       const result = imageToSend
-        ? await api.askJanMitraWithImage(token, {
-            question: trimmed,
-            language: lang,
-            latitude: opts.lat,
-            longitude: opts.lng,
-            location_text: opts.locationText,
-            conversation_history: historyForRequest,
-            image: imageToSend,
-            was_voice_input: questionFromVoice,
-          })
-        : await api.askJanMitra(token, {
-            question: trimmed,
-            language: lang,
-            latitude: opts.lat,
-            longitude: opts.lng,
-            location_text: opts.locationText,
-            conversation_history: historyForRequest,
-            was_voice_input: questionFromVoice,
-          });
+        ? await api.askJanMitraWithImage(
+            token,
+            {
+              question: trimmed,
+              language: lang,
+              latitude: opts.lat,
+              longitude: opts.lng,
+              location_text: opts.locationText,
+              conversation_history: historyForRequest,
+              image: imageToSend,
+              was_voice_input: questionFromVoice,
+            },
+            controller.signal
+          )
+        : await api.askJanMitra(
+            token,
+            {
+              question: trimmed,
+              language: lang,
+              latitude: opts.lat,
+              longitude: opts.lng,
+              location_text: opts.locationText,
+              conversation_history: historyForRequest,
+              was_voice_input: questionFromVoice,
+            },
+            controller.signal
+          );
       setMessages((prev) => [
-        ...prev,
-        { id: nextId(), role: "assistant", text: result.answer, response: result, originalQuestion: trimmed },
+        // Backfill THIS turn's own user message with the real, durable `photoRef` the response
+        // just confirmed was saved -- `imagePreview` (the blob) still renders it for the rest of
+        // this tab's life, but only `photoRef` survives a reload (see its own docstring).
+        ...(imageToSend && result.photo_evidence
+          ? prev.map((m) => (m.id === userMessageId ? { ...m, photoRef: result.photo_evidence ?? undefined } : m))
+          : prev),
+        {
+          id: nextId(), role: "assistant", text: result.answer, response: result, originalQuestion: trimmed,
+          durationMs: performance.now() - sentAt, timestamp: Date.now(),
+        },
       ]);
-      // Only clear on success -- a failed request keeps the attached photo so the citizen can
-      // just retry without re-selecting it.
-      setAttachedImage([]);
-      setShowAttach(false);
     } catch (err) {
+      // LIVE-REPORTED BUG: a deliberate Stop click used to just vanish the "Thinking..." indicator
+      // with nothing in its place -- correct in that it isn't an error, but looked like the
+      // message had gone nowhere. A neutral (not red) "Stopped" note instead, same
+      // ChatGPT/Claude-style interrupted-response acknowledgment, with the same retry affordance
+      // an error gets (re-asking the identical question is exactly what a citizen who stopped a
+      // slow reply would want next).
+      if (err instanceof DOMException && err.name === "AbortError") {
+        setMessages((prev) => [
+          ...prev,
+          { id: nextId(), role: "assistant", text: t(lang, "ask.stopped"), isStopped: true, retry: () => runQuery(trimmed, opts), timestamp: Date.now() },
+        ]);
+        return;
+      }
       const message = err instanceof ApiError ? err.message : t(lang, "ask.error");
       setMessages((prev) => [
         ...prev,
-        { id: nextId(), role: "assistant", text: message, isError: true, retry: () => runQuery(trimmed, opts) },
+        { id: nextId(), role: "assistant", text: message, isError: true, retry: () => runQuery(trimmed, opts), timestamp: Date.now() },
       ]);
     } finally {
+      abortControllerRef.current = null;
       setLoading(false);
       setQuestionFromVoice(false);
     }
@@ -419,6 +582,14 @@ export const AskJanMitraContent = forwardRef<AskJanMitraHandle, AskJanMitraConte
     runQuery(question);
   }
 
+  // ChatGPT/Claude-style cancellation for a slow in-flight reply (photo captioning especially --
+  // see runQuery's own comment on the CPU-only vision model). Aborting the fetch itself is enough:
+  // runQuery's catch block recognizes the resulting AbortError and skips showing an error bubble,
+  // and its `finally` already resets `loading`/the controller ref -- this just triggers that.
+  function stopGeneration() {
+    abortControllerRef.current?.abort();
+  }
+
   function handleComposerKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -434,7 +605,34 @@ export const AskJanMitraContent = forwardRef<AskJanMitraHandle, AskJanMitraConte
   // whose own label text ("Select location") used to get sent as if it were a place name.
   function handleFollowUpOption(msg: ChatMessage, option: string) {
     if (!msg.originalQuestion) return;
-    runQuery(msg.originalQuestion, { locationText: option, displayText: option });
+    // This one handler renders the buttons for THREE different clarification shapes (see the
+    // JSX above -- "location_ambiguous's real city-name candidates... OR the category options"),
+    // but only the ambiguous-LOCATION case ("Which city -- Mumbai, Nagpur?") is actually a
+    // location answer. Live-reported bug this fixes: clicking a CATEGORY option (e.g. "Garbage",
+    // from _CATEGORY_CLARIFICATION_OPTIONS) unconditionally resent the ORIGINAL question with the
+    // clicked label as `locationText` -- which the backend correctly can't resolve as a location,
+    // so it just re-asked the identical "What issue would you like to report?" question again, no
+    // matter which category button was clicked. Same problem for the intent-ambiguous
+    // clarification's "Report a problem"/"What is the procedure?" options. Only
+    // `location.is_ambiguous` genuinely means "the clicked option IS a place name" -- every other
+    // follow_up_options case means "the clicked option IS the citizen's actual reply text" (a
+    // category name, or a report-vs-info choice), which must be sent as the real `question`, not
+    // resent alongside the stale original one.
+    if (msg.response?.location?.is_ambiguous) {
+      // Real city names, never translated (see `_localize_options`'s own docstring on why the
+      // dynamic ambiguous-location candidates are deliberately left as-is) -- display and
+      // history content are already identical here, nothing to split.
+      runQuery(msg.originalQuestion, { locationText: option, displayText: option });
+      return;
+    }
+    // LIVE-REPORTED BUG: shows the label the citizen actually saw and clicked (their own language)
+    // in their own chat bubble, while still sending/recording the canonical English `option` as
+    // both this request's `question` and this turn's conversation-history content -- see
+    // ChatMessage.historyContent's own docstring for why the two must differ safely rather than
+    // showing raw English mid-conversation.
+    const optionIndex = msg.response?.follow_up_options.indexOf(option) ?? -1;
+    const label = optionIndex >= 0 ? msg.response?.follow_up_options_labels?.[optionIndex] : undefined;
+    runQuery(option, { displayText: label ?? option, historyText: option });
   }
 
   function handleLocationPickerSubmit(msg: ChatMessage) {
@@ -485,13 +683,33 @@ export const AskJanMitraContent = forwardRef<AskJanMitraHandle, AskJanMitraConte
               </div>
             )}
 
-            <div className={`ask-chat-bubble${msg.isError ? " ask-chat-bubble-error" : ""}`}>
-              {msg.imagePreview && (
-                <img src={msg.imagePreview} alt={t(lang, "photo.previewAlt")} className="ask-chat-image" />
+            <div
+              className={`ask-chat-bubble${msg.isError ? " ask-chat-bubble-error" : ""}${msg.isStopped ? " ask-chat-bubble-stopped" : ""}`}
+            >
+              {/* `imagePreview` (this tab's own blob) first -- instant, no round-trip needed;
+                  `photoRef` (the real saved file) once that's all a reload has left -- see
+                  ChatMessage.photoRef's own docstring for why both exist. */}
+              {(msg.imagePreview || msg.photoRef) && (
+                <img
+                  src={msg.imagePreview || api.photoUrl(msg.photoRef!.filename)}
+                  alt={t(lang, "photo.previewAlt")}
+                  className="ask-chat-image"
+                />
               )}
               <p className="ask-chat-text">{msg.text}</p>
+              {/* LIVE-REPORTED REQUEST: an always-visible clock time under every bubble -- when
+                  this was SENT (user turn) or RECEIVED (assistant turn) -- not just a hover-only
+                  tooltip, which wasn't discoverable enough on its own. Assistant turns also show
+                  how long that specific reply took, since a slow one (photo captioning especially)
+                  is exactly what's useful to notice at a glance. */}
+              {msg.timestamp != null && (
+                <div className="ask-chat-timestamp">
+                  {formatClockTime(msg.timestamp)}
+                  {msg.role === "assistant" && msg.durationMs != null && ` · ${formatDuration(msg.durationMs)}`}
+                </div>
+              )}
 
-              {msg.isError && msg.retry && (
+              {(msg.isError || msg.isStopped) && msg.retry && (
                 <button type="button" className="btn btn-ghost btn-sm" onClick={msg.retry} style={{ marginTop: 8 }}>
                   {t(lang, "ask.voiceAssistant.tryAgain")}
                 </button>
@@ -502,17 +720,26 @@ export const AskJanMitraContent = forwardRef<AskJanMitraHandle, AskJanMitraConte
                   {msg.response.complaint_id != null && (
                     <div className="ask-chat-complaint-note">
                       <span className="ai-dot active" />
-                      {t(lang, "citizen.submitSuccess")}
+                      {t(toLangCode(msg.response.language), "citizen.submitSuccess")}
                       <Link to="/citizen/complaints" className="ask-chat-complaint-link">
-                        {t(lang, "ask.action.track")}
+                        {t(toLangCode(msg.response.language), "ask.action.track")}
                       </Link>
                     </div>
                   )}
 
                   {msg.response.follow_up_required && msg.id === lastMessageId && !loading && (
                     <div className="ask-followup">
-                      {msg.response.follow_up_question && (
-                        <div className="ask-sources-label">{t(lang, "ask.followUp.label")}</div>
+                      {/* LIVE-REPORTED BUG: this used to be gated on `follow_up_question` alone,
+                          which unclear_flow_node/status_flow_node's "which complaint?" question
+                          both set to the full answer text with NO real options to introduce (see
+                          the UNCLEAR branch below, which already deliberately renders no buttons
+                          for this exact reason) -- "Please clarify:" showed above nothing at all,
+                          e.g. after a plain "Solve 25 * 4" got the honest "I'm not sure I
+                          understood that" reply. Gated on `follow_up_options.length > 0` instead,
+                          matching the actual condition that decides whether anything renders
+                          below this label. */}
+                      {msg.response.follow_up_options.length > 0 && (
+                        <div className="ask-sources-label">{t(toLangCode(msg.response.language), "ask.followUp.label")}</div>
                       )}
                       {msg.response.follow_up_options.includes("Use current location") && !msg.response.location?.is_ambiguous ? (
                         // The plain "what is the location?" case (`_LOCATION_CLARIFICATION_
@@ -534,7 +761,7 @@ export const AskJanMitraContent = forwardRef<AskJanMitraHandle, AskJanMitraConte
                             disabled={!locationPickerValue.ward.trim()}
                             onClick={() => handleLocationPickerSubmit(msg)}
                           >
-                            {t(lang, "ask.submit")}
+                            {t(toLangCode(msg.response.language), "ask.submit")}
                           </button>
                         </div>
                       ) : msg.response.follow_up_options.length > 0 ? (
@@ -543,11 +770,22 @@ export const AskJanMitraContent = forwardRef<AskJanMitraHandle, AskJanMitraConte
                         // short, fixed, already-meaningful list, where a plain button per option
                         // is the correct UI (not a full ward-picker).
                         <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 8 }}>
-                          {msg.response.follow_up_options.map((opt) => (
-                            <button key={opt} type="button" className="btn btn-ghost btn-sm" onClick={() => handleFollowUpOption(msg, opt)}>
-                              {opt}
-                            </button>
-                          ))}
+                          {/* `labels`, not `msg.response.follow_up_options_labels` inline below --
+                              TS narrowing of `msg.response` (from the `{msg.response && (...)}`
+                              wrapper above) doesn't survive into this .map() closure. */}
+                          {(() => {
+                            const labels = msg.response.follow_up_options_labels;
+                            return msg.response.follow_up_options.map((opt, i) => (
+                              // Displays the translated label but ALWAYS clicks through with the
+                              // canonical `opt` -- clicking must keep sending exactly the English
+                              // text the backend's confirm/cancel/category detection already
+                              // recognizes, never the (possibly slightly different) translator
+                              // output, or a citizen's clear "yes" could silently fail to register.
+                              <button key={opt} type="button" className="btn btn-ghost btn-sm" onClick={() => handleFollowUpOption(msg, opt)}>
+                                {labels?.[i] ?? opt}
+                              </button>
+                            ));
+                          })()}
                         </div>
                       ) : msg.response.intent === "TYPE_C_STATUS" ? (
                         // status_flow_node deliberately leaves follow_up_options empty here --
@@ -559,7 +797,7 @@ export const AskJanMitraContent = forwardRef<AskJanMitraHandle, AskJanMitraConte
                         // list matches the answer text's own "...or check your complaints list."
                         <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 8 }}>
                           <Link to="/citizen/complaints" className="btn btn-ghost btn-sm">
-                            {t(lang, "ask.action.track")}
+                            {t(toLangCode(msg.response.language), "ask.action.track")}
                           </Link>
                         </div>
                       ) : msg.response.intent === "UNCLEAR" ? (
@@ -586,22 +824,28 @@ export const AskJanMitraContent = forwardRef<AskJanMitraHandle, AskJanMitraConte
                     </div>
                   )}
 
-                  {msg.response.sources.length > 0 && (
-                    <>
-                      <div className="ask-sources-label">{t(lang, "ask.sourcesLabel")}</div>
-                      {msg.response.sources.map((source) => (
-                        <SourceCard key={source.source_id} source={source} />
-                      ))}
-                    </>
-                  )}
+                  {msg.response.sources.length > 0 && (() => {
+                    // Captured once here, not inline in the .map() below -- TS narrowing of
+                    // `msg.response` (from the `{msg.response && (...)}` wrapper above) doesn't
+                    // survive into that nested closure.
+                    const responseLang = toLangCode(msg.response.language);
+                    return (
+                      <>
+                        <div className="ask-sources-label">{t(responseLang, "ask.sourcesLabel")}</div>
+                        {msg.response.sources.map((source) => (
+                          <SourceCard key={source.source_id} source={source} lang={responseLang} />
+                        ))}
+                      </>
+                    );
+                  })()}
 
                   {!msg.response.follow_up_required && (
                     <div className="ask-quick-actions">
                       <Link to="/citizen/report" className="btn btn-ghost btn-sm">
-                        {t(lang, "ask.action.report")}
+                        {t(toLangCode(msg.response.language), "ask.action.report")}
                       </Link>
                       <Link to="/citizen/complaints" className="btn btn-ghost btn-sm">
-                        {t(lang, "ask.action.track")}
+                        {t(toLangCode(msg.response.language), "ask.action.track")}
                       </Link>
                     </div>
                   )}
@@ -716,25 +960,63 @@ export const AskJanMitraContent = forwardRef<AskJanMitraHandle, AskJanMitraConte
             </svg>
           </button>
 
-          <button
-            type="submit"
-            className="ask-chat-send-btn"
-            disabled={(!question.trim() && attachedImage.length === 0) || loading}
-            aria-label={t(lang, "ask.submit")}
-            title={t(lang, "ask.submit")}
-          >
-            {loading ? (
-              <span className="ask-chat-send-spinner" aria-hidden="true" />
-            ) : (
+          {/* LIVE-REPORTED REQUEST: a reply can take several minutes (photo captioning on this
+              deployment's CPU-only vision model, see runQuery's own comment) -- while `loading`,
+              this becomes a real, clickable Stop button (ChatGPT/Claude-style) instead of a
+              disabled spinner the citizen can only wait out. `type="button"` (not "submit") so
+              clicking it can never re-trigger a form submit. */}
+          {loading ? (
+            <button
+              type="button"
+              className="ask-chat-send-btn stop"
+              onClick={stopGeneration}
+              aria-label={t(lang, "ask.stop")}
+              title={t(lang, "ask.stop")}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                <rect x="5" y="5" width="14" height="14" rx="2" />
+              </svg>
+            </button>
+          ) : (
+            <button
+              type="submit"
+              className="ask-chat-send-btn"
+              disabled={!question.trim() && attachedImage.length === 0}
+              aria-label={t(lang, "ask.submit")}
+              title={t(lang, "ask.submit")}
+            >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
                 <path d="M4 12h15M13 6l6 6-6 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
               </svg>
-            )}
-          </button>
+            </button>
+          )}
         </div>
       </form>
 
-      {voiceOverlayOpen && <VoiceAssistantOverlay onClose={() => setVoiceOverlayOpen(false)} />}
+      {/* Live-reported bug: the overlay used to keep its own, completely separate conversation
+          history -- a voice exchange never appeared in this transcript, and this transcript's
+          own context was invisible to the overlay. `initialHistory` seeds the overlay with
+          exactly what `runQuery` itself would send as this turn's own history (same derivation,
+          same source of truth); `onTurnComplete` appends the overlay's own turn back into
+          `messages` the moment it finishes, so closing the overlay shows it here too, sources/
+          follow-up options included, exactly like a typed turn would. */}
+      {voiceOverlayOpen && (
+        <VoiceAssistantOverlay
+          onClose={() => setVoiceOverlayOpen(false)}
+          initialHistory={messages.map((m) => ({ role: m.role, content: m.text }))}
+          onTurnComplete={(question, response) => {
+            // Both stamped with "now" -- the overlay only reports the finished turn, not the
+            // citizen's own original send time inside it, so this is the closest approximation
+            // available (the two turns did happen within the same round-trip either way).
+            const now = Date.now();
+            setMessages((prev) => [
+              ...prev,
+              { id: nextId(), role: "user", text: question, timestamp: now },
+              { id: nextId(), role: "assistant", text: response.answer, response, timestamp: now },
+            ]);
+          }}
+        />
+      )}
     </div>
   );
 });

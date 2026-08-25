@@ -203,7 +203,23 @@ h1, h2, h3 { text-wrap: balance; margin: 0; }
 .surface-card {
   background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
   box-shadow: var(--shadow-sm);
+  position: relative; overflow: hidden;
   transition: transform var(--dur) var(--ease-out), box-shadow var(--dur) var(--ease-out), border-color var(--dur) var(--ease-out);
+}
+/* LIVE-REPORTED REQUEST: a colored top-accent bar on every card, site-wide -- purely a visual
+   polish pass, applied here (the single shared base class every card-like container already
+   uses -- see this rule's own docstring above) rather than per-page, so "everywhere" is actually
+   guaranteed rather than hoping every page remembered to opt in. Reuses the EXACT same technique
+   (and the same --ai-from/--ai-to gradient pair) as .ask-chat-row-assistant .ask-chat-bubble::
+   before, below -- a plain rectangle clipped by the PARENT's own `overflow: hidden` + border-
+   radius, rather than trying to round the bar's own corners to "match" (first version of this
+   fix, LIVE-REPORTED as visibly wrong: a separately-rounded 3px-tall bar can't actually trace the
+   same curve as the card's real 12px corner, so the two edges met at a visible seam instead of
+   blending). This is a proven-safe pattern already shipping elsewhere in this codebase. */
+.surface-card::before {
+  content: ""; position: absolute; top: 0; left: 0; right: 0; height: 3px;
+  background: linear-gradient(90deg, var(--ai-from), var(--ai-to));
+  pointer-events: none;
 }
 /* Opt-in: a gentle lift on hover, only for surfaces that genuinely represent something to
    look at/act on (a complaint you can open, a stat, a worker row) — not blanket-applied to
@@ -317,6 +333,18 @@ h1, h2, h3 { text-wrap: balance; margin: 0; }
 /* Segmented-control-style filter chips (status filter row on the Admin Complaints table) --
    pill radius distinguishes them from regular .btn actions like "+ Add worker". */
 .filter-chip { border-radius: 999px !important; }
+/* LIVE-REPORTED BUG: a service icon inside a filter chip (My Area's per-service row) sat low/
+   off-center -- root cause was the icon components themselves (ServiceIcons.tsx) hardcoding
+   width={22} height={22} as real SVG attributes, which take priority over an ancestor `<span>`'s
+   CSS width/height, so the SVG rendered at its own native 22x22 size inside a span this rule's
+   caller only sized to ~16px, overflowing it and throwing off the button's own flex centering.
+   `svg { width: 100%; height: 100% }` here overrides those attributes (CSS beats SVG presentation
+   attributes) so the icon actually fills, and therefore centers correctly within, this box. */
+.filter-chip-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 16px; height: 16px; margin-right: 5px; flex-shrink: 0;
+}
+.filter-chip-icon svg { width: 100%; height: 100%; }
 
 /* Status pills: color + icon + text together, always -- see components/StatusBadge.tsx,
    which is the only thing that should render this class. Covers the full 8-state lifecycle
@@ -547,7 +575,13 @@ h1, h2, h3 { text-wrap: balance; margin: 0; }
    falls back to fit-content sizing instead -- confirmed as the actual cause of a real
    horizontal-overflow bug on a 390px mobile viewport (measured via getBoundingClientRect before
    this fix: the element sized to 397px, 7px wider than its own already-390px-wide parent). */
-.ask-page.page { flex: 1; min-height: 0; min-width: 0; margin: 0; display: flex; flex-direction: column; padding-top: 18px; padding-bottom: 12px; }
+/* max-width: none -- .page's own base rule (TopBar.css) also caps every page at 1440px, which
+   this rule's own margin:0 override never addressed (only padding/margin were overridden here
+   before). On any viewport wider than 1440px this left the whole ask page truncated and
+   flush-left, with a large empty gap on the right past that cap -- live-reported via a
+   screenshot, distinct from (and left over after) the earlier bubble-width fix below, since that
+   only widened the assistant bubble WITHIN this page, never this page's own outer cap. */
+.ask-page.page { flex: 1; min-height: 0; min-width: 0; margin: 0; max-width: none; display: flex; flex-direction: column; padding-top: 18px; padding-bottom: 12px; }
 
 .ask-chat-shell { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
 /* Only rendered once there's a restored/live conversation to leave (see AskJanMitra.tsx's
@@ -618,7 +652,13 @@ h1, h2, h3 { text-wrap: balance; margin: 0; }
 .ask-chat-row-user .ask-chat-bubble {
   background: var(--accent); color: var(--accent-ink); border-bottom-right-radius: 4px;
 }
+/* Wider than the shared default above -- a short typed question reads fine at 640px, but the
+   answer card (full prose + source citations + action buttons) left a large dead gap to its own
+   right on a wide screen at that same cap. Widening just this side, rather than capping/centering
+   the whole .ask-chat-shell column (an earlier version of this fix), keeps both rows flush against
+   their own edge with no empty margin appearing on the opposite side either. */
 .ask-chat-row-assistant .ask-chat-bubble {
+  max-width: min(1100px, 96%);
   background: color-mix(in srgb, var(--surface) 92%, transparent); color: var(--ink);
   border-bottom-left-radius: 4px; position: relative; overflow: hidden;
   backdrop-filter: blur(8px);
@@ -629,7 +669,13 @@ h1, h2, h3 { text-wrap: balance; margin: 0; }
 }
 .ask-chat-bubble-error { background: var(--status-critical-bg); color: var(--status-critical); }
 .ask-chat-row-assistant .ask-chat-bubble-error::before { display: none; }
+/* Deliberate cancellation (Stop button), not a failure -- neutral/muted, not red, so it doesn't
+   read as something having gone wrong. */
+.ask-chat-bubble-stopped { background: var(--surface-2); color: var(--ink-2); font-style: italic; }
+.ask-chat-row-assistant .ask-chat-bubble-stopped::before { display: none; }
 .ask-chat-text { margin: 0; white-space: pre-line; }
+.ask-chat-timestamp { margin-top: 6px; font-size: 11px; opacity: 0.65; }
+.ask-chat-row-user .ask-chat-timestamp { text-align: right; }
 .ask-chat-image { display: block; max-width: 220px; max-height: 220px; border-radius: 10px; margin-bottom: 8px; object-fit: cover; }
 
 .ask-chat-complaint-note {
@@ -727,6 +773,24 @@ h1, h2, h3 { text-wrap: balance; margin: 0; }
 }
 .ask-chat-send-btn:hover:not(:disabled) { transform: scale(1.05); }
 .ask-chat-send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+/* Stop-generation state (ChatGPT/Claude-style) -- replaces the send button while a reply is in
+   flight, so a slow response (photo captioning especially) can be cancelled instead of just
+   waited out. Red, not the ordinary accent color, so it reads as a distinct "stop" action, not a
+   disabled send button. */
+.ask-chat-send-btn.stop {
+  background: var(--status-critical); color: #fff; opacity: 1; cursor: pointer;
+  animation: ask-stop-pulse 1.6s ease-in-out infinite;
+}
+.ask-chat-send-btn.stop:hover { transform: scale(1.05); }
+/* LIVE-REPORTED FEEDBACK: a plain, static stop icon read as "nothing is happening" -- this is a
+   soft pulsing glow (not the spinning-border style used elsewhere in this composer), signaling
+   "still actively generating, click to cancel" without looking like a spinner glued onto a stop
+   icon. */
+@keyframes ask-stop-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--status-critical) 45%, transparent); }
+  50% { box-shadow: 0 0 0 7px color-mix(in srgb, var(--status-critical) 0%, transparent); }
+}
+@media (prefers-reduced-motion: reduce) { .ask-chat-send-btn.stop { animation: none; } }
 .ask-chat-send-spinner {
   width: 15px; height: 15px; border-radius: 50%; border: 2px solid color-mix(in srgb, var(--accent-ink) 35%, transparent);
   border-top-color: var(--accent-ink); animation: ask-send-spin 0.7s linear infinite;

@@ -47,6 +47,13 @@ class GraphState(TypedDict, total=False):
     #     precedent as input_type's STT-happens-upstream note above) ---
     has_image: bool  # an image was attached at all, regardless of whether captioning succeeded
     image_description: str | None  # VisionService's best-effort caption, or None
+    # Set (by input_processing_node) whenever a photo was validated and saved to disk THIS turn
+    # (mirrors evidence_service.SavedFile field-for-field) -- flows into AskJanMitraResponse.
+    # photo_evidence for the frontend to echo back on the matching ConversationTurn, so a LATER
+    # turn with no photo of its own can still recover and attach the SAME real file to a complaint
+    # (see nodes.py's `_recover_photo_evidence_from_history` and schemas/ask_janmitra.py's
+    # PhotoEvidenceRef for the full rationale).
+    photo_evidence: dict[str, Any] | None
     # "TEXT" | "STT" | "IMAGE" | "IMAGE_STT" | "VOICE_ASSISTANT" | "IMAGE_VOICE_ASSISTANT" --
     # LangSmith metadata only (see graph.py's run_graph()), never read by routing/business logic.
     # "STT"/"IMAGE_STT" distinguish Mic-1-produced text from typed text (AskJanMitraRequest.
@@ -79,6 +86,14 @@ class GraphState(TypedDict, total=False):
     # clarification_flow_node's default branch, which uses this field to show an honest
     # "I couldn't recognize that" message instead of repeating the exact same first-ask question.
     location_explicit_signal_unresolved: bool
+    # DISTINCT from the above: true when the citizen never used the explicit location field at
+    # all, but their MESSAGE TEXT names a real-sounding place (e.g. "...in Pune?") this app simply
+    # has no gazetteer entry for -- the "Pune fallback" bug's own honest-message case (see
+    # location_extractor.py's `looks_like_it_names_an_unrecognized_place`). Kept separate from
+    # `location_explicit_signal_unresolved` so clarification_flow_node can give it its own, more
+    # accurate wording -- "couldn't recognize that as a location" reads oddly for a real,
+    # well-known place, unlike a genuinely unresolved explicit reply (gibberish, a typo, ...).
+    location_message_names_unresolved_place: bool
 
     # --- routing (route_intent conditional edge) ---
     route: str  # "complaint" | "rag" | "status" | "clarification" | "out_of_scope"
@@ -116,6 +131,12 @@ class GraphState(TypedDict, total=False):
     follow_up_required: bool
     follow_up_question: str | None
     follow_up_options: list[str]
+    # Same length/order as `follow_up_options`, translated into `response_language` for DISPLAY
+    # only -- see nodes.py's `_localize_options` for why `follow_up_options` itself always stays
+    # the canonical English text (clicking a button still sends that back, not this). Absent
+    # (not just empty) whenever a node didn't populate it -- e.g. the dynamic ambiguous-location
+    # city-name options, deliberately left untranslated (see that call site's own comment).
+    follow_up_options_labels: list[str]
     routed_to: str  # "RAG" | "COMPLAINT_CREATED" | "COMPLAINT_STATUS_API" | "NONE_OUT_OF_SCOPE" |
                      # "NONE_CLARIFICATION_NEEDED" | "NONE_GREETING" | "NONE_CAPABILITIES" | ...
     error: str | None

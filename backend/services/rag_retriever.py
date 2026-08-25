@@ -59,11 +59,16 @@ class RagRetriever:
         embedding_provider: _EmbeddingProvider,
         top_k: int = 5,
         relevance_threshold: float = 0.79,
+        verified_relevance_threshold: float = 0.74,
     ) -> None:
         self._store = vector_store
         self._embedding_provider = embedding_provider
         self._top_k = top_k
         self._relevance_threshold = relevance_threshold
+        # See config.py's RAG_VERIFIED_RELEVANCE_THRESHOLD docstring for the measured cross-lingual
+        # gap this exists for. Must never be ABOVE the main threshold -- it exists to admit MORE
+        # verified content in edge cases, never less.
+        self._verified_relevance_threshold = min(verified_relevance_threshold, relevance_threshold)
 
     def retrieve(
         self,
@@ -91,6 +96,31 @@ class RagRetriever:
             return RetrievalOutcome(insufficient_knowledge=True, reason=reason)
 
         above_threshold = [c for c in candidates if c.score >= self._relevance_threshold]
+
+        # CROSS-LINGUAL VERIFIED RESCUE (live-reproduced gap -- see config.py's own
+        # RAG_VERIFIED_RELEVANCE_THRESHOLD docstring for the measured Bengaluru/Marathi case this
+        # closes): a VERIFIED chunk that already passed the same city+category metadata filter as
+        # every other candidate here, but scored just under the main threshold -- specifically
+        # measured for non-English-script queries against this KB's English-authored content -- is
+        # rescued at a separate, lower floor instead of being silently lost to a topically-generic
+        # SYNTHETIC chunk (or to "insufficient_knowledge" outright, if nothing else cleared the
+        # main threshold either). Deliberately never applies to SYNTHETIC chunks -- this only ever
+        # widens coverage for content that's already real/never-fabricated, not a general threshold
+        # relaxation.
+        rescued_verified = [
+            c for c in candidates
+            if c.metadata["verification_status"] == "VERIFIED"
+            and self._verified_relevance_threshold <= c.score < self._relevance_threshold
+        ]
+        if rescued_verified:
+            logger.info(
+                "RAG retrieval: rescued %d VERIFIED chunk(s) below main threshold %.3f but above "
+                "verified floor %.3f (scores: %s)",
+                len(rescued_verified), self._relevance_threshold, self._verified_relevance_threshold,
+                [round(c.score, 3) for c in rescued_verified],
+            )
+            above_threshold = above_threshold + rescued_verified
+
         if not above_threshold:
             reason = "No sufficiently relevant knowledge found for this question."
             logger.info(
@@ -112,6 +142,29 @@ class RagRetriever:
             verified_bonus = 1 if (c.metadata["verification_status"] == "VERIFIED" and c.score >= top_score - band) else 0
             return (verified_bonus, c.score)
         above_threshold.sort(key=sort_key, reverse=True)
+
+        # CITATION HONESTY FIX (live-reported): the rerank above only ever reorders -- a SYNTHETIC
+        # chunk could still land in the final top_k and be shown as a citation even when a VERIFIED
+        # chunk for that EXACT same city+category is also present, e.g. Ahmedabad garbage
+        # collection citing both a real AMC document and a "not a verified official source"
+        # placeholder side by side. Synthetic records exist to fill a genuine COVERAGE GAP (a
+        # city/category with no real source at all, see citation_examples.md) -- once a verified
+        # source for that same city+category exists in this result set, the synthetic one adds no
+        # information and only undermines trust, so it's dropped here rather than merely
+        # deprioritized. Scoped to (city, service_category) specifically, not source_id -- two
+        # different VERIFIED records already legitimately coexist for the same city+category (see
+        # this file's own tests), only a SYNTHETIC one loses out, and only against a VERIFIED match
+        # for its own city+category, never a different one.
+        verified_city_categories = {
+            (c.metadata.get("city"), c.metadata.get("service_category"))
+            for c in above_threshold
+            if c.metadata["verification_status"] == "VERIFIED"
+        }
+        above_threshold = [
+            c for c in above_threshold
+            if c.metadata["verification_status"] == "VERIFIED"
+            or (c.metadata.get("city"), c.metadata.get("service_category")) not in verified_city_categories
+        ]
 
         return RetrievalOutcome(results=above_threshold[: self._top_k])
 

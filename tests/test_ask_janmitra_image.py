@@ -50,7 +50,7 @@ def _get_shared_chroma_deps():
 
 
 class _FakeComplaintAgent:
-    def create_complaint(self, db, citizen_id, language_code, text, audio_chunks, photo_path):
+    def create_complaint(self, db, citizen_id, language_code, text, audio_chunks, photo_path, category=None):
         complaint = Complaint(
             citizen_id=citizen_id,
             original_text=text or "",
@@ -59,6 +59,7 @@ class _FakeComplaintAgent:
             summary=(text or "")[:80],
             photo_path=photo_path,
             status="open",
+            service_category=category.value if category else None,
         )
         db.add(complaint)
         db.commit()
@@ -203,6 +204,147 @@ def test_image_plus_complaint_creates_real_photo_path_and_evidence_row(client, m
     on_disk = Path(settings.UPLOAD_FOLDER) / complaint.photo_path
     assert on_disk.is_file()
     assert on_disk.read_bytes() == _JPEG_BYTES
+
+
+def test_cancelling_a_photo_complaint_tells_the_citizen_the_photo_wont_carry_forward(
+    client, monkeypatch, make_citizen, make_worker
+):
+    """LIVE-REPORTED REQUEST: a citizen cancelled a photo-attached complaint, then described a
+    genuinely new one afterward with no photo of their own -- and got no photo on it, with no
+    explanation why. This backend never persists an uploaded photo's actual bytes unless a
+    complaint is genuinely CREATED (see complaint_flow_node's own docstring) -- a cancelled
+    attempt's photo is truly gone, not recoverable -- so the honest fix is saying that plainly at
+    the moment of cancellation, not leaving the citizen to guess. Detected via the same
+    "[Attached photo shows: ...]" marker `input_processing_node` folds into the text for any
+    captioned image, which is what the confirmation prompt (now being cancelled) echoes back."""
+    _install_real_service(monkeypatch)
+    make_worker(phone="9000099112", ward="Mohali")
+    token, _ = make_citizen(phone="9000000112")
+
+    response = _ask_image(client, token, "Street light near my home is not working.", location_text="Mohali")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["routed_to"] == "NONE_AWAITING_CONFIRMATION"
+    assert "attached photo shows" in body["answer"].lower()
+
+    history = [
+        {"role": "user", "content": "Street light near my home is not working."},
+        {"role": "assistant", "content": body["answer"]},
+    ]
+    cancel = client.post(
+        "/ask-janmitra",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"question": "No, cancel.", "language": "en", "conversation_history": history},
+    )
+    assert cancel.status_code == 200, cancel.text
+    cancel_body = cancel.json()
+    assert cancel_body["routed_to"] == "NONE_CANCELLED"
+    assert "photo" in cancel_body["answer"].lower()
+    assert "attach it again" in cancel_body["answer"].lower()
+
+
+def test_cancelling_a_text_only_complaint_does_not_mention_a_photo(client, monkeypatch, make_citizen, make_worker):
+    """Regression guard for the fix above: the new photo-specific note must only appear when the
+    cancelled complaint actually had a photo attached -- an ordinary text-only cancellation must
+    read exactly as it always has."""
+    _install_real_service(monkeypatch)
+    make_worker(phone="9000099113", ward="Mohali")
+    token, _ = make_citizen(phone="9000000113")
+
+    first = client.post(
+        "/ask-janmitra",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"question": "Streetlight not working in Mohali.", "language": "en"},
+    )
+    body = first.json()
+    assert body["routed_to"] == "NONE_AWAITING_CONFIRMATION"
+
+    history = [
+        {"role": "user", "content": "Streetlight not working in Mohali."},
+        {"role": "assistant", "content": body["answer"]},
+    ]
+    cancel = client.post(
+        "/ask-janmitra",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"question": "No, cancel.", "language": "en", "conversation_history": history},
+    )
+    cancel_body = cancel.json()
+    assert cancel_body["routed_to"] == "NONE_CANCELLED"
+    assert "photo" not in cancel_body["answer"].lower()
+
+
+def test_report_a_problem_after_photo_clarification_recovers_category_and_caption(
+    client, monkeypatch, make_citizen, make_worker, db_session
+):
+    """LIVE-REPORTED REQUEST ("more ChatGPT/Claude-like reasoning") -- see nodes.py's
+    `_recover_photo_context_from_intent_ambiguous_turn`. A citizen attaches a photo with ambiguous
+    text (neither clearly a complaint nor a question) -- gets asked "Are you reporting a problem
+    with Roads Potholes, or would you like information about it?" (the photo's own caption already
+    identified the category). Clicking "Report a problem" (WITHOUT re-attaching the photo --
+    exactly what AskJanMitra.tsx's handleFollowUpOption sends) must go straight to a real
+    confirmation prompt using the photo's own category and caption -- not ask "What issue would
+    you like to report?" again, and not use the bare button label "Report a problem" as the stored
+    complaint description.
+
+    Also covers the FULL follow-up fix (photo persistence, see PhotoEvidenceRef and
+    `_recover_photo_evidence_from_history`): every `conversation_history` turn here echoes
+    `photo_evidence` back exactly like AskJanMitra.tsx's `historyForRequest` now does, so the
+    ORIGINAL photo -- uploaded on turn 1, never re-attached since -- must still end up as REAL
+    evidence on the complaint eventually filed on turn 3."""
+    _install_real_service(monkeypatch)
+    make_worker(phone="9000099114", ward="Mohali")
+    token, _ = make_citizen(phone="9000000114", ward="Mohali")
+
+    first = _ask_image(client, token, "No, cancel")
+    body1 = first.json()
+    assert body1["follow_up_options"] == ["Report a problem", "What is the procedure?"]
+    assert "roads potholes" in body1["answer"].lower()
+    assert body1["photo_evidence"] is not None
+
+    history = [
+        {"role": "user", "content": "No, cancel"},
+        {"role": "assistant", "content": body1["answer"], "photo_evidence": body1["photo_evidence"]},
+    ]
+    second = client.post(
+        "/ask-janmitra",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"question": "Report a problem", "language": "en", "conversation_history": history},
+    )
+    body2 = second.json()
+    assert body2["routed_to"] == "NONE_AWAITING_CONFIRMATION", body2
+    assert body2["service_category"] == "ROADS_POTHOLES"
+    assert _FAKE_CAPTION in body2["answer"]
+    assert 'Report a problem' not in body2["answer"]
+
+    # LIVE-REPORTED BUG, found right after the fix above shipped: confirming this exact complaint
+    # ("yes, submit it") used to lose the category entirely and ask "What issue would you like to
+    # report?" all over again -- see nodes.py's `_recover_from_confirmation_prompt_text`. The
+    # category/text recovered above via the photo shortcut was never a classify()-able USER turn
+    # `_recover_complaint_draft_from_history`'s own scan could find on THIS next turn.
+    history.append({"role": "user", "content": "Report a problem"})
+    history.append({"role": "assistant", "content": body2["answer"]})
+    third = client.post(
+        "/ask-janmitra",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"question": "Yes, submit it.", "language": "en", "conversation_history": history},
+    )
+    body3 = third.json()
+    assert body3["routed_to"] == "COMPLAINT_CREATED", body3
+    assert body3["complaint_id"] is not None
+    # LIVE-REPORTED REQUEST: the ORIGINAL photo (from turn 1) must genuinely be attached now, not
+    # just described in the stored text -- must NOT show the "wasn't attached" note.
+    assert "wasn't attached" not in body3["answer"].lower()
+
+    db = db_session()
+    complaint = db.query(Complaint).filter(Complaint.id == body3["complaint_id"]).one()
+    assert complaint.photo_path is not None
+    evidence = db.query(ComplaintEvidence).filter(ComplaintEvidence.complaint_id == complaint.id).all()
+    assert len(evidence) == 1
+    assert evidence[0].file_path == complaint.photo_path
+    on_disk = Path(settings.UPLOAD_FOLDER) / complaint.photo_path
+    assert on_disk.is_file()
+    assert on_disk.read_bytes() == _JPEG_BYTES
+    db.close()
 
 
 def test_image_is_actually_persisted_on_disk(client, monkeypatch, make_citizen):

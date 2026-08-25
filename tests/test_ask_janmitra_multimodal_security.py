@@ -47,7 +47,7 @@ def _get_shared_chroma_deps():
 
 
 class _FakeComplaintAgent:
-    def create_complaint(self, db, citizen_id, language_code, text, audio_chunks, photo_path):
+    def create_complaint(self, db, citizen_id, language_code, text, audio_chunks, photo_path, category=None):
         complaint = Complaint(
             citizen_id=citizen_id,
             original_text=text or "",
@@ -56,6 +56,7 @@ class _FakeComplaintAgent:
             summary=(text or "")[:80],
             photo_path=photo_path,
             status="open",
+            service_category=category.value if category else None,
         )
         db.add(complaint)
         db.commit()

@@ -6,6 +6,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from backend.config import settings
 from backend.database import Base, get_db
 from backend.deps import _ai_limiter, _login_limiter, _otp_limiter, _signup_limiter
 from backend.main import app
@@ -29,6 +30,22 @@ def _reset_rate_limiters():
     _ai_limiter.reset()
     _otp_limiter.reset()
     _general_limiter.reset()
+
+
+@pytest.fixture(autouse=True)
+def _force_email_dev_mode_off(monkeypatch):
+    """EMAIL_DEV_MODE is a real .env setting (see backend/config.py), meant to be turned on for a
+    developer's own local/E2E runs so signup/login don't depend on a real inbox or Gmail's daily
+    quota -- but pytest loads that same .env, so without this, whatever a developer happens to
+    have set locally would silently swap every test's real-send-path assertions for a no-op skip
+    (discovered directly: turning EMAIL_DEV_MODE=true on for local E2E use broke 40+ otherwise-
+    unrelated tests across test_signup_email_verification.py, test_complaint_lifecycle_emails.py,
+    etc., all expecting send_otp_email/send_complaint_status_email to actually be called). Forcing
+    it off here makes the suite's behavior deterministic regardless of the local .env; the handful
+    of tests that specifically exercise EMAIL_DEV_MODE itself (test_email_otp.py) still work fine,
+    since their own monkeypatch.setattr(settings, "EMAIL_DEV_MODE", True) simply overrides this
+    for their own duration."""
+    monkeypatch.setattr(settings, "EMAIL_DEV_MODE", False)
 
 
 @pytest.fixture()

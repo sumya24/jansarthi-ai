@@ -3,10 +3,11 @@ import Mascot, { type MascotState } from "./Mascot";
 import MultiPhotoUpload from "./MultiPhotoUpload";
 import { useUiLang } from "../lib/uiLang";
 import { useAuth } from "../lib/auth";
-import { t, SUPPORTED_LANGUAGES } from "../lib/i18n";
+import { t, toLangCode, SUPPORTED_LANGUAGES } from "../lib/i18n";
 import { api, ApiError } from "../lib/api";
 import { useAudioRecorder } from "../lib/useAudioRecorder";
-import type { AskJanMitraConversationTurn } from "../lib/ragTypes";
+import { useSpeechToText } from "../lib/useSpeechToText";
+import type { AskJanMitraConversationTurn, AskVoiceResponse } from "../lib/ragTypes";
 import "./VoiceAssistantOverlay.css";
 
 type VoicePhase = "idle" | "listening" | "processing" | "speaking" | "error";
@@ -27,19 +28,54 @@ type VoicePhase = "idle" | "listening" | "processing" | "speaking" | "error";
  * while the <audio> element is actually firing `playing` -- removed again on pause/ended/error
  * (see the `audioPlaying` state below, set only from those real events) -- so it never appears
  * to speak without real audio playing, and never for a fixed/guessed duration.
+ *
+ * Live-reported bug: this overlay used to keep its own conversation history, seeded empty every
+ * time it opened and never shared with the main Ask Sarthi chat page in either direction -- a
+ * voice conversation was invisible in the text transcript, and switching back to typing afterward
+ * lost all context from what was just said out loud. `initialHistory`/`onTurnComplete` close that
+ * gap: this overlay now STARTS from whatever the main page has already discussed (so it can
+ * recover a category/location the citizen already gave in text, exactly like a fresh text turn
+ * would), and reports each of its own turns back up to the parent (so closing the overlay shows
+ * the voice exchange in the same transcript, and a later typed message carries it as context) --
+ * one shared conversation, not two disconnected ones.
  */
-export default function VoiceAssistantOverlay({ onClose }: { onClose: () => void }) {
+export default function VoiceAssistantOverlay({
+  onClose,
+  initialHistory,
+  onTurnComplete,
+}: {
+  onClose: () => void;
+  initialHistory: AskJanMitraConversationTurn[];
+  onTurnComplete: (question: string, response: AskVoiceResponse) => void;
+}) {
   const { lang } = useUiLang();
   const { token } = useAuth();
   const recorder = useAudioRecorder();
+  // LIVE-REPORTED REQUEST: while `recorder` above captures the real audio this turn is actually
+  // decided from (unchanged), this is a SECOND, independent transcription running purely for a
+  // live, on-screen caption while the citizen is still talking -- the same browser-native
+  // technology Mic 1 already uses (see useSpeechToText.ts's own docstring), reused here only for
+  // display. Deliberately Chrome/Edge-only, same limitation Mic 1 already has (`supported` below
+  // gates all of it, so an unsupported browser just shows nothing extra -- silently, never a
+  // broken control) -- covered live testing across Firefox before shipping. Its own `error` is
+  // NEVER surfaced as a voice-turn error: this is a cosmetic preview, not the thing that actually
+  // determines the complaint/answer, so its failure must never look like the real turn failed.
+  const liveCaption = useSpeechToText(lang);
 
   const [phase, setPhase] = useState<VoicePhase>("idle");
   const [error, setError] = useState<string | null>(null);
   const [transcript, setTranscript] = useState<string | null>(null);
   const [responseText, setResponseText] = useState<string | null>(null);
+  // LIVE-REPORTED BUG: the "Transcript"/"Response" labels below rendered in the account-wide UI
+  // toggle (`lang`), not the language THIS turn actually came back in -- see i18n.ts's
+  // `toLangCode` docstring for the full context. Set alongside `responseText` from the same real
+  // `result.language`, so both labels follow the actual conversation, not a stale toggle.
+  const [responseLanguage, setResponseLanguage] = useState<string | null>(null);
   const [muted, setMuted] = useState(false);
   const [audioPlaying, setAudioPlaying] = useState(false);
-  const [history, setHistory] = useState<AskJanMitraConversationTurn[]>([]);
+  // Seeded from the main chat's own history (see this component's own docstring), not an empty
+  // array -- every turn taken IN this overlay still just appends onto it locally, same as before.
+  const [history, setHistory] = useState<AskJanMitraConversationTurn[]>(initialHistory);
   const [attachedImage, setAttachedImage] = useState<File[]>([]);
 
   const stopRequestedRef = useRef(false);
@@ -75,13 +111,19 @@ export default function VoiceAssistantOverlay({ onClose }: { onClose: () => void
       stopRequestedRef.current = true;
       setPhase("processing");
       recorder.stop();
+      if (liveCaption.supported) liveCaption.stop();
       return;
     }
     if (phase === "idle" || phase === "error") {
       setError(null);
       setResponseText(null);
+      setResponseLanguage(null);
       setPhase("listening");
       void recorder.start();
+      if (liveCaption.supported) {
+        liveCaption.reset();
+        liveCaption.start();
+      }
     }
   }
 
@@ -96,11 +138,20 @@ export default function VoiceAssistantOverlay({ onClose }: { onClose: () => void
       });
       setTranscript(result.question);
       setResponseText(result.answer);
+      setResponseLanguage(result.language);
       setHistory((prev) => [
         ...prev,
         { role: "user", content: result.question },
-        { role: "assistant", content: result.answer },
+        // `complaint_workflow_state` echoed here too -- same gap, same fix as the main text chat
+        // (see AskJanMitra.tsx's own historyForRequest comment): without it, a complaint filed or
+        // cancelled via voice can't be recognized as a closed boundary on a later turn (voice OR
+        // text, since this history is shared with the main chat -- see this component's own
+        // docstring), letting a brand-new complaint silently reuse its stale ward/category.
+        { role: "assistant", content: result.answer, complaint_workflow_state: result.complaint_workflow_state },
       ]);
+      // Reports this turn up to the main chat page (see this component's own docstring) -- so
+      // closing the overlay shows it in the same transcript, sources/follow-up options included.
+      onTurnComplete(result.question, result);
       // Only clear on success -- a failed request keeps the attached photo so the citizen can
       // just retry, matching AskJanMitra.tsx's own text/image submit behavior.
       setAttachedImage([]);
@@ -205,6 +256,22 @@ export default function VoiceAssistantOverlay({ onClose }: { onClose: () => void
 
         <div className="voice-overlay-language">{SUPPORTED_LANGUAGES[lang].name}</div>
 
+        {/* Live caption -- a rough, on-screen preview of what's being said WHILE still talking
+            (see `liveCaption`'s own docstring above for why this is a second, independent, purely
+            cosmetic transcription). Only ever shown during `listening`, on a browser that
+            supports it -- an unsupported browser (Firefox, Safari) simply never renders this,
+            same as Mic 1's own graceful degradation. A calm placeholder holds the box's height
+            steady before any words arrive, so the panel doesn't visibly jump the moment speech
+            starts. */}
+        {phase === "listening" && liveCaption.supported && (
+          <div className="voice-overlay-live-caption" aria-live="polite">
+            <p className={liveCaption.transcript ? "" : "voice-overlay-live-caption-placeholder"}>
+              {liveCaption.transcript || t(lang, "ask.voiceAssistant.liveCaptionPlaceholder")}
+              <span className="voice-overlay-live-caption-cursor" aria-hidden="true" />
+            </p>
+          </div>
+        )}
+
         {/* Attaching a photo here is optional and only meaningful before/between turns -- a
             combined voice+image turn (see backend ask_janmitra_service.ask_voice()), reusing
             the exact same single-image attach control the text/image flow already uses. */}
@@ -214,14 +281,14 @@ export default function VoiceAssistantOverlay({ onClose }: { onClose: () => void
 
         {transcript && (
           <div className="voice-overlay-transcript">
-            <div className="voice-overlay-transcript-label">{t(lang, "ask.voiceAssistant.transcriptLabel")}</div>
+            <div className="voice-overlay-transcript-label">{t(toLangCode(responseLanguage), "ask.voiceAssistant.transcriptLabel")}</div>
             <p>{transcript}</p>
           </div>
         )}
 
         {responseText && (
           <div className="voice-overlay-transcript voice-overlay-response">
-            <div className="voice-overlay-transcript-label">{t(lang, "ask.voiceAssistant.responseLabel")}</div>
+            <div className="voice-overlay-transcript-label">{t(toLangCode(responseLanguage), "ask.voiceAssistant.responseLabel")}</div>
             <p>{responseText}</p>
           </div>
         )}

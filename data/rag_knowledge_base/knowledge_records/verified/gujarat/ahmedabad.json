@@ -196,5 +196,57 @@
     "last_updated": null,
     "retrieved_at": "2026-08-14T15:27:18.510785Z",
     "created_at": "2026-08-14T15:27:18.510785Z"
+  },
+  {
+    "record_id": "GJ_AMC_AMCCRS_WASTE_CHANNEL",
+    "service_id": "GJ_AMC_AMCCRS_WASTE_CHANNEL",
+    "service_name": "Solid Waste Management Complaint Channel (AMCCRS)",
+    "sub_service": "Door-to-door collection not coming, area cleaning not done, public toilet/urinal surroundings uncleaned, building-material debris, open burning of solid waste",
+    "problem_type": "Uncollected garbage / door-to-door vehicle not coming, area not cleaned, public toilet surroundings not cleaned, construction debris not cleared, solid waste burnt in the open",
+    "service_category": "WASTE_SANITATION",
+    "state": "Gujarat",
+    "district": null,
+    "city": "Ahmedabad",
+    "municipality": "Ahmedabad Municipal Corporation (AMC)",
+    "zone": null,
+    "ward": null,
+    "area": null,
+    "geographic_scope": "CITY",
+    "department": "Ahmedabad Municipal Corporation -- AMCCRS (Citizen Complaint Redressal & Service Tracking)",
+    "authority": "AMCCRS Call Centre",
+    "description": "AMC's own AMCCRS online complaint-registration form (amccrs.com) lists a dedicated 'SWM' (Solid Waste Management) category group alongside its Water/Drainage, Road, and Streetlight groups -- confirmed real sub-categories include 'SWM- Door-To-Door Vehicle Not Comming', 'SWM- Cleaning Not Done', 'SWM - Public Toilets and Urinals - Cleaning Out The Surroundings', 'SWM-Clearing Building Material Debris', and 'SWM-Cleaning Burning Of Solid Wastes' -- with the same real 24x7 toll-free/SMS/email/WhatsApp channels confirmed directly on the portal. No numeric SLA is published on the complaint-registration page itself. This is a separate, general-purpose complaint channel from the SWM Department's own C&D-waste/dead-animal lines documented in GJ_AMC_SWM_BRIEF_NOTE above -- both are real and both apply, just to different sub-cases.",
+    "procedure": "Register via the AMCCRS online portal (choose the relevant SWM sub-category), call the toll-free number, SMS 'AMCCRS NEW' to the shortcode, email, or use WhatsApp.",
+    "required_information": [],
+    "required_documents": [],
+    "sla": "SLA NOT FOUND -- real complaint categories and multi-channel contact confirmed, but no published numeric response/resolution time found on the fetched pages.",
+    "expected_response_time": "NOT FOUND IN OFFICIAL SOURCE",
+    "expected_resolution_time": "NOT FOUND IN OFFICIAL SOURCE",
+    "complaint_channel": [
+      "Toll-free (24x7): 155303",
+      "SMS 'AMCCRS NEW' to 56767",
+      "Email: ccrs@ahmedabadcity.gov.in",
+      "WhatsApp: +91 7567855303",
+      "AMCCRS Official app / online portal"
+    ],
+    "contact_information": "Toll-free: 155303 (24x7). SMS shortcode: 56767. Email: ccrs@ahmedabadcity.gov.in. WhatsApp: +91 7567855303.",
+    "escalation_procedure": "NOT FOUND IN OFFICIAL SOURCE on the fetched pages.",
+    "escalation_authority": null,
+    "faq": [
+      {
+        "question": "Who do I contact if the garbage collection vehicle isn't coming to my door in Ahmedabad?",
+        "answer": "Register an 'SWM- Door-To-Door Vehicle Not Comming' complaint via AMCCRS: call the 24x7 toll-free number 155303, SMS 'AMCCRS NEW' to 56767, email ccrs@ahmedabadcity.gov.in, use WhatsApp (+91 7567855303), or register online at amccrs.com."
+      }
+    ],
+    "citizen_guidance": "For uncollected garbage, uncleaned areas, or other solid-waste issues, register a complaint through AMCCRS (155303 / SMS / email / WhatsApp / online) -- the same general-purpose channel AMC uses for water, drainage, road, and streetlight complaints, with its own dedicated SWM category list.",
+    "source_id": "GJ_AMC_AMCCRS_PORTAL",
+    "source_title": "AMCCRS -- Citizen Complaint Redressal & Service Tracking, Ahmedabad Municipal Corporation",
+    "source_organization": "Ahmedabad Municipal Corporation (AMC)",
+    "source_url": "http://www.amccrs.com/AMCPortal/View/ComplaintRegistration.aspx",
+    "source_type": "OFFICIAL_GOVERNMENT_WEBPAGE",
+    "verification_status": "VERIFIED",
+    "publication_date": null,
+    "last_updated": null,
+    "retrieved_at": "2026-08-22T10:55:00.000000Z",
+    "created_at": "2026-08-22T10:55:00.000000Z"
   }
 ]

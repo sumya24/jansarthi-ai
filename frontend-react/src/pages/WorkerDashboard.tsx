@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import TopBar from "../components/TopBar";
 import StatusBadge from "../components/StatusBadge";
+import CategoryBadge from "../components/CategoryBadge";
 import RejectComplaintModal from "../components/RejectComplaintModal";
 import StartWorkModal from "../components/StartWorkModal";
 import ProgressUpdateModal from "../components/ProgressUpdateModal";
@@ -11,10 +12,19 @@ import SummaryModal from "../components/SummaryModal";
 import DownloadReportButton from "../components/DownloadReportButton";
 import { useAuth } from "../lib/auth";
 import { useUiLang } from "../lib/uiLang";
+import { useDebouncedValue } from "../lib/useDebouncedValue";
 import { t } from "../lib/i18n";
 import { api, ApiError, type Complaint } from "../lib/api";
 import { useToast } from "../lib/toast";
 import "../styles/dashboard.css";
+
+// LIVE-REPORTED GAP: this queue used to fetch and render EVERY complaint assigned to this worker
+// in one flat column -- the "all/assigned/accepted/..." filter chips already existed, but only
+// ever filtered a fully-fetched-in-one-go array client-side, with no search and no pagination at
+// all. Status filter, search, and pagination are now real backend queries (GET /complaints' own
+// `status`/`search`/`page`/`page_size` params), same as the Admin/Citizen dashboards and "My
+// Area" -- see CitizenDashboard.tsx's own copy of this note for the fuller rationale.
+const WORKER_PAGE_SIZE = 10;
 
 const STATUS_LABEL_KEY = {
   // Same reasoning as "pending" below -- a worker shouldn't normally see a complaint still
@@ -45,6 +55,14 @@ export default function WorkerDashboard() {
   // would otherwise make it silently vanish from a narrower default filter right after acting
   // on it (confusing: "where did it go?"). The worker can still narrow down manually.
   const [filter, setFilter] = useState<"all" | "assigned" | "accepted" | "in_progress" | "resolved">("all");
+  const [search, setSearch] = useState("");
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
+  // Decoupled from `complaints` (the filtered+paged current-page list) on purpose -- see
+  // CitizenDashboard.tsx's identical stat cards for the fuller rationale.
+  const [totalCount, setTotalCount] = useState(0);
+  const [resolvedCount, setResolvedCount] = useState(0);
+  const debouncedSearch = useDebouncedValue(search);
 
   // Which complaint has an action modal open, and which modal -- one at a time, keyed by
   // complaint id so a re-render of the list (e.g. after a poll/reload) doesn't lose track of
@@ -56,7 +74,15 @@ export default function WorkerDashboard() {
     setLoading(true);
     setLoadError(null);
     try {
-      setComplaints(await api.listComplaints(token, lang));
+      const data = await api.listComplaints(token, {
+        lang,
+        status: filter === "all" ? undefined : filter,
+        search: debouncedSearch || undefined,
+        page,
+        pageSize: WORKER_PAGE_SIZE,
+      });
+      setComplaints(data.items);
+      setTotal(data.total);
     } catch (err) {
       setLoadError(err instanceof ApiError ? err.message : t(lang, "worker.errLoadFailed"));
     } finally {
@@ -64,10 +90,39 @@ export default function WorkerDashboard() {
     }
   }
 
+  async function loadStats() {
+    if (!token) return;
+    try {
+      const [all, resolved] = await Promise.all([
+        api.listComplaints(token, { page: 1, pageSize: 1 }),
+        api.listComplaints(token, { status: "resolved", page: 1, pageSize: 1 }),
+      ]);
+      setTotalCount(all.total);
+      setResolvedCount(resolved.total);
+    } catch {
+      // Non-critical -- the stat cards just keep their last known values on a transient failure.
+    }
+  }
+
+  async function reload() {
+    await Promise.all([load(), loadStats()]);
+  }
+
+  // A search edit or filter-chip click always jumps back to page 1 -- the previous page number
+  // almost never still makes sense against a newly-narrowed result set.
+  useEffect(() => {
+    setPage(1);
+  }, [debouncedSearch, filter]);
+
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token, lang]);
+  }, [token, lang, filter, debouncedSearch, page]);
+
+  useEffect(() => {
+    loadStats();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
 
   async function accept(id: number) {
     if (!token) return;
@@ -75,7 +130,7 @@ export default function WorkerDashboard() {
     try {
       await api.acceptComplaint(token, id);
       toast.success(t(lang, "worker.acceptedToast"));
-      await load();
+      await reload();
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : t(lang, "worker.errAcceptFailed"));
     } finally {
@@ -89,9 +144,8 @@ export default function WorkerDashboard() {
 
   // A worker's queue only ever contains complaints currently assigned to them (see
   // backend/routes/complaints.py) — so "open" here means everything short of resolved.
-  const openCount = complaints.filter((c) => c.status !== "resolved").length;
-  const resolvedCount = complaints.filter((c) => c.status === "resolved").length;
-  const visible = complaints.filter((c) => filter === "all" || c.status === filter);
+  const openCount = totalCount - resolvedCount;
+  const pageCount = Math.max(1, Math.ceil(total / WORKER_PAGE_SIZE));
 
   return (
     <div>
@@ -115,24 +169,37 @@ export default function WorkerDashboard() {
           </div>
         </div>
 
-        <div style={{ display: "flex", gap: 6, marginBottom: 16, flexWrap: "wrap" }}>
-          {(["all", "assigned", "accepted", "in_progress", "resolved"] as const).map((f) => (
-            <button
-              key={f}
-              onClick={() => setFilter(f)}
-              style={{
-                background: filter === f ? "var(--ink)" : "var(--surface)",
-                color: filter === f ? "var(--paper)" : "var(--ink-2)",
-                border: "1px solid var(--line)", borderRadius: 20, padding: "7px 14px", fontSize: 12.5, fontWeight: 600,
-              }}
-            >
-              {f === "all" ? t(lang, "worker.filterAll")
-                : f === "assigned" ? t(lang, "worker.filterAssigned")
-                : f === "accepted" ? t(lang, "worker.filterAccepted")
-                : f === "in_progress" ? t(lang, "worker.filterInProgress")
-                : t(lang, "worker.filterResolved")}
-            </button>
-          ))}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 10, marginBottom: 16 }}>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            {(["all", "assigned", "accepted", "in_progress", "resolved"] as const).map((f) => (
+              <button
+                key={f}
+                onClick={() => setFilter(f)}
+                style={{
+                  background: filter === f ? "var(--ink)" : "var(--surface)",
+                  color: filter === f ? "var(--paper)" : "var(--ink-2)",
+                  border: "1px solid var(--line)", borderRadius: 20, padding: "7px 14px", fontSize: 12.5, fontWeight: 600,
+                }}
+              >
+                {f === "all" ? t(lang, "worker.filterAll")
+                  : f === "assigned" ? t(lang, "worker.filterAssigned")
+                  : f === "accepted" ? t(lang, "worker.filterAccepted")
+                  : f === "in_progress" ? t(lang, "worker.filterInProgress")
+                  : t(lang, "worker.filterResolved")}
+              </button>
+            ))}
+          </div>
+          {totalCount > 0 && (
+            <div className="field" style={{ margin: 0, width: "100%", maxWidth: 320 }}>
+              <input
+                type="text"
+                aria-label={t(lang, "worker.searchComplaints")}
+                placeholder={t(lang, "worker.searchComplaints")}
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
+            </div>
+          )}
         </div>
 
         {loadError && <div className="banner-error">{loadError}</div>}
@@ -146,10 +213,10 @@ export default function WorkerDashboard() {
             ))}
           </div>
         )}
-        {!loading && visible.length === 0 && <p style={{ color: "var(--ink-2)" }}>{t(lang, "worker.nothingHere")}</p>}
+        {!loading && total === 0 && <p style={{ color: "var(--ink-2)" }}>{t(lang, "worker.nothingHere")}</p>}
 
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          {visible.map((c, i) => (
+          {complaints.map((c, i) => (
             <div key={c.id} className="surface-card hoverable enter" style={{ padding: "14px 16px", "--stagger": Math.min(i, 6) } as React.CSSProperties}>
               <div
                 style={{ display: "flex", justifyContent: "space-between", gap: 16, flexWrap: "wrap", cursor: "pointer" }}
@@ -159,6 +226,7 @@ export default function WorkerDashboard() {
                   <div className="mono" style={{ fontSize: 11, color: "var(--ink-3)" }}>JM-{String(c.id).padStart(5, "0")}</div>
                   <div style={{ fontWeight: 600, margin: "3px 0" }}>{c.display_text}</div>
                   <div style={{ fontSize: 12, color: "var(--ink-2)" }}>{c.display_summary}</div>
+                  <div style={{ marginTop: 4 }}><CategoryBadge category={c.service_category} lang={lang} /></div>
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 8 }} onClick={(e) => e.stopPropagation()}>
                   <StatusBadge status={c.status} label={t(lang, STATUS_LABEL_KEY[c.status])} />
@@ -219,34 +287,56 @@ export default function WorkerDashboard() {
             </div>
           ))}
         </div>
+
+        {pageCount > 1 && (
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 4px" }}>
+            <button
+              className="btn btn-ghost btn-sm"
+              disabled={page <= 1}
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+            >
+              {t(lang, "admin.paginationPrev")}
+            </button>
+            <span style={{ fontSize: 12, color: "var(--ink-2)" }}>
+              {page} / {pageCount}
+            </span>
+            <button
+              className="btn btn-ghost btn-sm"
+              disabled={page >= pageCount}
+              onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
+            >
+              {t(lang, "admin.paginationNext")}
+            </button>
+          </div>
+        )}
       </div>
 
       {modalFor?.type === "reject" && (
         <RejectComplaintModal
           complaintId={modalFor.id}
           onClose={closeModal}
-          onRejected={() => { toast.success(t(lang, "worker.rejectedConfirm")); load(); }}
+          onRejected={() => { toast.success(t(lang, "worker.rejectedConfirm")); reload(); }}
         />
       )}
       {modalFor?.type === "start" && (
         <StartWorkModal
           complaintId={modalFor.id}
           onClose={closeModal}
-          onStarted={() => { toast.success(t(lang, "worker.start.startedToast")); load(); }}
+          onStarted={() => { toast.success(t(lang, "worker.start.startedToast")); reload(); }}
         />
       )}
       {modalFor?.type === "update" && (
         <ProgressUpdateModal
           complaintId={modalFor.id}
           onClose={closeModal}
-          onAdded={() => { toast.success(t(lang, "worker.update.addedToast")); load(); }}
+          onAdded={() => { toast.success(t(lang, "worker.update.addedToast")); reload(); }}
         />
       )}
       {modalFor?.type === "complete" && (
         <CompleteComplaintModal
           complaintId={modalFor.id}
           onClose={closeModal}
-          onResolved={() => { toast.success(t(lang, "worker.resolvedToast")); load(); }}
+          onResolved={() => { toast.success(t(lang, "worker.resolvedToast")); reload(); }}
         />
       )}
       {modalFor?.type === "report" && <ReportModal complaintId={modalFor.id} onClose={closeModal} />}

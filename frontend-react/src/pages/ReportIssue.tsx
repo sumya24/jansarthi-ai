@@ -192,6 +192,13 @@ export default function ReportIssue() {
     } else {
       form.append("text", text.trim());
     }
+    // LIVE-REPORTED GAP: `category` here is already the wizard's own resolved classification
+    // (real model -> keyword match -> manual picker, see this file's own module docstring) -- it
+    // used to only ever drive the "AI Understanding" preview card, never actually get sent along
+    // with the rest of the submission, so Complaint.service_category stayed unset for every
+    // form-filed complaint. `category.id` is a real ServiceCategory value (see
+    // lib/serviceCategories.ts), validated again server-side.
+    if (category) form.append("category", category.id);
     if (location.ward.trim()) form.append("ward", location.ward.trim());
     // Sent whenever "use current location" succeeded, regardless of whether a ward was also
     // picked — the backend independently resolves/stores both (see routes/complaints.py).

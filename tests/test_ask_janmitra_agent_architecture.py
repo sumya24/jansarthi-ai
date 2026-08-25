@@ -609,6 +609,23 @@ def test_streetlight_spaced_transliteration_still_works_hindi():
     assert result.service_category == ServiceCategory.STREETLIGHTS
 
 
+@pytest.mark.parametrize("language,text", [
+    ("hi", "मेरे घर के पास स्ट्रीट लाईट खराब है।"),
+    ("mr", "माझ्या घराजवळ स्ट्रीट लाईट खराब आहे."),
+])
+def test_streetlight_long_ii_vowel_transliteration_resolves_category(language, text):
+    """LIVE-REPORTED GAP: "लाईट" (long ई) is a genuinely common way to spell this English
+    loanword's second syllable in casual Hindi/Marathi typing -- as natural as, and arguably
+    closer to how "light" is actually pronounced than, the already-covered "लाइट" (short इ) --
+    but only the short-इ form was in the keyword list. A real citizen's own complaint using this
+    spelling matched no STREETLIGHTS keyword at all, only the generic "is broken" state, so they
+    were asked "what issue would you like to report?" despite having already named one."""
+    from backend.services.intent_classifier import classify
+    from backend.schemas.rag_knowledge import ServiceCategory
+    result = classify(text)
+    assert result.service_category == ServiceCategory.STREETLIGHTS, f"{language}: {result}"
+
+
 # ============================================================================
 # 9. Remaining P2 conversation-alignment fix -- context switches away from a pending confirmation.
 #
@@ -781,6 +798,34 @@ def test_ambiguous_replies_still_safely_reask_not_misread_as_fresh_complaints(
     body = reply.json()
     assert body.get("complaint_id") is None
     assert body["routed_to"] != "COMPLAINT_CREATED"
+
+    db = db_session()
+    assert db.query(Complaint).count() == 0
+    db.close()
+
+
+def test_polite_spoken_confirmation_ending_in_a_question_mark_reasks_not_generic_unclear(
+    client, monkeypatch, db_session, make_citizen, make_worker,
+):
+    """LIVE-REPORTED BUG (voice input): "Yes, can you submit please?" -- a natural, SPOKEN way to
+    confirm, unlike the terser typed/button "yes, submit it" -- ends in "?", so
+    `is_explicit_confirmation` correctly declines to auto-confirm it (a "yes" that's part of a
+    further question is deliberately never auto-confirmed -- see that function's own docstring).
+    That safety boundary is right; the actual bug was downstream in `intent_node`'s own routing:
+    this message fell all the way through to UNCLEAR -> unclear_flow_node's generic "I'm not sure
+    I understood that... what would you like help with?" -- which doesn't even acknowledge a
+    complaint confirmation was pending. `complaint_flow_node` already has the correct handling for
+    this exact shape (neither confirms nor cancels, safely re-asks the SAME confirmation) -- the
+    fix routes this message there at all, instead of leaving it stranded in the generic fallback,
+    without weakening `is_explicit_confirmation`'s own deliberate conservatism."""
+    _install_real_service(monkeypatch)
+    token, _ = make_citizen(phone="9700000107")
+    history = _draft_streetlight_awaiting_confirmation(client, token, make_worker, phone="9700099107")
+
+    reply = _ask(client, token, "Yes, can you submit please?", conversation_history=history)
+    body = reply.json()
+    assert body["routed_to"] == "NONE_AWAITING_CONFIRMATION"
+    assert body.get("complaint_id") is None
 
     db = db_session()
     assert db.query(Complaint).count() == 0

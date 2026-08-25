@@ -35,6 +35,8 @@ class Complaint(Base):
             done). Still a plain string, not a DB-level enum (unchanged from before "in_progress"
             was added) -- every transition is validated in routes/complaints.py, not by a column
             constraint.
+        service_category: ServiceCategory.value (waste/water/roads/streetlights) classified at
+            filing time, or None if it predates this column or classification was unsure.
         ward: The area this complaint is in (free text); drives which worker(s) it can be
             assigned to (see assignment_service.py). Kept as-is for backward compatibility --
             still populated the same way, from the citizen's dropdown pick at submission time.
@@ -67,6 +69,14 @@ class Complaint(Base):
     summary: Mapped[str] = mapped_column(Text, nullable=False)
     photo_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    # LIVE-REPORTED GAP: the civic-service category (waste/water/roads/streetlights) has ALWAYS
+    # been classified at filing time -- both Ask Sarthi's complaint_flow_node and the Report an
+    # Issue wizard's 3-layer classifier (real model -> keyword -> manual picker) resolve one --
+    # but until now that result was used only in the moment (for tracing / a UI hint) and then
+    # discarded, never persisted here. `ServiceCategory.value`, or None for complaints filed
+    # before this column existed (see scripts/migrate_complaint_category.py, which backfills
+    # those from their stored text) or on the rare case classification itself came back unsure.
+    service_category: Mapped[str | None] = mapped_column(String(32), nullable=True)
     ward: Mapped[str | None] = mapped_column(String(120), nullable=True)
     state_id: Mapped[int | None] = mapped_column(ForeignKey("states.id"), nullable=True)
     district_id: Mapped[int | None] = mapped_column(ForeignKey("districts.id"), nullable=True)

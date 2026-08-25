@@ -44,7 +44,7 @@ def _get_shared_chroma_deps():
 
 
 class _FakeComplaintAgent:
-    def create_complaint(self, db, citizen_id, language_code, text, audio_chunks, photo_path):
+    def create_complaint(self, db, citizen_id, language_code, text, audio_chunks, photo_path, category=None):
         complaint = Complaint(
             citizen_id=citizen_id,
             original_text=text or "",
@@ -53,6 +53,7 @@ class _FakeComplaintAgent:
             summary=(text or "")[:80],
             photo_path=photo_path,
             status="open",
+            service_category=category.value if category else None,
         )
         db.add(complaint)
         db.commit()
@@ -120,6 +121,38 @@ def test_voice_returns_real_transcribed_text_and_real_audio(client, monkeypatch,
     fake_sarvam.synthesize_speech.assert_called_once()
     tts_call_text = fake_sarvam.synthesize_speech.call_args[0][0]
     assert tts_call_text == body["answer"]
+
+
+def test_voice_answer_and_speech_follow_the_actual_spoken_language_not_the_request_field(
+    client, monkeypatch, make_citizen
+):
+    """Voice equivalent of the text-mode auto-detect-response-language fix (see
+    orchestration/nodes.py's language_node docstring for the live-reported mismatch): the
+    citizen's `language` form field (their UI toggle) says "en", but they actually SPOKE Marathi
+    -- both the answer TEXT and the synthesized SPEECH must follow what they actually said, not
+    the stale toggle. Two distinct mechanisms verified together: STT itself must decode with
+    Sarvam's own auto-detect ("unknown"), never a language forced from the request field, and the
+    resulting transcript is then run through the same text-based detection every text turn uses
+    to pick the final response_language."""
+    marathi_transcript = "बेंगळुरूमध्ये पाणीपुरवठ्याबाबत तक्रार करण्याची प्रक्रिया काय आहे?"
+    fake_sarvam = _install_real_service(monkeypatch, transcript=marathi_transcript)
+    fake_sarvam.identify_language = Mock(return_value="mr-IN")
+    token, _ = make_citizen(phone="9000000210")
+
+    response = _ask_voice(client, token, language="en")
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["question"] == marathi_transcript
+    assert body["language"] == "mr"
+
+    fake_sarvam.transcribe.assert_called_once()
+    stt_call_language = fake_sarvam.transcribe.call_args[0][1]
+    assert stt_call_language == "unknown"
+
+    fake_sarvam.synthesize_speech.assert_called_once()
+    tts_call_language = fake_sarvam.synthesize_speech.call_args[0][1]
+    assert tts_call_language == "mr-IN"
 
 
 def test_voice_stitches_multiple_audio_segments_in_order(client, monkeypatch, make_citizen):

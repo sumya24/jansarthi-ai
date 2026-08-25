@@ -4,14 +4,18 @@ import TopBar from "../components/TopBar";
 import ComplaintTracker from "../components/ComplaintTracker";
 import StatusBadge from "../components/StatusBadge";
 import ComplaintUpdatesTimeline from "../components/ComplaintUpdatesTimeline";
+import CategoryBadge from "../components/CategoryBadge";
 import ReportModal from "../components/ReportModal";
 import SummaryModal from "../components/SummaryModal";
 import DownloadReportButton from "../components/DownloadReportButton";
 import FeedbackForm from "../components/FeedbackForm";
 import { useAuth } from "../lib/auth";
 import { useUiLang } from "../lib/uiLang";
+import { useDebouncedValue } from "../lib/useDebouncedValue";
 import { t } from "../lib/i18n";
 import { api, ApiError, type Complaint, type ComplaintUpdateEntry } from "../lib/api";
+import type { ServiceCategory } from "../lib/ragTypes";
+import { SERVICE_CATEGORY_DEFS } from "../lib/serviceCategories";
 
 const STATUS_LABEL_KEY = {
   // "open" is the complaint's brand-new status, set at creation and normally gone within the
@@ -33,6 +37,17 @@ const STATUS_LABEL_KEY = {
 // anything is still in flight — this app has no websockets/SSE, so a short poll is the fast,
 // simple way to make status changes show up without the citizen having to manually refresh.
 const LIVE_POLL_MS = 8000;
+
+// LIVE-REPORTED GAP: this list used to fetch and render EVERY one of a citizen's own complaints
+// in one flat column with no way to narrow it down -- fine for a handful of complaints, unusable
+// once someone has filed dozens over time. Status filter, search, and pagination are now real
+// backend queries (GET /complaints' own `status`/`search`/`page`/`page_size` params), not a
+// client-side filter over an already-fetched full list -- same reasoning as the Admin/Worker
+// dashboards and "My Area".
+const COMPLAINTS_PAGE_SIZE = 10;
+
+const CITIZEN_STATUS_FILTERS = ["all", "pending", "assigned", "accepted", "in_progress", "resolved"] as const;
+type CitizenStatusFilter = (typeof CITIZEN_STATUS_FILTERS)[number];
 
 export default function CitizenDashboard() {
   const { token } = useAuth();
@@ -56,6 +71,31 @@ export default function CitizenDashboard() {
   const [updatesError, setUpdatesError] = useState<Record<number, string>>({});
   const [reportModalId, setReportModalId] = useState<number | null>(null);
   const [summaryComplaint, setSummaryComplaint] = useState<Complaint | null>(null);
+  const [search, setSearch] = useState("");
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
+  const [statusFilter, setStatusFilter] = useState<CitizenStatusFilter>("all");
+  // Same "picking a service reframes the stat cards" pattern as MyArea.tsx's own categoryFilter --
+  // LIVE-REPORTED GAP: My Area got this, My Complaints hadn't, even though both are complaint
+  // lists with the same service_category data available.
+  const [categoryFilter, setCategoryFilter] = useState<ServiceCategory | "all">("all");
+  // Decoupled from `complaints`/the filtered+paged list below on purpose -- these two stat cards
+  // are meant to read as "your account overall", the same way MyArea.tsx's stat cards stay
+  // ward-wide regardless of that page's own search, and AdminDashboard.tsx's/WorkerDashboard.tsx's
+  // stay role-wide regardless of their own filter. Two cheap page_size=1 calls (the payload is
+  // thrown away, only `total` from each is read) rather than fetching every complaint just to
+  // count them.
+  const [totalCount, setTotalCount] = useState(0);
+  const [resolvedCount, setResolvedCount] = useState(0);
+  // LIVE-REPORTED BUG: totalCount above is category-scoped (so the stat cards can reframe to a
+  // selected service, by design) -- but the filter row/search box/status chips were gated on
+  // `totalCount > 0` too, so picking a category with zero matches hid those controls entirely,
+  // including the one "All" chip needed to undo the filter. A citizen filed into that state had
+  // no way back except leaving the page. This tracks whether the account has ANY complaint at
+  // all, regardless of which category is currently selected, specifically to gate those controls
+  // instead -- same role as MyArea.tsx's `ward` check (never conditioned on the current filter).
+  const [hasAnyComplaints, setHasAnyComplaints] = useState(false);
+  const debouncedSearch = useDebouncedValue(search);
 
   async function toggleUpdates(id: number) {
     if (expandedId === id) {
@@ -80,8 +120,16 @@ export default function CitizenDashboard() {
     if (!token) return;
     setLoadError(null);
     try {
-      const data = await api.listComplaints(token, lang);
-      setComplaints(data);
+      const data = await api.listComplaints(token, {
+        lang,
+        status: statusFilter === "all" ? undefined : statusFilter,
+        category: categoryFilter === "all" ? undefined : categoryFilter,
+        search: debouncedSearch || undefined,
+        page,
+        pageSize: COMPLAINTS_PAGE_SIZE,
+      });
+      setComplaints(data.items);
+      setTotal(data.total);
     } catch (err) {
       setLoadError(err instanceof ApiError ? err.message : t(lang, "citizen.errLoadFailed"));
     } finally {
@@ -89,25 +137,74 @@ export default function CitizenDashboard() {
     }
   }
 
+  async function loadStats() {
+    if (!token) return;
+    try {
+      // Category-scoped when a service is selected (same "reframe the stat cards" behavior as
+      // MyArea.tsx's own loadStats-equivalent) -- otherwise these two stay account-wide.
+      const category = categoryFilter === "all" ? undefined : categoryFilter;
+      const [all, resolved] = await Promise.all([
+        api.listComplaints(token, { category, page: 1, pageSize: 1 }),
+        api.listComplaints(token, { status: "resolved", category, page: 1, pageSize: 1 }),
+      ]);
+      setTotalCount(all.total);
+      setResolvedCount(resolved.total);
+    } catch {
+      // Non-critical -- the stat cards just keep their last known values on a transient failure.
+    }
+  }
+
+  // Deliberately NEVER category-scoped -- see hasAnyComplaints' own comment above for why this
+  // has to stay independent of loadStats' category-scoped totalCount.
+  async function loadHasAnyComplaints() {
+    if (!token) return;
+    try {
+      const all = await api.listComplaints(token, { page: 1, pageSize: 1 });
+      setHasAnyComplaints(all.total > 0);
+    } catch {
+      // Non-critical -- worst case the filter row stays hidden/shown as it already was.
+    }
+  }
+
+  // A search edit or status/category-chip click always jumps back to page 1 -- the previous page
+  // number almost never still makes sense against a newly-narrowed result set.
+  useEffect(() => {
+    setPage(1);
+  }, [debouncedSearch, statusFilter, categoryFilter]);
+
   useEffect(() => {
     setLoading(true);
     loadComplaints();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token, lang]);
+  }, [token, lang, statusFilter, categoryFilter, debouncedSearch, page]);
 
-  // Live tracking: while anything is still moving through the pipeline (not resolved), poll
-  // for updates so an accept/reject/reassignment shows up without a manual refresh.
+  useEffect(() => {
+    loadStats();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token, categoryFilter]);
+
+  useEffect(() => {
+    loadHasAnyComplaints();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
+
+  // Live tracking: while anything on THIS page is still moving through the pipeline (not
+  // resolved), poll both the list and the stat cards so an accept/reject/reassignment shows up
+  // without a manual refresh.
   useEffect(() => {
     if (!token) return;
     const hasActiveComplaint = complaints.some((c) => c.status !== "resolved");
     if (!hasActiveComplaint) return;
-    const interval = setInterval(loadComplaints, LIVE_POLL_MS);
+    const interval = setInterval(() => {
+      loadComplaints();
+      loadStats();
+    }, LIVE_POLL_MS);
     return () => clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token, lang, complaints]);
 
-  const openCount = complaints.filter((c) => c.status !== "resolved").length;
-  const resolvedCount = complaints.filter((c) => c.status === "resolved").length;
+  const openCount = totalCount - resolvedCount;
+  const pageCount = Math.max(1, Math.ceil(total / COMPLAINTS_PAGE_SIZE));
 
   return (
     <div>
@@ -125,7 +222,14 @@ export default function CitizenDashboard() {
 
         {loadError && <div className="banner-error">{loadError}</div>}
 
-        <div className="statstrip" style={{ display: "flex", gap: 10, marginBottom: 26 }}>
+        {/* LIVE-REPORTED REQUEST: distinct layout from MyArea.tsx (not just distinct copy) so the
+            two pages read as structurally different, not just re-skinned copies of each other --
+            stats come FIRST here (this page's original, longer-standing order), with the newer
+            category filter placed after them, whereas MyArea.tsx puts its category filter first
+            since the whole page is organized around "which service am I looking at." Reframing
+            behavior (picking a category still changes the two numbers above) is unchanged either
+            way -- only the visual order differs. */}
+        <div className="statstrip" style={{ display: "flex", gap: 10, marginBottom: 22 }}>
           <div className="surface-card hoverable" style={{ padding: "10px 16px", flex: 1 }}>
             <div className="display" style={{ fontSize: 26, color: "var(--status-open)" }}>{openCount}</div>
             <div style={{ fontSize: 11, color: "var(--ink-2)" }}>{t(lang, "citizen.open")}</div>
@@ -136,9 +240,70 @@ export default function CitizenDashboard() {
           </div>
         </div>
 
-        <div className="section-label" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        {hasAnyComplaints && (
+          <div style={{ marginBottom: 22 }}>
+            <div className="section-label" style={{ marginTop: 0 }}>{t(lang, "area.categoryFilterLabel")}</div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+              <button
+                className={`filter-chip btn btn-sm ${categoryFilter === "all" ? "btn-primary" : "btn-ghost"}`}
+                onClick={() => setCategoryFilter("all")}
+              >
+                {t(lang, "admin.filterAll")}
+              </button>
+              {SERVICE_CATEGORY_DEFS.map((def) => {
+                const active = categoryFilter === def.id;
+                return (
+                  <button
+                    key={def.id}
+                    className={`filter-chip btn btn-sm ${active ? "btn-primary" : "btn-ghost"}`}
+                    onClick={() => setCategoryFilter(def.id)}
+                    style={active ? { background: `var(--service-${def.color})`, borderColor: `var(--service-${def.color})`, color: "#fff" } : undefined}
+                  >
+                    <span className="filter-chip-icon">{def.icon}</span>
+                    {t(lang, def.titleKey)}
+                  </button>
+                );
+              })}
+            </div>
+            <p style={{ fontSize: 12, color: "var(--ink-2)", margin: "8px 0 0" }}>
+              {t(lang, "area.showingLabel")}:{" "}
+              <strong style={{ color: "var(--ink)" }}>
+                {categoryFilter === "all"
+                  ? t(lang, "area.allServicesLabel")
+                  : t(lang, SERVICE_CATEGORY_DEFS.find((d) => d.id === categoryFilter)?.titleKey ?? "area.allServicesLabel")}
+              </strong>
+            </p>
+          </div>
+        )}
+
+        <div className="section-label" style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 10 }}>
           <span>{t(lang, "citizen.yourComplaints")}</span>
+          {hasAnyComplaints && (
+            <div className="field" style={{ margin: 0, width: "100%", maxWidth: 320 }}>
+              <input
+                type="text"
+                aria-label={t(lang, "citizen.searchComplaints")}
+                placeholder={t(lang, "citizen.searchComplaints")}
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
+            </div>
+          )}
         </div>
+
+        {hasAnyComplaints && (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 14 }}>
+            {CITIZEN_STATUS_FILTERS.map((f) => (
+              <button
+                key={f}
+                className={`filter-chip btn btn-sm ${statusFilter === f ? "btn-primary" : "btn-ghost"}`}
+                onClick={() => setStatusFilter(f)}
+              >
+                {f === "all" ? t(lang, "admin.filterAll") : t(lang, STATUS_LABEL_KEY[f])}
+              </button>
+            ))}
+          </div>
+        )}
 
         {loading && (
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -151,7 +316,12 @@ export default function CitizenDashboard() {
             ))}
           </div>
         )}
-        {!loading && complaints.length === 0 && <p style={{ color: "var(--ink-2)" }}>{t(lang, "citizen.noComplaints")}</p>}
+        {!loading && total === 0 && statusFilter === "all" && categoryFilter === "all" && !debouncedSearch && (
+          <p style={{ color: "var(--ink-2)" }}>{t(lang, "citizen.noComplaints")}</p>
+        )}
+        {!loading && total === 0 && (statusFilter !== "all" || categoryFilter !== "all" || debouncedSearch) && (
+          <p style={{ color: "var(--ink-2)" }}>{t(lang, "admin.noComplaintsFiltered")}</p>
+        )}
 
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           {complaints.map((c, i) => (
@@ -168,6 +338,7 @@ export default function CitizenDashboard() {
                   <div className="mono" style={{ fontSize: 11, color: "var(--ink-3)" }}>JM-{String(c.id).padStart(5, "0")}</div>
                   <div style={{ fontWeight: 600, margin: "3px 0" }}>{c.display_text}</div>
                   <div style={{ fontSize: 12, color: "var(--ink-2)" }}>{c.display_summary}</div>
+                  <div style={{ marginTop: 4 }}><CategoryBadge category={c.service_category} lang={lang} /></div>
                 </div>
                 <div style={{ textAlign: "right" }}>
                   <StatusBadge status={c.status} label={t(lang, STATUS_LABEL_KEY[c.status])} />
@@ -194,10 +365,6 @@ export default function CitizenDashboard() {
                     </>
                   )}
                 </div>
-              )}
-
-              {c.photo_path && (
-                <img src={api.photoUrl(c.photo_path)} alt={t(lang, "citizen.attached")} style={{ marginTop: 10, maxWidth: 160, borderRadius: 8, border: "1px solid var(--line)" }} />
               )}
 
               {/* Worker-authored updates -- initial assessment / optional progress updates /
@@ -245,6 +412,28 @@ export default function CitizenDashboard() {
             </div>
           ))}
         </div>
+
+        {pageCount > 1 && (
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 4px" }}>
+            <button
+              className="btn btn-ghost btn-sm"
+              disabled={page <= 1}
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+            >
+              {t(lang, "admin.paginationPrev")}
+            </button>
+            <span style={{ fontSize: 12, color: "var(--ink-2)" }}>
+              {page} / {pageCount}
+            </span>
+            <button
+              className="btn btn-ghost btn-sm"
+              disabled={page >= pageCount}
+              onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
+            >
+              {t(lang, "admin.paginationNext")}
+            </button>
+          </div>
+        )}
       </div>
       {reportModalId !== null && <ReportModal complaintId={reportModalId} onClose={() => setReportModalId(null)} />}
       {summaryComplaint && (

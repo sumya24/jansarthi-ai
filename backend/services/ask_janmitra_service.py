@@ -39,6 +39,7 @@ from backend.schemas.ask_janmitra import (
     Citation,
     ConversationTurn,
     LocationInfo,
+    PhotoEvidenceRef,
 )
 from backend.services.answer_generation_service import AnswerGenerationService
 from backend.services.complaint_agent import ComplaintAgent
@@ -75,6 +76,7 @@ class AskJanMitraService:
         answer_service: AnswerGenerationService | None = None,
         top_k: int | None = None,
         relevance_threshold: float | None = None,
+        verified_relevance_threshold: float | None = None,
         complaint_agent: ComplaintAgent | None = None,
         location_resolver: LocationResolver | None = None,
         vision_service: VisionService | None = None,
@@ -87,6 +89,7 @@ class AskJanMitraService:
             self._embedding_provider,
             top_k=top_k if top_k is not None else settings.RAG_TOP_K,
             relevance_threshold=relevance_threshold if relevance_threshold is not None else settings.RAG_EMBEDDING_RELEVANCE_THRESHOLD,
+            verified_relevance_threshold=verified_relevance_threshold if verified_relevance_threshold is not None else settings.RAG_VERIFIED_RELEVANCE_THRESHOLD,
         )
         self._location_extractor = location_extractor or self._build_default_extractor()
         self._answer_service = answer_service or AnswerGenerationService()
@@ -286,7 +289,12 @@ class AskJanMitraService:
         if not audio_segments:
             raise ValueError("At least one audio segment is required.")
 
-        bcp47 = to_bcp47(language)
+        # STT decodes with Sarvam's own auto-detect ("unknown"), NOT the client-supplied
+        # `language` (typically the UI's language toggle) -- forcing a fixed decode language onto
+        # audio the citizen may have actually spoken in a DIFFERENT language risks a genuinely
+        # broken transcription (Sarvam decoding Marathi speech as if it were English phonetics),
+        # not just an answer-language mismatch. See language_node's own docstring for the matching
+        # text-side fix; this is voice's equivalent for its own, audio-specific failure mode.
         has_image = image is not None and bool(image.filename)
         input_mode = "IMAGE_VOICE_ASSISTANT" if has_image else "VOICE_ASSISTANT"
         trace_id = uuid.uuid4()
@@ -303,7 +311,7 @@ class AskJanMitraService:
 
         stt_span = tracing.start_child_run(root_run, "speech_to_text", "tool", inputs={"segment_count": len(audio_segments)})
         try:
-            question = transcribe_chunks(self._sarvam_client, audio_segments, bcp47)
+            question = transcribe_chunks(self._sarvam_client, audio_segments, "unknown")
         except AIServiceError as exc:
             tracing.end_run(stt_span, error=str(exc))
             tracing.end_run(root_run, error=str(exc))
@@ -341,9 +349,15 @@ class AskJanMitraService:
         )
 
         audio_base64: str | None = None
+        # base_response.language is the auto-detected response_language (see _run()'s own
+        # comment on this), NOT the raw client-supplied `language` this method was called with --
+        # TTS must speak in whatever language the answer TEXT actually ended up in, or a citizen
+        # who asked (and got answered) in a different language than their UI toggle would hear
+        # speech in the WRONG language despite reading a correct answer.
+        tts_bcp47 = to_bcp47(base_response.language)
         tts_span = tracing.start_child_run(root_run, "text_to_speech", "tool", inputs={"answer_length": len(base_response.answer)})
         try:
-            audio_base64 = self._sarvam_client.synthesize_speech(base_response.answer, bcp47)
+            audio_base64 = self._sarvam_client.synthesize_speech(base_response.answer, tts_bcp47)
             tracing.end_run(tts_span, outputs={"audio_produced": True})
         except AIServiceError as exc:
             logger.warning("Ask Sarthi voice flow: TTS failed, returning text-only: %s", exc)
@@ -393,7 +407,12 @@ class AskJanMitraService:
             "original_language": language,
             "input_type": "text",
             "conversation_history": [
-                {"role": t.role, "content": t.content, "complaint_workflow_state": t.complaint_workflow_state}
+                {
+                    "role": t.role,
+                    "content": t.content,
+                    "complaint_workflow_state": t.complaint_workflow_state,
+                    "photo_evidence": t.photo_evidence.model_dump() if t.photo_evidence else None,
+                }
                 for t in conversation_history
             ],
             "input_mode": input_mode,
@@ -503,17 +522,26 @@ class AskJanMitraService:
             answer=final_state.get("response_text", "I'm not sure how to help with that yet."),
             intent=final_state.get("intent", "TYPE_A_COMPLAINT"),
             service_category=final_state.get("service_category"),
-            language=language,
+            # response_language (auto-detected by language_node from the turn's own text/
+            # transcript, see its own docstring), NOT the raw `language` param this method was
+            # called with -- this field must reflect what the answer text is ACTUALLY in. Falls
+            # back to `language` only if the graph somehow never set response_language at all
+            # (should not happen in practice; language_node always seeds it).
+            language=final_state.get("response_language", language),
             location=location,
             sources=sources,
             verification_status=final_state.get("verification_status"),
             follow_up_required=final_state.get("follow_up_required", False),
             follow_up_question=final_state.get("follow_up_question"),
             follow_up_options=final_state.get("follow_up_options", []),
+            follow_up_options_labels=final_state.get("follow_up_options_labels"),
             insufficient_knowledge=final_state.get("insufficient_knowledge", False),
             routed_to=final_state.get("routed_to", "NONE_OUT_OF_SCOPE"),
             answer_was_llm_generated=final_state.get("answer_was_llm_generated", False),
             complaint_id=final_state.get("complaint_id"),
             complaint_workflow_state=final_state.get("complaint_workflow_state"),
+            photo_evidence=(
+                PhotoEvidenceRef(**final_state["photo_evidence"]) if final_state.get("photo_evidence") else None
+            ),
         )
         return response, final_state, latency_ms

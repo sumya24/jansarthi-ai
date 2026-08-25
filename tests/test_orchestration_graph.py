@@ -7,11 +7,12 @@ tests/test_ask_janmitra.py; this file focuses on the graph's own structure and s
 
 from __future__ import annotations
 
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import backend.routes.ask_janmitra as ask_janmitra_module
 from backend.models import Complaint
 from backend.schemas.ask_janmitra import ConversationTurn
+from backend.schemas.rag_knowledge import ServiceCategory
 from backend.services.intent_classifier import QuestionIntent
 from backend.services.orchestration.graph import (
     _route_after_complaint,
@@ -20,11 +21,25 @@ from backend.services.orchestration.graph import (
     build_graph,
 )
 from backend.services.orchestration.nodes import (
+    GraphDeps,
+    _recover_text_before_intent_ambiguous_turn,
     input_processing_node,
     intent_node,
     language_node,
+    rag_flow_node,
 )
+from backend.services.rag_retriever import RetrievalOutcome
+from backend.services.vector_store import ScoredChunk
 from tests.test_ask_janmitra import _ask, _install_real_service, _real_ask_janmitra_service
+
+
+def _minimal_graph_deps(**overrides) -> GraphDeps:
+    kwargs = dict(
+        retriever=Mock(), location_extractor=Mock(), answer_service=Mock(),
+        complaint_agent=Mock(), location_resolver=Mock(),
+    )
+    kwargs.update(overrides)
+    return GraphDeps(**kwargs)
 
 
 # --- node-level unit tests (no DB/config needed for these three) ---
@@ -43,7 +58,10 @@ def test_input_processing_node_preserves_explicit_input_type():
     assert update["input_type"] == "voice"
 
 
-def test_language_node_is_identity_seeds_response_language():
+def test_language_node_falls_back_to_original_language_when_no_text():
+    """No `normalized_message` at all (e.g. an image-only turn) -- nothing to detect from, so
+    this must fall back to the client-supplied `original_language` exactly as the old identity
+    behavior did."""
     update = language_node({"original_language": "hi"}, config={})
     assert update["response_language"] == "hi"
 
@@ -51,6 +69,343 @@ def test_language_node_is_identity_seeds_response_language():
 def test_language_node_defaults_to_english_when_missing():
     update = language_node({}, config={})
     assert update["response_language"] == "en"
+
+
+def test_language_node_falls_back_on_missing_config_without_crashing():
+    """config={} (no `deps` at all) must degrade gracefully to the fallback, not raise -- covers
+    any caller (including these very unit tests) that invokes this node directly without the
+    full GraphDeps machinery."""
+    update = language_node({"original_language": "hi", "normalized_message": "What is the status of my complaint?"}, config={})
+    assert update["response_language"] == "hi"
+
+
+def test_language_node_uses_detected_language_over_a_mismatched_original_language():
+    """The actual auto-detect fix, live-reported: a citizen's UI language toggle says "en" but
+    the message they actually typed is Marathi -- response_language must follow what they
+    ACTUALLY wrote, matching ChatGPT/Claude-style "answer in whatever language I asked in", not
+    the stale toggle value."""
+    fake_translation = Mock()
+    fake_translation.detect_language = Mock(return_value="mr")
+    deps = _minimal_graph_deps(translation_service=fake_translation)
+    config = {"configurable": {"deps": deps}}
+    state = {"original_language": "en", "normalized_message": "बेंगळुरूमध्ये पाणीपुरवठ्याबाबत तक्रार करण्याची प्रक्रिया काय आहे?"}
+
+    update = language_node(state, config)
+
+    assert update["response_language"] == "mr"
+    fake_translation.detect_language.assert_called_once_with("बेंगळुरूमध्ये पाणीपुरवठ्याबाबत तक्रार करण्याची प्रक्रिया काय आहे?")
+
+
+def test_language_node_falls_back_when_detection_returns_none():
+    """Detection unavailable/failed/unsupported-language (see TranslationService.detect_language's
+    own docstring) -- must fall back to original_language, never leave response_language unset or
+    raise."""
+    fake_translation = Mock()
+    fake_translation.detect_language = Mock(return_value=None)
+    deps = _minimal_graph_deps(translation_service=fake_translation)
+    config = {"configurable": {"deps": deps}}
+    state = {"original_language": "hi", "normalized_message": "What is the status of my complaint?"}
+
+    update = language_node(state, config)
+
+    assert update["response_language"] == "hi"
+
+
+def test_language_node_prefers_established_language_when_real_detection_genuinely_fails():
+    """LIVE-REPORTED BUG (voice input): real detection was genuinely ATTEMPTED for a short,
+    slightly garbled voice-transcribed reply ("हो दासल तर.") -- Sarvam's own text-lid returned
+    language_code=null (confirmed directly against the live API), not enough signal to identify
+    ANY language at all. Falling straight to the stale client-supplied `original_language` here is
+    the exact same unreliable-signal problem the established-language fallback already exists to
+    avoid for the SKIPPED-detection cases (see the sibling tests above) -- this must ALSO apply
+    when detection was attempted but came back empty, not just when it was skipped outright."""
+    last_assistant_text = "तुमची तक्रार वॉर्ड 3 मधील स्ट्रीटलाईटबद्दल असेल. ही तक्रार दाखल करायची आहे का?"
+    text = "हो दासल तर."
+
+    def fake_detect(candidate: str) -> str | None:
+        # The real attempt on THIS turn's own (short, garbled) text genuinely fails, exactly like
+        # Sarvam's real text-lid did live -- only the fallback call on the established, full
+        # assistant sentence succeeds.
+        return "mr" if candidate == last_assistant_text else None
+
+    fake_translation = Mock()
+    fake_translation.detect_language = Mock(side_effect=fake_detect)
+    deps = _minimal_graph_deps(translation_service=fake_translation)
+    config = {"configurable": {"deps": deps}}
+    state = {
+        "original_language": "en",
+        "normalized_message": text,
+        "conversation_history": [
+            {"role": "user", "content": "माझ्या घरासमोर स्ट्रीट लाईट खराब आहे."},
+            {"role": "assistant", "content": last_assistant_text},
+        ],
+    }
+
+    update = language_node(state, config)
+
+    assert update["response_language"] == "mr"
+    fake_translation.detect_language.assert_any_call(text)
+    fake_translation.detect_language.assert_any_call(last_assistant_text)
+
+
+def test_language_node_falls_back_when_translation_service_is_unavailable():
+    """GraphDeps.translation_service defaults to None (see its own docstring) -- this node must
+    degrade to the fallback exactly like a failed detection call, never raise."""
+    deps = _minimal_graph_deps()  # translation_service left at its None default
+    config = {"configurable": {"deps": deps}}
+    state = {"original_language": "hi", "normalized_message": "What is the status of my complaint?"}
+
+    update = language_node(state, config)
+
+    assert update["response_language"] == "hi"
+
+
+def test_language_node_skips_detection_for_a_short_confirmation_reply():
+    """A citizen who has been conversing entirely in Marathi replies with the plain English
+    confirmation word "yes" (see intent_classifier.py's _CONFIRMATION_EXACT_WORDS["en"]) -- this
+    single low-signal word must NOT flip response_language to English mid-conversation. Detection
+    is skipped entirely for short, non-question replies (mirrors intent_classifier's own
+    continuation-detection heuristic) -- the translation_service mock asserts it was never even
+    called, proving this is a skip, not a lucky fallback from a call that happened to return
+    nothing."""
+    fake_translation = Mock()
+    fake_translation.detect_language = Mock(return_value="en")  # would (wrongly) flip it if called
+    deps = _minimal_graph_deps(translation_service=fake_translation)
+    config = {"configurable": {"deps": deps}}
+    state = {"original_language": "mr", "normalized_message": "yes"}
+
+    update = language_node(state, config)
+
+    assert update["response_language"] == "mr"
+    fake_translation.detect_language.assert_not_called()
+
+
+def test_language_node_still_detects_a_short_non_ascii_statement():
+    """LIVE-REPORTED BUG: a citizen's very FIRST message of a brand-new conversation -- a genuine,
+    complete complaint in Marathi that happens to be exactly 6 words and isn't phrased as a
+    question -- got the short-reply skip applied to it too, falling back to the stale
+    client-supplied `original_language` ("en") instead of detecting the citizen's real language.
+    Unlike "yes"/"ok", real Devanagari script is never ambiguous about not being English
+    regardless of word count, so a short NON-ASCII statement must still go through real detection
+    -- only a short PLAIN-ASCII reply (see the sibling test above) gets skipped."""
+    fake_translation = Mock()
+    fake_translation.detect_language = Mock(return_value="mr")
+    deps = _minimal_graph_deps(translation_service=fake_translation)
+    config = {"configurable": {"deps": deps}}
+    text = "माझ्या घराजवळ कचरा साचला आहे, कोलकातामध्ये."
+    state = {"original_language": "en", "normalized_message": text}
+
+    update = language_node(state, config)
+
+    assert update["response_language"] == "mr"
+    fake_translation.detect_language.assert_called_once_with(text)
+
+
+def test_language_node_still_detects_a_short_question():
+    """The short-reply skip must not swallow a genuinely short QUESTION -- "?" is a strong enough
+    signal on its own (see intent_classifier._looks_like_question) that a short question still
+    goes through real detection."""
+    fake_translation = Mock()
+    fake_translation.detect_language = Mock(return_value="mr")
+    deps = _minimal_graph_deps(translation_service=fake_translation)
+    config = {"configurable": {"deps": deps}}
+    state = {"original_language": "en", "normalized_message": "पाणी कधी येईल?"}
+
+    update = language_node(state, config)
+
+    assert update["response_language"] == "mr"
+    fake_translation.detect_language.assert_called_once_with("पाणी कधी येईल?")
+
+
+def test_language_node_preserves_established_language_for_a_short_ascii_button_click():
+    """SECOND LIVE-REPORTED BUG: a multilingual quick-reply button's clicked VALUE always stays
+    canonical English regardless of what language its LABEL was shown in (see nodes.py's
+    `_localize_options` docstring) -- clicking one after an entirely-Hindi conversation used to
+    fall back straight to the stale client-supplied `original_language` ("en"), flipping every
+    following reply back to English. Must instead detect the language from the last ASSISTANT
+    turn's own text (a real sentence, reliable to detect from) and use THAT as the fallback."""
+    fake_translation = Mock()
+    fake_translation.detect_language = Mock(return_value="hi")
+    deps = _minimal_graph_deps(translation_service=fake_translation)
+    config = {"configurable": {"deps": deps}}
+    last_assistant_text = "क्या आप वेस्ट सैनिटेशन के साथ किसी समस्या की रिपोर्ट कर रही हैं, या आप इसके बारे में जानकारी चाहेंगी?"
+    state = {
+        "original_language": "en",
+        "normalized_message": "Report a problem",
+        "conversation_history": [
+            {"role": "user", "content": "मेरे घर के पास कचरा जमा हो गया है, कोलकाता में"},
+            {"role": "assistant", "content": last_assistant_text},
+        ],
+    }
+
+    update = language_node(state, config)
+
+    assert update["response_language"] == "hi"
+    fake_translation.detect_language.assert_called_once_with(last_assistant_text)
+
+
+def test_language_node_falls_back_to_original_language_when_no_assistant_history_yet():
+    """The established-language fallback above must not fire on a genuinely first message --
+    no assistant turn exists yet to detect a language from, so this degrades to the pre-existing
+    `original_language` fallback exactly as before, without ever calling detect_language a second
+    time."""
+    fake_translation = Mock()
+    fake_translation.detect_language = Mock(return_value="hi")
+    deps = _minimal_graph_deps(translation_service=fake_translation)
+    config = {"configurable": {"deps": deps}}
+    state = {"original_language": "mr", "normalized_message": "yes", "conversation_history": []}
+
+    update = language_node(state, config)
+
+    assert update["response_language"] == "mr"
+    fake_translation.detect_language.assert_not_called()
+
+
+def test_language_node_preserves_established_language_for_a_question_shaped_quick_reply():
+    """THIRD LIVE-REPORTED BUG: "What is the procedure?" is one of the exact quick-reply VALUES a
+    translated button sends back (see nodes.py's `_ALL_QUICK_REPLY_OPTIONS` docstring) -- but
+    unlike "Report a problem"/"Yes, submit it", it's phrased as a real English question, so the
+    short/non-question skip never applied to it: real detection ran on the literal English text
+    and correctly (on its own narrow terms) identified it as English, flipping an established
+    Hindi conversation back to English on this one button click. Every quick-reply value is
+    equally "not organic typed text" regardless of its own shape, so this must ALSO preserve the
+    established conversation language, exactly like the short/non-question case."""
+    fake_translation = Mock()
+    fake_translation.detect_language = Mock(return_value="hi")
+    deps = _minimal_graph_deps(translation_service=fake_translation)
+    config = {"configurable": {"deps": deps}}
+    last_assistant_text = "क्या आप वेस्ट सैनिटेशन के साथ किसी समस्या की रिपोर्ट कर रही हैं, या आप इसके बारे में जानकारी चाहेंगी?"
+    state = {
+        "original_language": "en",
+        "normalized_message": "What is the procedure?",
+        "conversation_history": [
+            {"role": "user", "content": "मेरे घर के पास कचरा जमा हो गया है, कोलकाता में"},
+            {"role": "assistant", "content": last_assistant_text},
+        ],
+    }
+
+    update = language_node(state, config)
+
+    assert update["response_language"] == "hi"
+    fake_translation.detect_language.assert_called_once_with(last_assistant_text)
+
+
+def test_recover_text_before_intent_ambiguous_turn_recovers_the_original_hindi_complaint():
+    """LIVE-REPORTED BUG: a citizen's own complaint-shaped Hindi message got asked "Are you
+    reporting a problem with Waste Sanitation, or would you like information about it?" (in
+    Hindi -- see clarification_flow_node's `intent_ambiguous` branch, now localized). Clicking
+    "Report a problem" carries no description of its own -- before this fix, NOTHING recovered
+    the citizen's original text for a TEXT-ONLY (no photo) intent_ambiguous turn (only the
+    photo-caption case was ever recovered, see `_recover_photo_context_from_intent_ambiguous_turn`
+    's own docstring), so the complaint got stored with the bare button label "Report a problem"
+    as its entire description. Language-independent: matched via the SAME multi-language
+    `_INTENT_AMBIGUOUS_CLARIFICATION_MARKERS` list `_last_turn_invites_complaint_reply` already
+    uses, not an English-only pattern."""
+    original_text = "मेरे घर के पास कचरा जमा हो गया है, कोलकाता में"
+    state = {
+        "conversation_history": [
+            {"role": "user", "content": original_text},
+            {
+                "role": "assistant",
+                "content": "क्या आप वेस्ट सैनिटेशन के साथ किसी समस्या की रिपोर्ट कर रही हैं, या आप इसके बारे में जानकारी चाहेंगी?",
+            },
+        ],
+    }
+
+    assert _recover_text_before_intent_ambiguous_turn(state) == original_text
+
+
+def test_recover_text_before_intent_ambiguous_turn_none_when_last_turn_is_something_else():
+    """Must not fire on an unrelated assistant turn (e.g. a location clarification) -- only the
+    specific intent_ambiguous marker set should match."""
+    state = {
+        "conversation_history": [
+            {"role": "user", "content": "Street light not working."},
+            {"role": "assistant", "content": "What is the location? This helps me give you the correct local information."},
+        ],
+    }
+
+    assert _recover_text_before_intent_ambiguous_turn(state) is None
+
+
+def test_recover_text_before_intent_ambiguous_turn_none_with_no_history():
+    assert _recover_text_before_intent_ambiguous_turn({}) is None
+    assert _recover_text_before_intent_ambiguous_turn({"conversation_history": []}) is None
+
+
+def test_rag_flow_node_recovers_category_from_history_when_this_turns_own_text_has_none():
+    """LIVE-REPORTED BUG: clicking "What is the procedure?" after an intent_ambiguous clarification
+    carries no category of its own (see rag_flow_node's own comment on this fix) -- unlike the
+    "Report a problem" side of the same fork, this RAG/info path had no recovery at all, so
+    retrieval ran with category=None and could match a completely different service's chunk.
+    Direct, mock-based unit test (rather than a live-content one, which turned out NOT to
+    discriminate for at least one real city/category combination where the correct chunk still
+    ranked first by semantic similarity alone) -- asserts the retriever is actually called with
+    the RECOVERED category, the one thing this fix changes."""
+    fake_retriever = Mock()
+    fake_retriever.retrieve = Mock(return_value=RetrievalOutcome(insufficient_knowledge=True))
+    deps = _minimal_graph_deps(retriever=fake_retriever)
+    config = {"configurable": {"deps": deps}}
+    state = {
+        "normalized_message": "What is the procedure?",
+        "service_category": None,
+        "response_language": "en",
+        "conversation_history": [
+            {"role": "user", "content": "Garbage in Kolkata."},
+            {
+                "role": "assistant",
+                "content": "Are you reporting a problem with Waste Sanitation, or would you like information about it?",
+            },
+        ],
+    }
+
+    rag_flow_node(state, config)
+
+    fake_retriever.retrieve.assert_called_once()
+    called_category = fake_retriever.retrieve.call_args[0][1]
+    assert called_category == ServiceCategory.WASTE_SANITATION
+
+
+def test_rag_flow_node_translates_the_no_llm_fallback_answer_when_llm_answer_generation_fails():
+    """LIVE-REPORTED BUG: when `AnswerGenerationService.generate()` can't reach the LLM (its own
+    graceful-degradation fallback -- see that method's docstring), it returns the knowledge base's
+    raw English excerpt verbatim, `was_llm_generated=False`. Confirmed live: a genuine 45s Sarvam
+    reasoning-model timeout on a Hindi conversation produced an answer that was raw English body
+    text glued onto the one Hindi sentence the separate `in_app_note` footer adds below -- unlike
+    the LLM path (prompted to answer `in {language_name}`), this fallback was never translated at
+    all. Asserts the fallback text is now run through `_localize`'s translation call (the SAME
+    fast, non-reasoning-model translate endpoint already used for every other hardcoded string in
+    this module) before being returned -- so it doesn't reintroduce the timeout risk that caused
+    the fallback in the first place."""
+    fake_chunk = ScoredChunk(
+        chunk_id="c1", score=0.9,
+        metadata={"content": "Required information: exact location.", "source_id": "s1"},
+    )
+    fake_retriever = Mock()
+    fake_retriever.retrieve = Mock(return_value=RetrievalOutcome(results=[fake_chunk]))
+    fake_answer_service = Mock()
+    fake_answer_service.generate = Mock(return_value=("Required information: exact location.", False))
+    fake_translation_service = Mock()
+    fake_translation_service.to_language = Mock(return_value="आवश्यक जानकारी: सटीक स्थान।")
+    deps = _minimal_graph_deps(
+        retriever=fake_retriever, answer_service=fake_answer_service,
+        translation_service=fake_translation_service,
+    )
+    config = {"configurable": {"deps": deps, "ctx": Mock()}}
+    state = {
+        "normalized_message": "सड़क पर गड्ढा है",
+        "service_category": ServiceCategory.ROADS_POTHOLES.value,
+        "response_language": "hi",
+    }
+
+    with patch("backend.services.orchestration.nodes.get_cached_answer", return_value=None), \
+         patch("backend.services.orchestration.nodes.store_answer") as fake_store:
+        result = rag_flow_node(state, config)
+
+    fake_translation_service.to_language.assert_any_call("Required information: exact location.", "hi")
+    assert "Required information" not in result["response_text"]
+    assert "आवश्यक जानकारी" in result["response_text"]
+    fake_store.assert_not_called()  # a degraded fallback answer must never be frozen into the cache
 
 
 def test_intent_node_wraps_existing_classifier():
@@ -227,6 +582,79 @@ def test_category_recovery_returns_none_when_history_has_no_category():
     from backend.services.orchestration.nodes import _recover_category_from_history
 
     state = {"conversation_history": [{"role": "user", "content": "I want to file a complaint."}]}
+    assert _recover_category_from_history(state) is None
+
+
+def test_category_recovery_does_not_reach_past_an_unrelated_completed_exchange():
+    """Live-reported: an abandoned (never confirmed/cancelled) "Garbage" complaint draft was left
+    in history; a completely unrelated, fully-answered exchange happened afterward (a Nagpur
+    streetlight civic-info question); the citizen then asked a vague, unrelated message again --
+    and the old "Garbage" category got silently reattached to it, reaching straight past the
+    unrelated exchange in between. Fixed by stopping the backward scan at the first assistant turn
+    that wasn't itself part of an open complaint flow (see _turn_is_open_complaint_flow)."""
+    from backend.services.orchestration.nodes import _recover_category_from_history
+
+    state = {
+        "conversation_history": [
+            {"role": "user", "content": "is this report is true"},
+            {"role": "assistant", "content": "What issue would you like to report?", "complaint_workflow_state": "DRAFT"},
+            {"role": "user", "content": "Garbage"},
+            {
+                "role": "assistant",
+                "content": 'Your complaint would be about Waste Sanitation...: "is this report is true". Would you like me to submit this complaint?',
+                "complaint_workflow_state": "AWAITING_CONFIRMATION",
+            },
+            {"role": "user", "content": "how do I report a broken street light in Maharashtra"},
+            {"role": "assistant", "content": "Which city are you asking about — Mumbai, Nagpur?", "complaint_workflow_state": "DRAFT"},
+            {"role": "user", "content": "Nagpur"},
+            {
+                "role": "assistant",
+                "content": "To report a broken streetlight in Nagpur, contact the Electrical Department.",
+                "complaint_workflow_state": None,
+            },
+        ]
+    }
+    assert _recover_category_from_history(state) is None
+
+
+def test_category_recovery_still_works_across_a_genuinely_open_multi_turn_flow():
+    """Regression guard: the stopping point must not break the legitimate case this whole
+    mechanism exists for -- a category named in turn 1, still-open location clarification in
+    between, current turn answering that same clarification."""
+    from backend.schemas.rag_knowledge import ServiceCategory
+    from backend.services.orchestration.nodes import _recover_category_from_history
+
+    state = {
+        "conversation_history": [
+            {"role": "user", "content": "Streetlight."},
+            {"role": "assistant", "content": "What is the location?", "complaint_workflow_state": "DRAFT"},
+        ]
+    }
+    assert _recover_category_from_history(state) == ServiceCategory.STREETLIGHTS
+
+
+def test_category_recovery_does_not_reach_past_an_already_filed_complaint():
+    """Live-reported (a THIRD case, found after the first two fixes shipped): a citizen filed a
+    real streetlight complaint (category+location resolved, confirmed, a real complaint created),
+    then started a brand-new, different complaint with "I want to file a complaint." (no category
+    named at all) -- and the scan still answered "Streetlights" again, because that message is
+    TYPE_A_MAYBE, not one of `_TOPIC_BOUNDARY_INTENTS`, so the earlier user-message-only boundary
+    never fired for it. A successfully filed complaint is its own kind of "moved on", even when
+    every turn in it was complaint-shaped start to finish -- see _turn_closes_a_filed_complaint."""
+    from backend.services.orchestration.nodes import _recover_category_from_history
+
+    state = {
+        "conversation_history": [
+            {"role": "user", "content": "There's a streetlight not working near my home in Ahmedabad."},
+            {
+                "role": "assistant",
+                "content": 'Your complaint would be about Streetlights in "Ward 11 — Navrangpura, Ahmedabad": '
+                '... Would you like me to submit this complaint?',
+            },
+            {"role": "user", "content": "yes"},
+            {"role": "assistant", "content": "Your Streetlights complaint has been filed (complaint #19) and assigned to a worker."},
+        ]
+    }
     assert _recover_category_from_history(state) is None
 
 

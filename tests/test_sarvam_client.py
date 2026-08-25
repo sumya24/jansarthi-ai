@@ -76,3 +76,36 @@ def test_synthesize_speech_requires_configured_client():
 
     with pytest.raises(AIServiceError):
         client.synthesize_speech("Hello there.", "en-IN")
+
+
+# --- identify_language() -- backs the auto-detect-response-language fix (see
+# orchestration/nodes.py's language_node docstring for the live-reported mismatch this closes) ---
+
+
+def test_identify_language_returns_detected_bcp47_code():
+    fake_response = Mock(language_code="mr-IN")
+    client = _client_with_fake_sdk()
+    client._client.text.identify_language.return_value = fake_response
+
+    detected = client.identify_language("बेंगळुरूमध्ये पाणीपुरवठ्याबाबत तक्रार")
+
+    assert detected == "mr-IN"
+    _, kwargs = client._client.text.identify_language.call_args
+    assert kwargs["input"] == "बेंगळुरूमध्ये पाणीपुरवठ्याबाबत तक्रार"
+
+
+def test_identify_language_is_best_effort_returns_none_on_sdk_failure():
+    """Unlike this class's other methods, a failed detection must never raise -- it's a
+    best-effort signal a caller falls back from, not a hard dependency (see
+    TranslationService.detect_language's own docstring)."""
+    client = _client_with_fake_sdk()
+    client._client.text.identify_language.side_effect = RuntimeError("network exploded")
+
+    assert client.identify_language("some text") is None
+
+
+def test_identify_language_returns_none_without_a_configured_client():
+    client = SarvamClient.__new__(SarvamClient)
+    client._client = None
+
+    assert client.identify_language("some text") is None

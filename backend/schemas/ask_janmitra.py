@@ -11,6 +11,31 @@ from pydantic import BaseModel, Field
 from backend.services.intent_classifier import QuestionIntent
 
 
+class PhotoEvidenceRef(BaseModel):
+    """A reference to a photo that's already been validated and written to disk (see
+    evidence_service.SavedFile, which this mirrors field-for-field) -- threaded through
+    `conversation_history` so a LATER turn with no photo of its own (e.g. a typed "yes, submit
+    it") can still attach the SAME real, already-saved file to the eventual complaint, instead of
+    the file being silently orphaned once the turn that uploaded it ends.
+
+    LIVE-REPORTED REQUEST: a citizen who attaches a photo, then answers a follow-up
+    clarification ("Report a problem"), then confirms ("yes, submit it") -- three separate
+    requests -- expects the SAME photo to end up on the complaint, matching how the dedicated
+    "Report an Issue" form behaves (single request, so this never came up there). This backend
+    has no server-side session (see ConversationTurn's own docstring); the file itself IS already
+    saved (ask_janmitra_service.py's `_process_image()` writes it via the same
+    `evidence_service.validate_and_write()` every photo upload in this app uses, regardless of
+    whether a complaint is ever created from that turn) -- what was missing was a way to
+    RE-FIND that already-saved file on a later turn. This is that reference, round-tripped as
+    plain DATA (never re-derived from human-readable `content` text) exactly like
+    `complaint_workflow_state` already is."""
+
+    filename: str
+    original_name: str
+    content_type: str
+    size: int
+
+
 class ConversationTurn(BaseModel):
     """One prior turn in a multi-turn Ask Sarthi exchange. The caller (frontend) resends the
     full history with each request — this API is stateless server-side (see
@@ -30,6 +55,9 @@ class ConversationTurn(BaseModel):
     # that only ever sent {role, content} keeps working exactly as before, via the same
     # marker-text fallback this field is meant to make unnecessary once adopted.
     complaint_workflow_state: str | None = None
+    # Explicit echo of THIS turn's own AskJanMitraResponse.photo_evidence (when `role` is
+    # "assistant") -- see PhotoEvidenceRef's own docstring for the exact gap this closes.
+    photo_evidence: PhotoEvidenceRef | None = None
 
 
 class AskJanMitraRequest(BaseModel):
@@ -86,6 +114,13 @@ class AskJanMitraResponse(BaseModel):
     follow_up_required: bool = False
     follow_up_question: str | None = None
     follow_up_options: list[str] = Field(default_factory=list)
+    # Same length/order as `follow_up_options`, translated into `language` for DISPLAY only --
+    # `follow_up_options` itself always stays the canonical English text a click sends back (see
+    # nodes.py's `_localize_options` docstring for why the two must not be merged into one field).
+    # None whenever the backend didn't produce localized labels for this turn (e.g. no follow-up
+    # at all, or the dynamic ambiguous-location city-name options, deliberately left
+    # untranslated) -- the frontend falls back to `follow_up_options` itself in that case.
+    follow_up_options_labels: list[str] | None = None
     insufficient_knowledge: bool = False
     # Which subsystem actually produced `answer` — lets the frontend (and tests) verify TYPE_C
     # never got its answer from RAG, per this phase's hard requirement.
@@ -109,6 +144,11 @@ class AskJanMitraResponse(BaseModel):
     # `answer` text on the next turn -- see ConversationTurn.complaint_workflow_state's own
     # docstring for the full rationale and the live bug this closes.
     complaint_workflow_state: str | None = None
+    # Set whenever a photo was validated and saved to disk THIS turn (see PhotoEvidenceRef's own
+    # docstring) -- a caller that resends this value on the matching ConversationTurn lets a LATER
+    # turn with no photo of its own (e.g. "yes, submit it") still attach the SAME real file to the
+    # complaint it eventually creates.
+    photo_evidence: PhotoEvidenceRef | None = None
 
 
 class AskVoiceResponse(AskJanMitraResponse):

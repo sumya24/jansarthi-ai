@@ -27,10 +27,11 @@ from tests.image_fixtures import (
 from tests.test_ask_janmitra_image import _FakeComplaintAgent, _get_shared_chroma_deps
 
 
-def _fake_agent_create_complaint(db, citizen_id, language_code, text, audio_chunks, photo_path):
+def _fake_agent_create_complaint(db, citizen_id, language_code, text, audio_chunks, photo_path, category=None):
     complaint = Complaint(
         citizen_id=citizen_id, original_text=text or "", original_language=language_code,
         translated_text=text or "", summary=(text or "")[:80], photo_path=photo_path, status="pending",
+        service_category=category.value if category else None,
     )
     db.add(complaint)
     db.commit()

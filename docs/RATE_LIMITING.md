@@ -55,11 +55,34 @@ shares the same client IP -- a handful of spec files that each log in 2-4 times 
 than a real human demo ever would within 60s. This is the limiter correctly treating "many logins
 from one IP in a short window" as suspicious, which is exactly its job -- not a bug. For a full
 local e2e run, start the backend with higher limits for that process only (standard test/CI
-practice; production's `.env` is untouched):
+practice; production's `.env` is untouched). The specs that sign up/verify a citizen or worker
+also drive `POST /auth/email/send-verification`, `POST /auth/signup/email/send-code`, and
+`POST /auth/forgot-password`, which sit behind their own separate `OTP_RATE_LIMIT` (see
+`.env.example`) rather than the general/login limiters above -- raise that too, or the same specs
+will 429 on the email step even with everything else raised:
 
+Bash:
+```bash
+GENERAL_RATE_LIMIT=1000 LOGIN_RATE_LIMIT=1000 AI_RATE_LIMIT=1000 OTP_RATE_LIMIT=1000 SIGNUP_RATE_LIMIT=1000 uvicorn backend.main:app --port 8000
 ```
-GENERAL_RATE_LIMIT=1000 LOGIN_RATE_LIMIT=1000 AI_RATE_LIMIT=1000 uvicorn backend.main:app --port 8000
+
+PowerShell:
+```powershell
+$env:GENERAL_RATE_LIMIT=1000; $env:LOGIN_RATE_LIMIT=1000; $env:AI_RATE_LIMIT=1000
+$env:OTP_RATE_LIMIT=1000; $env:SIGNUP_RATE_LIMIT=1000
+uvicorn backend.main:app --port 8000
 ```
+
+Raising rate limits only gets a local e2e run as far as the mailbox -- the OTP-sending routes
+still make a real SMTP call, which depends on the configured provider's daily sending quota
+(Gmail's free-tier limit has blocked local Playwright runs more than once, unrelated to anything
+in this app). Set `EMAIL_DEV_MODE=true` in the backend's `.env` instead (see `.env.example`) to
+skip the real send entirely for local/e2e use -- the OTP is still generated and cached for
+`GET /auth/_dev/otp-code`, which `frontend-react/e2e/helpers.ts` already reads from, so signup/
+login/forgot-password specs still run end to end without touching a real inbox or its quota. This
+is the preferred approach for local e2e runs; the rate-limit env vars above are still worth raising
+too, since `EMAIL_DEV_MODE` only removes the SMTP dependency, not the login/general/signup limits
+other specs can also hit.
 
 ## Deployment limitation
 

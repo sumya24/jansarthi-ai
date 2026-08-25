@@ -4,6 +4,8 @@ __pycache__/
 venv/
 .env
 *.db
+*.db.bak-*
+*.db.backup-*
 uploads/*
 !uploads/.gitkeep
 .pytest_cache/
@@ -14,6 +16,16 @@ uploads/*
 test-results/
 playwright-report/
 blob-report/
+
+# Local dev server logs (backend_8000_v*.log, frontend_5173.log, etc.) -- never meant to be
+# committed, just scratch output from local `uvicorn`/`vite` runs.
+*.log
+
+# Word's own lock file for an open .docx (~$<name>.docx) -- never a real file to track.
+~$*.docx
+
+# Demo/test account credential lists -- local convenience exports, not source.
+test_accounts*.csv
 
 # RAG knowledge base: knowledge_records/ and sources/ are the hand-authored source data;
 # everything below is a pure, reproducible function of that source (see

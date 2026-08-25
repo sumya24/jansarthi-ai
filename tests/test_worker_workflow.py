@@ -374,10 +374,11 @@ def test_notification_created_on_new_assignment(client, make_citizen, make_worke
     from unittest.mock import Mock
     from backend.models import Complaint as ComplaintModel
 
-    def _fake_agent_create_complaint(db, citizen_id, language_code, text, audio_chunks, photo_path):
+    def _fake_agent_create_complaint(db, citizen_id, language_code, text, audio_chunks, photo_path, category=None):
         complaint = ComplaintModel(
             citizen_id=citizen_id, original_text=text or "(voice)", original_language=language_code,
             translated_text=f"[en] {text}", summary="Streetlight is broken near the market.", status="pending",
+            service_category=category.value if category else None,
         )
         db.add(complaint)
         db.commit()
@@ -490,7 +491,14 @@ def test_report_unavailable_before_resolution(client, make_worker, db_session):
 
 
 def test_report_available_after_resolution(client, make_worker, db_session):
-    token, worker = make_worker(phone="9000000002", ward="Ward 14")
+    # Explicit "en" -- this test is about the report becoming available with the right fields
+    # after resolution, not translation. make_worker's own default preferred_language is "hi"
+    # (see conftest.py), which used to make no visible difference here only because Sarvam was
+    # out of credits at the time and every translation call silently degraded back to the
+    # original English text (see TranslationService's own honest-fallback docstring) -- once
+    # real translation credits were restored, a Hindi-preferring worker's completion_status
+    # correctly started coming back translated, which this test was never actually checking for.
+    token, worker = make_worker(phone="9000000002", ward="Ward 14", preferred_language="en")
     complaint_id = _make_complaint(db_session, worker_id=worker["id"], status="in_progress")
     client.post(
         f"/complaints/{complaint_id}/resolve", headers={"Authorization": f"Bearer {token}"},

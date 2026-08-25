@@ -10,7 +10,9 @@ import re
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import Response
 from pydantic import BaseModel
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from backend.config import settings
@@ -253,11 +255,58 @@ def create_worker(
 
 @router.get("/workers", response_model=list[WorkerSummary])
 def list_workers(
+    response: Response,
+    search: str | None = None,
+    page: int | None = None,
+    page_size: int | None = None,
     db: Session = Depends(get_db),
     admin: User = Depends(require_role("admin")),
 ) -> list[WorkerSummary]:
-    """List every worker account with their current open/resolved complaint counts."""
-    workers = db.query(User).filter(User.role == "worker").order_by(User.created_at.desc()).all()
+    """List every worker account with their current open/resolved complaint counts.
+
+    LIVE-REPORTED GAP: this always fetched every worker in one response, same client-side-only
+    pagination gap the four complaint dashboards had (see backend/routes/complaints.py's
+    `_paginate` docstring for the fuller rationale) -- `search`/`page`/`page_size` are the same
+    opt-in, additive contract: omitting page/page_size returns every matching worker unchanged
+    (so AdminWorkerDetail.tsx's own unpaginated `api.listWorkers(token)` call keeps working), a
+    caller that opts in gets a real slice plus `X-Total-Count`. `search` matches full_name/ward/
+    phone, the same three fields AdminWorkers.tsx's own (removed) client-side filter used.
+
+    `X-Total-Open-Complaints`/`X-Total-Resolved-Complaints` headers are aggregate sums across
+    EVERY worker (never affected by search/page) -- back AdminWorkers.tsx's own two stat tiles,
+    which must read as "your whole workforce," not "whatever's on the current page" (same
+    "unfiltered totals above, filtered list below" split as every other dashboard's stat cards).
+    """
+    query = db.query(User).filter(User.role == "worker")
+    if search and search.strip():
+        like = f"%{search.strip()}%"
+        query = query.filter(or_(User.full_name.ilike(like), User.ward.ilike(like), User.phone.ilike(like)))
+    query = query.order_by(User.created_at.desc())
+
+    total = None
+    if page is not None or page_size is not None:
+        total = query.count()
+        safe_page = max(page or 1, 1)
+        safe_size = max(min(page_size or 20, 200), 1)
+        query = query.offset((safe_page - 1) * safe_size).limit(safe_size)
+    workers = query.all()
+    if total is not None:
+        response.headers["X-Total-Count"] = str(total)
+
+    total_open = (
+        db.query(Complaint)
+        .join(User, Complaint.assigned_worker_id == User.id)
+        .filter(User.role == "worker", Complaint.status.in_(_OPEN_COMPLAINT_STATUSES))
+        .count()
+    )
+    total_resolved = (
+        db.query(Complaint)
+        .join(User, Complaint.assigned_worker_id == User.id)
+        .filter(User.role == "worker", Complaint.status == "resolved")
+        .count()
+    )
+    response.headers["X-Total-Open-Complaints"] = str(total_open)
+    response.headers["X-Total-Resolved-Complaints"] = str(total_resolved)
 
     summaries = []
     for worker in workers:
