@@ -16,7 +16,7 @@
     "geographic_scope": "CITY",
     "department": "Municipal Corporation Faridabad",
     "authority": "MCF Head Office",
-    "description": "Faridabad's real Solid Waste (Management & Handling) Bye-laws 2019 were fetched and fully read this pass (via the Read-tool-on-saved-PDF workaround, after direct extraction returned only garbled image data). The bye-laws themselves are entirely a regulatory document -- generator obligations, segregation rules, and a fines schedule -- with no citizen-facing complaint-resolution SLA anywhere in the 25-page document. The district portal (faridabad.nic.in) confirms a real general contact number, but no category-specific SLA.",
+    "description": "Faridabad's Solid Waste (Management & Handling) Bye-laws 2019 are a regulatory document -- generator obligations, segregation rules, and a fines schedule -- with no citizen-facing complaint-resolution SLA anywhere in the document. The district portal (faridabad.nic.in) confirms a real general contact number, but no category-specific SLA.",
     "procedure": "Contact the MCF Head Office directly by phone, or via the MCF Citizen App / MCF 311.",
     "required_information": [],
     "required_documents": [],
@@ -28,7 +28,7 @@
       "MCF Citizen App / MCF 311"
     ],
     "contact_information": "Phone: 0129-2416464. Head Office: B.K. Chowk, Faridabad.",
-    "escalation_procedure": "NOT FOUND IN OFFICIAL SOURCE on the fetched pages -- WebSearch-only summaries mention escalation to the CM Window Haryana grievance system, but this was not independently confirmed via a direct fetch of an official page, so not included here.",
+    "escalation_procedure": "NOT FOUND IN OFFICIAL SOURCE on the fetched pages -- secondary sources mention escalation to the CM Window Haryana grievance system, but this was not independently confirmed via a direct fetch of an official page, so not included here.",
     "escalation_authority": null,
     "faq": [],
     "citizen_guidance": null,
