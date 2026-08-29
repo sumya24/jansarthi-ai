@@ -43,10 +43,25 @@ export default function VoiceAssistantOverlay({
   onClose,
   initialHistory,
   onTurnComplete,
+  conversationId,
 }: {
   onClose: () => void;
   initialHistory: AskJanMitraConversationTurn[];
-  onTurnComplete: (question: string, response: AskVoiceResponse) => void;
+  /** LIVE-REPORTED BUG, fixed alongside `initialHistory`'s own: the turn this reports back to the
+   * main chat used to lose the attached photo (no thumbnail in the background transcript, even
+   * though the request genuinely included one) and never showed how long the reply took (unlike
+   * every typed/photo turn, which does) -- because this callback only ever passed `question`/
+   * `response`, nothing about the image or real elapsed time. `durationMs` is measured here
+   * (right around the actual `api.askJanMitraVoice` call, not a guess); `imagePreview` is a
+   * `URL.createObjectURL()` blob of whatever was attached THIS turn, or `undefined` if nothing
+   * was -- same shape/lifecycle as `AskJanMitra.tsx`'s own text/image submit path, which is also
+   * where this blob's cleanup (`imagePreviewUrlsRef`) lives, not here. */
+  onTurnComplete: (question: string, response: AskVoiceResponse, durationMs: number, imagePreview?: string) => void;
+  /** Observability only (see AskJanMitra.tsx's loadOrCreateConversationId docstring) -- passed
+   * through so a voice turn groups into the SAME Phoenix session as the rest of this chat, not a
+   * separate one, matching how `initialHistory`/`onTurnComplete` already keep this one shared
+   * conversation instead of two disconnected ones. */
+  conversationId: string;
 }) {
   const { lang } = useUiLang();
   const { token } = useAuth();
@@ -106,7 +121,7 @@ export default function VoiceAssistantOverlay({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  function handleMicTap() {
+  async function handleMicTap() {
     if (phase === "listening") {
       stopRequestedRef.current = true;
       setPhase("processing");
@@ -118,8 +133,24 @@ export default function VoiceAssistantOverlay({
       setError(null);
       setResponseText(null);
       setResponseLanguage(null);
+      // LIVE-REPORTED BUG: `transcript` (the "YOU SAID" box) was missing from this reset, unlike
+      // `responseText`/`responseLanguage` right above it -- so starting a SECOND turn in the same
+      // overlay session kept showing the FIRST turn's transcript all the way through "Thinking..."
+      // (this turn's own transcript genuinely doesn't exist yet until the backend responds), which
+      // reads as "it didn't hear my new question at all" rather than "still processing your new
+      // one". Cleared here for the same reason the two lines above already are.
+      setTranscript(null);
+      // LIVE-REPORTED BUG: `recorder.start()` is genuinely async -- it opens the mic stream, THEN
+      // starts the real MediaRecorder. This used to flip to "listening" (which visually invites
+      // the citizen to start talking) before awaiting that, so a citizen who spoke the instant
+      // they saw "listening" had their first word(s) captured by nothing -- confirmed live: the
+      // citizen said "tell me about this image", but the backend's own STT transcript (visible in
+      // Phoenix's speech_to_text span) shows only "this image" ever arrived. Awaiting `start()`
+      // first, and only flipping to "listening" on its real success, closes that gap -- the
+      // indicator now can't appear before recording genuinely is.
+      const started = await recorder.start();
+      if (!started) return; // recorder.error is already set and rendered independently below
       setPhase("listening");
-      void recorder.start();
       if (liveCaption.supported) {
         liveCaption.reset();
         liveCaption.start();
@@ -129,10 +160,17 @@ export default function VoiceAssistantOverlay({
 
   async function submitTurn(segments: Blob[]) {
     if (!token) return;
+    // Captured before the attempted image, in case decoding it as a preview URL ever throws --
+    // this turn's real elapsed time shouldn't depend on that succeeding.
+    const sentAt = performance.now();
+    // Created now (this turn's image, if any, is about to be cleared on success either way) --
+    // `undefined` when nothing was attached, matching AskJanMitra.tsx's own text/image submit path.
+    const imagePreview = attachedImage[0] ? URL.createObjectURL(attachedImage[0]) : undefined;
     try {
       const result = await api.askJanMitraVoice(token, {
         language: lang,
         conversation_history: history,
+        conversation_id: conversationId,
         audioSegments: segments,
         image: attachedImage[0] ?? null,
       });
@@ -150,8 +188,10 @@ export default function VoiceAssistantOverlay({
         { role: "assistant", content: result.answer, complaint_workflow_state: result.complaint_workflow_state },
       ]);
       // Reports this turn up to the main chat page (see this component's own docstring) -- so
-      // closing the overlay shows it in the same transcript, sources/follow-up options included.
-      onTurnComplete(result.question, result);
+      // closing the overlay shows it in the same transcript, sources/follow-up options included,
+      // now with the real elapsed time and the attached photo (if any) too -- see this prop's own
+      // docstring for the live-reported gap this closes.
+      onTurnComplete(result.question, result, performance.now() - sentAt, imagePreview);
       // Only clear on success -- a failed request keeps the attached photo so the citizen can
       // just retry, matching AskJanMitra.tsx's own text/image submit behavior.
       setAttachedImage([]);
@@ -164,6 +204,10 @@ export default function VoiceAssistantOverlay({
         setPhase("idle");
       }
     } catch (err) {
+      // The request never succeeded, so `imagePreview` (if created above) was never handed off
+      // to the parent for its own cleanup tracking -- revoke it here instead, or it leaks for the
+      // rest of this tab's life.
+      if (imagePreview) URL.revokeObjectURL(imagePreview);
       setError(err instanceof ApiError ? err.message : t(lang, "ask.voiceAssistant.errorGeneric"));
       setPhase("error");
     }

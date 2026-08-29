@@ -21,7 +21,10 @@ export default function TopBar() {
   const [showSettings, setShowSettings] = useState(false);
 
   function handleLogout() {
-    navigate("/welcome");
+    // replace: true -- without it, the authenticated page stayed in history underneath /welcome,
+    // so Back right after logging out briefly tried to re-open it before ProtectedRoute's own
+    // (already-cleared-user) bounce kicked in, instead of just leaving the app cleanly.
+    navigate("/welcome", { replace: true });
     logout();
   }
 

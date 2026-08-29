@@ -16,6 +16,7 @@ import { t } from "../lib/i18n";
 import { api, ApiError, type Complaint, type ComplaintUpdateEntry } from "../lib/api";
 import type { ServiceCategory } from "../lib/ragTypes";
 import { SERVICE_CATEGORY_DEFS } from "../lib/serviceCategories";
+import SearchWithDateFilter from "../components/SearchWithDateFilter";
 
 const STATUS_LABEL_KEY = {
   // "open" is the complaint's brand-new status, set at creation and normally gone within the
@@ -72,6 +73,8 @@ export default function CitizenDashboard() {
   const [reportModalId, setReportModalId] = useState<number | null>(null);
   const [summaryComplaint, setSummaryComplaint] = useState<Complaint | null>(null);
   const [search, setSearch] = useState("");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   const [statusFilter, setStatusFilter] = useState<CitizenStatusFilter>("all");
@@ -125,6 +128,8 @@ export default function CitizenDashboard() {
         status: statusFilter === "all" ? undefined : statusFilter,
         category: categoryFilter === "all" ? undefined : categoryFilter,
         search: debouncedSearch || undefined,
+        dateFrom: dateFrom || undefined,
+        dateTo: dateTo || undefined,
         page,
         pageSize: COMPLAINTS_PAGE_SIZE,
       });
@@ -170,13 +175,13 @@ export default function CitizenDashboard() {
   // number almost never still makes sense against a newly-narrowed result set.
   useEffect(() => {
     setPage(1);
-  }, [debouncedSearch, statusFilter, categoryFilter]);
+  }, [debouncedSearch, statusFilter, categoryFilter, dateFrom, dateTo]);
 
   useEffect(() => {
     setLoading(true);
     loadComplaints();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token, lang, statusFilter, categoryFilter, debouncedSearch, page]);
+  }, [token, lang, statusFilter, categoryFilter, debouncedSearch, dateFrom, dateTo, page]);
 
   useEffect(() => {
     loadStats();
@@ -279,15 +284,17 @@ export default function CitizenDashboard() {
         <div className="section-label" style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 10 }}>
           <span>{t(lang, "citizen.yourComplaints")}</span>
           {hasAnyComplaints && (
-            <div className="field" style={{ margin: 0, width: "100%", maxWidth: 320 }}>
-              <input
-                type="text"
-                aria-label={t(lang, "citizen.searchComplaints")}
-                placeholder={t(lang, "citizen.searchComplaints")}
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-              />
-            </div>
+            <SearchWithDateFilter
+              searchValue={search}
+              onSearchChange={setSearch}
+              searchPlaceholder={t(lang, "citizen.searchComplaints")}
+              dateFrom={dateFrom}
+              dateTo={dateTo}
+              onDateFromChange={setDateFrom}
+              onDateToChange={setDateTo}
+              lang={lang}
+              width={320}
+            />
           )}
         </div>
 
@@ -316,10 +323,10 @@ export default function CitizenDashboard() {
             ))}
           </div>
         )}
-        {!loading && total === 0 && statusFilter === "all" && categoryFilter === "all" && !debouncedSearch && (
+        {!loading && total === 0 && statusFilter === "all" && categoryFilter === "all" && !debouncedSearch && !dateFrom && !dateTo && (
           <p style={{ color: "var(--ink-2)" }}>{t(lang, "citizen.noComplaints")}</p>
         )}
-        {!loading && total === 0 && (statusFilter !== "all" || categoryFilter !== "all" || debouncedSearch) && (
+        {!loading && total === 0 && (statusFilter !== "all" || categoryFilter !== "all" || debouncedSearch || dateFrom || dateTo) && (
           <p style={{ color: "var(--ink-2)" }}>{t(lang, "admin.noComplaintsFiltered")}</p>
         )}
 

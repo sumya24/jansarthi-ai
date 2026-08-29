@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { useLocation, useNavigate, useParams } from "react-router-dom";
 import TopBar from "../components/TopBar";
 import StatusBadge from "../components/StatusBadge";
 import ComplaintTracker from "../components/ComplaintTracker";
@@ -38,6 +38,21 @@ export default function CitizenComplaintDetail() {
   const complaintId = Number(id);
   const { token } = useAuth();
   const { lang } = useUiLang();
+  const location = useLocation();
+  const navigate = useNavigate();
+
+  // This page is reached from several places now (My Complaints, and a "Needs your attention"/
+  // "Recent activity" notification on Home) -- a link hardcoded to "My Complaints" sent a citizen
+  // who arrived from Home back to the wrong page instead of where they actually came from.
+  // react-router-dom gives the very first entry in a tab's history (a fresh page load, not
+  // in-app navigation) the special key "default" -- only THAT case has nowhere real to go back
+  // to, so it's the one case that still falls back to My Complaints specifically.
+  const canGoBack = location.key !== "default";
+  function goBack() {
+    if (canGoBack) navigate(-1);
+    else navigate("/citizen/complaints");
+  }
+  const backLabel = canGoBack ? t(lang, "common.back") : t(lang, "citizen.detail.back");
 
   const [complaint, setComplaint] = useState<ComplaintDetail | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -94,9 +109,9 @@ export default function CitizenComplaintDetail() {
       <div>
         <TopBar />
         <div className="page" id="main-content">
-          <Link to="/citizen/complaints" className="btn btn-ghost btn-sm" style={{ marginBottom: 16 }}>
-            ← {t(lang, "citizen.detail.back")}
-          </Link>
+          <button type="button" onClick={goBack} className="btn btn-ghost btn-sm" style={{ marginBottom: 16 }}>
+            ← {backLabel}
+          </button>
           <div className="banner-error">{loadError || t(lang, "worker.detail.notFound")}</div>
         </div>
       </div>
@@ -116,9 +131,9 @@ export default function CitizenComplaintDetail() {
     <div>
       <TopBar />
       <div className="page" id="main-content">
-        <Link to="/citizen/complaints" className="btn btn-ghost btn-sm" style={{ marginBottom: 16 }}>
-          ← {t(lang, "citizen.detail.back")}
-        </Link>
+        <button type="button" onClick={goBack} className="btn btn-ghost btn-sm" style={{ marginBottom: 16 }}>
+          ← {backLabel}
+        </button>
 
         <div className="page-head">
           <div>

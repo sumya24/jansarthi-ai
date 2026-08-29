@@ -1,57 +1,194 @@
-import { Link } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import TopBar from "../components/TopBar";
-import ServiceCard from "../components/ServiceCard";
+import { useAuth } from "../lib/auth";
 import { useUiLang } from "../lib/uiLang";
 import { t } from "../lib/i18n";
-import { SERVICE_CATEGORY_DEFS } from "../lib/serviceCategories";
+import { api, type AppNotification } from "../lib/api";
+import "../styles/dashboard.css";
 
-/** Citizen Home — the dashboard's landing screen (P0, Task 1 of the Phase 1 spec). Header is
- * the existing TopBar as-is (logo/profile/theme/language live there already — see TopBar.tsx);
- * this page adds the hero + the 4 service-category entry points + the Ask Sarthi CTA. */
+type MonthBucket = { label: string; count: number; year: number; month: number };
+
+function lastSixMonthBuckets(): MonthBucket[] {
+  const now = new Date();
+  const buckets: MonthBucket[] = [];
+  for (let i = 5; i >= 0; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    buckets.push({ label: d.toLocaleDateString(undefined, { month: "short" }), count: 0, year: d.getFullYear(), month: d.getMonth() });
+  }
+  return buckets;
+}
+
+function greetingKey(): string {
+  const hour = new Date().getHours();
+  if (hour < 12) return "home.greeting.morning";
+  if (hour < 17) return "home.greeting.afternoon";
+  return "home.greeting.evening";
+}
+
+/** Citizen Home — dashboard landing screen. Reuses the app's own existing components/styles
+ * throughout (surface-card, stat-card, TopBar's own notification bell); the only new visual
+ * pieces are the bar chart and the two notification-backed panels, both added to dashboard.css
+ * alongside the equivalent widgets already used by MyArea/CitizenDashboard/WorkerDashboard. */
 export default function CitizenHome() {
+  const { token, user } = useAuth();
   const { lang } = useUiLang();
+  const navigate = useNavigate();
+
+  const [totalCount, setTotalCount] = useState(0);
+  const [resolvedCount, setResolvedCount] = useState(0);
+  const [wardTotal, setWardTotal] = useState<number | null>(null);
+  const [monthly, setMonthly] = useState<MonthBucket[]>(lastSixMonthBuckets());
+  const [notifications, setNotifications] = useState<AppNotification[]>([]);
+
+  const ward = user?.ward ?? null;
+  const openCount = totalCount - resolvedCount;
+
+  useEffect(() => {
+    if (!token) return;
+    api
+      .listComplaints(token, { page: 1, pageSize: 1 })
+      .then((data) => setTotalCount(data.total))
+      .catch(() => {});
+    api
+      .listComplaints(token, { status: "resolved", page: 1, pageSize: 1 })
+      .then((data) => setResolvedCount(data.total))
+      .catch(() => {});
+  }, [token]);
+
+  useEffect(() => {
+    if (!token || !ward) return;
+    api
+      .getAreaSummary(token, { page: 1, pageSize: 1 })
+      .then((summary) => setWardTotal(summary.total))
+      .catch(() => {});
+  }, [token, ward]);
+
+  // The chart is the citizen's OWN complaint history, not the ward's -- Home is a personal
+  // dashboard (greeting, personal stat cards), and "Ward total" already covers ward-wide context
+  // as its own single number, so this stays about "you," not "your neighborhood," and works the
+  // same whether or not a ward is even set.
+  useEffect(() => {
+    if (!token) return;
+    api
+      .listComplaints(token, { page: 1, pageSize: 100 })
+      .then((data) => {
+        const buckets = lastSixMonthBuckets();
+        for (const c of data.items) {
+          const d = new Date(c.created_at);
+          const bucket = buckets.find((b) => b.year === d.getFullYear() && b.month === d.getMonth());
+          if (bucket) bucket.count += 1;
+        }
+        setMonthly(buckets);
+      })
+      .catch(() => {});
+  }, [token]);
+
+  useEffect(() => {
+    if (!token) return;
+    api
+      .listNotifications(token)
+      .then((data) => setNotifications([...data.notifications].sort((a, b) => b.created_at.localeCompare(a.created_at))))
+      .catch(() => {});
+  }, [token]);
+
+  async function handleNotificationSelect(n: AppNotification) {
+    if (!n.read_at && token) {
+      try {
+        await api.markNotificationRead(token, n.id);
+        setNotifications((prev) => prev.map((x) => (x.id === n.id ? { ...x, read_at: new Date().toISOString() } : x)));
+      } catch {
+        /* best-effort -- navigation still proceeds even if marking read failed */
+      }
+    }
+    if (n.complaint_id) navigate(`/citizen/complaints/${n.complaint_id}`);
+  }
+
+  const unread = notifications.filter((n) => !n.read_at).slice(0, 4);
+  const recent = notifications.slice(0, 5);
+  const maxMonthly = Math.max(1, ...monthly.map((b) => b.count));
+  const todayLabel = new Date().toLocaleDateString(undefined, { weekday: "long", year: "numeric", month: "long", day: "numeric" });
+  const firstName = user?.full_name?.split(" ")[0] ?? "";
 
   return (
     <div>
       <TopBar />
       <div className="page" id="main-content">
-        <section className="home-hero enter">
-          <h1 className="display">{t(lang, "home.hero.title")}</h1>
-          <p>{t(lang, "home.hero.subtitle")}</p>
-          <div className="home-hero-actions">
-            <Link to="/citizen/report" className="btn btn-primary">
-              {t(lang, "home.hero.reportCta")}
-            </Link>
-            <Link to="/citizen/ask" className="btn btn-ghost">
-              {t(lang, "home.hero.askCta")}
-            </Link>
-          </div>
-        </section>
-
-        <div className="section-label">{t(lang, "home.servicesLabel")}</div>
-        <div className="service-grid" style={{ marginBottom: 30 }}>
-          {SERVICE_CATEGORY_DEFS.map((def, i) => (
-            <div key={def.id} className="enter" style={{ "--stagger": i } as React.CSSProperties}>
-              <ServiceCard
-                icon={def.icon}
-                title={t(lang, def.titleKey)}
-                description={t(lang, def.descriptionKey)}
-                actionLabel={t(lang, "home.serviceCard.action")}
-                to={`/citizen/report?service=${def.id}`}
-                color={def.color}
-              />
-            </div>
-          ))}
+        <div style={{ marginBottom: 24 }}>
+          <h1 className="page-title display">{t(lang, greetingKey())}, {firstName}</h1>
+          <p className="page-sub">{todayLabel}{ward ? ` · ${ward}` : ""}</p>
         </div>
 
-        <div className="surface-card" style={{ padding: 20, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-          <div>
-            <div style={{ fontWeight: 700, marginBottom: 4 }}>{t(lang, "home.trackPrompt.title")}</div>
-            <div style={{ fontSize: 12.5, color: "var(--ink-2)" }}>{t(lang, "home.trackPrompt.body")}</div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12, marginBottom: 20 }}>
+          <div className="surface-card hoverable stat-card">
+            <div className="stat-label">{t(lang, "home.statTotal")}</div>
+            <div className="display stat-value">{totalCount}</div>
           </div>
-          <Link to="/citizen/complaints" className="btn btn-ghost btn-sm">
-            {t(lang, "nav.myComplaints")}
-          </Link>
+          <div className="surface-card hoverable stat-card">
+            <div className="stat-label">{t(lang, "citizen.open")}</div>
+            <div className="display stat-value" style={{ color: "var(--status-open)" }}>{openCount}</div>
+          </div>
+          <div className="surface-card hoverable stat-card">
+            <div className="stat-label">{t(lang, "citizen.resolved")}</div>
+            <div className="display stat-value" style={{ color: "var(--status-resolved)" }}>{resolvedCount}</div>
+          </div>
+          {ward && (
+            <div className="surface-card hoverable stat-card">
+              <div className="stat-label">{t(lang, "home.statWard")}</div>
+              <div className="display stat-value">{wardTotal ?? "–"}</div>
+            </div>
+          )}
+        </div>
+
+        <div className="home-panels" style={{ marginBottom: 16 }}>
+          <div className="surface-card" style={{ padding: "16px 18px" }}>
+            <div className="home-panel-title">
+              <span>{t(lang, "citizen.yourComplaints")}</span>
+              <span className="sub">{t(lang, "home.chartSubtitle")}</span>
+            </div>
+            <div className="home-bars">
+              {monthly.map((b, i) => (
+                <div key={i} className="bar" style={{ height: `${(b.count / maxMonthly) * 100}%` }} title={`${b.label}: ${b.count}`} />
+              ))}
+            </div>
+            <div className="home-bars-labels">
+              {monthly.map((b, i) => <span key={i}>{b.label}</span>)}
+            </div>
+          </div>
+
+          <div className="surface-card" style={{ padding: "16px 18px" }}>
+            <div className="home-panel-title"><span>{t(lang, "home.attentionTitle")}</span></div>
+            {unread.length === 0 && <p style={{ fontSize: 13, color: "var(--ink-2)", margin: 0 }}>{t(lang, "home.attentionEmpty")}</p>}
+            {unread.map((n) => (
+              <button key={n.id} type="button" className="home-attn-row" onClick={() => handleNotificationSelect(n)}>
+                {/* LIVE-REPORTED: the unread dot used to sit at the far right of the row (a lone
+                    `space-between` flex child) -- easy to miss since a citizen's eye lands on the
+                    title/message text first, at the LEFT edge, same reading direction as
+                    everywhere else in the app. Moved to lead the row instead, matching the
+                    notification bell dropdown's own unread-dot placement (NotificationBell.tsx). */}
+                <span className="home-attn-dot" />
+                <div>
+                  <div className="home-attn-title">{n.title}</div>
+                  <div className="home-attn-msg">{n.message}</div>
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="surface-card" style={{ padding: "16px 18px" }}>
+          <div className="home-panel-title"><span>{t(lang, "home.activityTitle")}</span></div>
+          {recent.length === 0 && <p style={{ fontSize: 13, color: "var(--ink-2)", margin: 0 }}>{t(lang, "notifications.empty")}</p>}
+          {recent.map((n) => (
+            <button key={n.id} type="button" className="home-feed-row" onClick={() => handleNotificationSelect(n)}>
+              <span className={`home-feed-dot${n.read_at ? " read" : " unread"}`} />
+              <div>
+                <div className="home-feed-text">{n.title}</div>
+                <div className="home-attn-msg">{n.message}</div>
+                <div className="home-feed-time">{new Date(n.created_at).toLocaleString()}</div>
+              </div>
+            </button>
+          ))}
         </div>
       </div>
     </div>

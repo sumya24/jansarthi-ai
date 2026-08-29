@@ -68,6 +68,15 @@
   --status-resolved: #16A34A; --status-resolved-bg: #DCFCE7;
   --status-critical: #DC2626; --status-critical-bg: #FEE2E2;
 
+  /* Categorical chart series (see components/ModelCostChart.tsx) -- a validated, colorblind-safe
+     5-hue slice of an 8-slot reference palette (dataviz skill), fixed order, one hue per distinct
+     entity (never reassigned by rank/filter). Re-validated directly against THIS app's own real
+     surfaces, not the skill's generic default: light on #FFFFFF passes every hard gate (worst
+     adjacent CVD dE 9.1, normal-vision dE 19.6); 3 of the 5 sit under 3:1 contrast on white, which
+     is why every series here always ships with a direct text label beside it, never color alone. */
+  --chart-series-1: #2A78D6; --chart-series-2: #EB6834; --chart-series-3: #1BAF7A;
+  --chart-series-4: #EDA100; --chart-series-5: #E87BA4;
+
   /* Civic service identity, mirroring the logo's 4 service-color segments exactly. */
   --service-waste: #16A34A; --service-waste-bg: #DCFCE7;
   --service-water: #0284C7; --service-water-bg: #E0F2FE;
@@ -100,6 +109,8 @@
     --status-progress: #38BDF8; --status-progress-bg: #0F2436;
     --status-resolved: #22C55E; --status-resolved-bg: #0F2A18;
     --status-critical: #F87171; --status-critical-bg: #341015;
+    --chart-series-1: #3987E5; --chart-series-2: #D95926; --chart-series-3: #199E70;
+    --chart-series-4: #C98500; --chart-series-5: #D55181;
     --service-waste: #22C55E; --service-waste-bg: #0F2A18;
     --service-water: #38BDF8; --service-water-bg: #0F2436;
     --service-roads: #FB923C; --service-roads-bg: #331D0C;
@@ -120,6 +131,8 @@
   --status-progress: #38BDF8; --status-progress-bg: #0F2436;
   --status-resolved: #22C55E; --status-resolved-bg: #0F2A18;
   --status-critical: #F87171; --status-critical-bg: #341015;
+  --chart-series-1: #3987E5; --chart-series-2: #D95926; --chart-series-3: #199E70;
+  --chart-series-4: #C98500; --chart-series-5: #D55181;
   --service-waste: #22C55E; --service-waste-bg: #0F2A18;
   --service-water: #38BDF8; --service-water-bg: #0F2436;
   --service-roads: #FB923C; --service-roads-bg: #331D0C;
@@ -136,6 +149,8 @@
   --status-progress: #0284C7; --status-progress-bg: #E0F2FE;
   --status-resolved: #16A34A; --status-resolved-bg: #DCFCE7;
   --status-critical: #DC2626; --status-critical-bg: #FEE2E2;
+  --chart-series-1: #2A78D6; --chart-series-2: #EB6834; --chart-series-3: #1BAF7A;
+  --chart-series-4: #EDA100; --chart-series-5: #E87BA4;
   --service-waste: #16A34A; --service-waste-bg: #DCFCE7;
   --service-water: #0284C7; --service-water-bg: #E0F2FE;
   --service-roads: #F97316; --service-roads-bg: #FFEDD5;

@@ -133,170 +133,165 @@ export default function MyArea() {
           </div>
         </div>
 
-        {/* LIVE-REPORTED REQUEST: picking a service reframes the WHOLE mini-dashboard below (the
-            3 stat cards) into that service's own breakdown, not just the list -- so this selector
-            comes first, right under the page head, ahead of the stats it controls. Each chip
-            carries its own service icon/color (matching the top-accent bar and the Report an
-            Issue service cards) so it reads as "which lens am I viewing" rather than one more
-            generic filter row. */}
-        {ward && (
-          <div style={{ marginBottom: 22 }}>
-            <div className="section-label" style={{ marginTop: 0 }}>{t(lang, "area.categoryFilterLabel")}</div>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+        {/* LIVE-REPORTED REQUEST: a persistent sidebar instead of two chip rows -- this page's
+            list (the whole ward, not just one citizen's own complaints) tends to run long enough
+            that always-visible filters earn their keep, unlike My Complaints' typically-short
+            personal list (which kept the lighter chip-row layout instead; see CitizenDashboard.tsx
+            for that comparison). Category still reframes the 3 stat cards exactly as before --
+            only the filter controls' own presentation changed, not the data flow. */}
+        <div className="area-with-sidebar">
+          {ward && (
+            <aside className="area-sidebar">
+              <h4>{t(lang, "area.categoryFilterLabel")}</h4>
               <button
-                className={`filter-chip btn btn-sm ${categoryFilter === "all" ? "btn-primary" : "btn-ghost"}`}
+                type="button"
+                className={`area-side-item ${categoryFilter === "all" ? "active" : ""}`}
                 onClick={() => setCategoryFilter("all")}
               >
                 {t(lang, "admin.filterAll")}
               </button>
-              {SERVICE_CATEGORY_DEFS.map((def) => {
-                const active = categoryFilter === def.id;
-                return (
-                  <button
-                    key={def.id}
-                    className={`filter-chip btn btn-sm ${active ? "btn-primary" : "btn-ghost"}`}
-                    onClick={() => setCategoryFilter(def.id)}
-                    // LIVE-REPORTED DECISION: tried a glow on the active chip, then explicitly
-                    // reverted it -- inconsistent with the plain "All" chip right next to it, and
-                    // a calmer/more restrained active-state reads better for a civic/government
-                    // app than a glowing effect. Plain solid fill only, same treatment as "All".
-                    style={active ? { background: `var(--service-${def.color})`, borderColor: `var(--service-${def.color})`, color: "#fff" } : undefined}
-                  >
-                    <span className="filter-chip-icon">{def.icon}</span>
-                    {t(lang, def.titleKey)}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        )}
+              {SERVICE_CATEGORY_DEFS.map((def) => (
+                <button
+                  key={def.id}
+                  type="button"
+                  className={`area-side-item ${categoryFilter === def.id ? "active" : ""}`}
+                  onClick={() => setCategoryFilter(def.id)}
+                >
+                  <span className="area-side-dot" style={{ background: `var(--service-${def.color})` }} />
+                  {t(lang, def.titleKey)}
+                </button>
+              ))}
 
-        {ward && !loading && !loadError && summary && (
-          <>
-            <p style={{ fontSize: 12, color: "var(--ink-2)", margin: "0 0 8px" }}>
-              {t(lang, "area.showingLabel")}:{" "}
-              <strong style={{ color: "var(--ink)" }}>
-                {categoryFilter === "all"
-                  ? t(lang, "area.allServicesLabel")
-                  : t(lang, SERVICE_CATEGORY_DEFS.find((d) => d.id === categoryFilter)?.titleKey ?? "area.allServicesLabel")}
-              </strong>
-            </p>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12, marginBottom: 30 }}>
-              <div className="surface-card hoverable stat-card">
-                <div className="stat-label">{t(lang, "admin.pendingStat")}</div>
-                <div className="display stat-value" style={{ color: "var(--status-critical)" }}>{summary.pending_count}</div>
-              </div>
-              <div className="surface-card hoverable stat-card">
-                <div className="stat-label">{t(lang, "worker.filterInProgress")}</div>
-                <div className="display stat-value" style={{ color: "var(--status-open)" }}>{summary.in_progress_count}</div>
-              </div>
-              <div className="surface-card hoverable stat-card">
-                <div className="stat-label">{t(lang, "citizen.resolved")}</div>
-                <div className="display stat-value" style={{ color: "var(--status-resolved)" }}>{summary.resolved_count}</div>
-              </div>
-            </div>
-          </>
-        )}
-
-        <div className="section-label">{t(lang, "area.servicesLabel")}</div>
-        <div className="service-grid" style={{ marginBottom: 30 }}>
-          {SERVICE_CATEGORY_DEFS.map((def) => (
-            <Link key={def.id} to={`/citizen/report?service=${def.id}`} className={`service-card service-card-${def.color} surface-card hoverable`}>
-              <div className="service-card-icon">{def.icon}</div>
-              <h3>{t(lang, def.titleKey)}</h3>
-              <p>{t(lang, def.descriptionKey)}</p>
-            </Link>
-          ))}
-        </div>
-
-        <div className="section-label" style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 10 }}>
-          <span>{t(lang, "area.recentLabel")}</span>
-          {ward && (
-            <div className="field" style={{ margin: 0, width: "100%", maxWidth: 320 }}>
-              <input
-                type="text"
-                aria-label={t(lang, "area.searchComplaints")}
-                placeholder={t(lang, "area.searchComplaints")}
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-              />
-            </div>
+              <h4 className="second">{t(lang, "admin.colStatus")}</h4>
+              {AREA_FILTERS.map((f) => (
+                <button
+                  key={f}
+                  type="button"
+                  className={`area-side-item ${filter === f ? "active" : ""}`}
+                  onClick={() => setFilter(f)}
+                >
+                  {t(lang, AREA_FILTER_LABEL_KEY[f])}
+                </button>
+              ))}
+            </aside>
           )}
-        </div>
-        {ward && (
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 14 }}>
-            {AREA_FILTERS.map((f) => (
-              <button
-                key={f}
-                className={`filter-chip btn btn-sm ${filter === f ? "btn-primary" : "btn-ghost"}`}
-                onClick={() => setFilter(f)}
-              >
-                {t(lang, AREA_FILTER_LABEL_KEY[f])}
-              </button>
-            ))}
-          </div>
-        )}
-        {loading && (
-          <div className="surface-card" style={{ padding: "14px 16px" }}>
-            <div className="skeleton" style={{ width: "60%", height: 14 }} />
-          </div>
-        )}
-        {!loading && !ward && (
-          <div className="surface-card" style={{ padding: 20, color: "var(--ink-2)", fontSize: 13 }}>
-            {t(lang, "area.emptyNoWard")}
-          </div>
-        )}
-        {!loading && ward && loadError && <div className="banner-error">{loadError}</div>}
-        {!loading && ward && !loadError && summary && summary.total === 0 && filter === "all" && categoryFilter === "all" && !debouncedSearch && (
-          <div className="surface-card" style={{ padding: 20, color: "var(--ink-2)", fontSize: 13 }}>
-            {t(lang, "area.emptyNoComplaints")}
-          </div>
-        )}
-        {!loading && ward && !loadError && summary && summary.total === 0 && (filter !== "all" || categoryFilter !== "all" || debouncedSearch) && (
-          <div className="surface-card" style={{ padding: 20, color: "var(--ink-2)", fontSize: 13 }}>
-            {t(lang, "admin.noComplaintsFiltered")}
-          </div>
-        )}
-        {!loading && ward && !loadError && summary && summary.total > 0 && (
-          <>
-            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              {summary.complaints.map((c) => (
-                <div key={c.id} className="surface-card" style={{ padding: "12px 16px", display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                  <div>
-                    <div className="mono" style={{ fontSize: 11, color: "var(--ink-3)" }}>JM-{String(c.id).padStart(5, "0")}</div>
-                    <div style={{ fontSize: 13, fontWeight: 600 }}>{c.display_text}</div>
-                    <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 2, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                      <span>{statusDateLabel(c.status)} {new Date(c.status_updated_at).toLocaleDateString()}</span>
-                      <CategoryBadge category={c.service_category} lang={lang} />
-                    </div>
+
+          <div className="area-main-col">
+            {ward && !loading && !loadError && summary && (
+              <>
+                <p style={{ fontSize: 12, color: "var(--ink-2)", margin: "0 0 8px" }}>
+                  {t(lang, "area.showingLabel")}:{" "}
+                  <strong style={{ color: "var(--ink)" }}>
+                    {categoryFilter === "all"
+                      ? t(lang, "area.allServicesLabel")
+                      : t(lang, SERVICE_CATEGORY_DEFS.find((d) => d.id === categoryFilter)?.titleKey ?? "area.allServicesLabel")}
+                  </strong>
+                </p>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12, marginBottom: 30 }}>
+                  <div className="surface-card hoverable stat-card">
+                    <div className="stat-label">{t(lang, "admin.pendingStat")}</div>
+                    <div className="display stat-value" style={{ color: "var(--status-critical)" }}>{summary.pending_count}</div>
                   </div>
-                  <StatusBadge status={c.status} label={t(lang, STATUS_LABEL_KEY[c.status])} />
+                  <div className="surface-card hoverable stat-card">
+                    <div className="stat-label">{t(lang, "worker.filterInProgress")}</div>
+                    <div className="display stat-value" style={{ color: "var(--status-open)" }}>{summary.in_progress_count}</div>
+                  </div>
+                  <div className="surface-card hoverable stat-card">
+                    <div className="stat-label">{t(lang, "citizen.resolved")}</div>
+                    <div className="display stat-value" style={{ color: "var(--status-resolved)" }}>{summary.resolved_count}</div>
+                  </div>
                 </div>
+              </>
+            )}
+
+            <div className="section-label">{t(lang, "area.servicesLabel")}</div>
+            <div className="service-grid" style={{ marginBottom: 30 }}>
+              {SERVICE_CATEGORY_DEFS.map((def) => (
+                <Link key={def.id} to={`/citizen/report?service=${def.id}`} className={`service-card service-card-${def.color} surface-card hoverable`}>
+                  <div className="service-card-icon">{def.icon}</div>
+                  <h3>{t(lang, def.titleKey)}</h3>
+                  <p>{t(lang, def.descriptionKey)}</p>
+                </Link>
               ))}
             </div>
-            {pageCount > 1 && (
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 4px" }}>
-                <button
-                  className="btn btn-ghost btn-sm"
-                  disabled={page <= 1}
-                  onClick={() => setPage((p) => Math.max(1, p - 1))}
-                >
-                  {t(lang, "admin.paginationPrev")}
-                </button>
-                <span style={{ fontSize: 12, color: "var(--ink-2)" }}>
-                  {page} / {pageCount}
-                </span>
-                <button
-                  className="btn btn-ghost btn-sm"
-                  disabled={page >= pageCount}
-                  onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
-                >
-                  {t(lang, "admin.paginationNext")}
-                </button>
+
+            <div className="section-label" style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 10 }}>
+              <span>{t(lang, "area.recentLabel")}</span>
+              {ward && (
+                <div className="field" style={{ margin: 0, width: "100%", maxWidth: 320 }}>
+                  <input
+                    type="text"
+                    aria-label={t(lang, "area.searchComplaints")}
+                    placeholder={t(lang, "area.searchComplaints")}
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                  />
+                </div>
+              )}
+            </div>
+            {loading && (
+              <div className="surface-card" style={{ padding: "14px 16px" }}>
+                <div className="skeleton" style={{ width: "60%", height: 14 }} />
               </div>
             )}
-          </>
-        )}
+            {!loading && !ward && (
+              <div className="surface-card" style={{ padding: 20, color: "var(--ink-2)", fontSize: 13 }}>
+                {t(lang, "area.emptyNoWard")}
+              </div>
+            )}
+            {!loading && ward && loadError && <div className="banner-error">{loadError}</div>}
+            {!loading && ward && !loadError && summary && summary.total === 0 && filter === "all" && categoryFilter === "all" && !debouncedSearch && (
+              <div className="surface-card" style={{ padding: 20, color: "var(--ink-2)", fontSize: 13 }}>
+                {t(lang, "area.emptyNoComplaints")}
+              </div>
+            )}
+            {!loading && ward && !loadError && summary && summary.total === 0 && (filter !== "all" || categoryFilter !== "all" || debouncedSearch) && (
+              <div className="surface-card" style={{ padding: 20, color: "var(--ink-2)", fontSize: 13 }}>
+                {t(lang, "admin.noComplaintsFiltered")}
+              </div>
+            )}
+            {!loading && ward && !loadError && summary && summary.total > 0 && (
+              <>
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  {summary.complaints.map((c) => (
+                    <div key={c.id} className="surface-card" style={{ padding: "12px 16px", display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                      <div>
+                        <div className="mono" style={{ fontSize: 11, color: "var(--ink-3)" }}>JM-{String(c.id).padStart(5, "0")}</div>
+                        <div style={{ fontSize: 13, fontWeight: 600 }}>{c.display_text}</div>
+                        <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 2, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                          <span>{statusDateLabel(c.status)} {new Date(c.status_updated_at).toLocaleDateString()}</span>
+                          <CategoryBadge category={c.service_category} lang={lang} />
+                        </div>
+                      </div>
+                      <StatusBadge status={c.status} label={t(lang, STATUS_LABEL_KEY[c.status])} />
+                    </div>
+                  ))}
+                </div>
+                {pageCount > 1 && (
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 4px" }}>
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      disabled={page <= 1}
+                      onClick={() => setPage((p) => Math.max(1, p - 1))}
+                    >
+                      {t(lang, "admin.paginationPrev")}
+                    </button>
+                    <span style={{ fontSize: 12, color: "var(--ink-2)" }}>
+                      {page} / {pageCount}
+                    </span>
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      disabled={page >= pageCount}
+                      onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
+                    >
+                      {t(lang, "admin.paginationNext")}
+                    </button>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        </div>
       </div>
     </div>
   );

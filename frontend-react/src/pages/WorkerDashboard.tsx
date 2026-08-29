@@ -14,8 +14,10 @@ import { useAuth } from "../lib/auth";
 import { useUiLang } from "../lib/uiLang";
 import { useDebouncedValue } from "../lib/useDebouncedValue";
 import { t } from "../lib/i18n";
-import { api, ApiError, type Complaint } from "../lib/api";
+import { api, ApiError, type Complaint, type ServiceStatusCount } from "../lib/api";
 import { useToast } from "../lib/toast";
+import SearchWithDateFilter from "../components/SearchWithDateFilter";
+import ServiceDonutPanel from "../components/ServiceDonutPanel";
 import "../styles/dashboard.css";
 
 // LIVE-REPORTED GAP: this queue used to fetch and render EVERY complaint assigned to this worker
@@ -56,12 +58,18 @@ export default function WorkerDashboard() {
   // on it (confusing: "where did it go?"). The worker can still narrow down manually.
   const [filter, setFilter] = useState<"all" | "assigned" | "accepted" | "in_progress" | "resolved">("all");
   const [search, setSearch] = useState("");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   // Decoupled from `complaints` (the filtered+paged current-page list) on purpose -- see
   // CitizenDashboard.tsx's identical stat cards for the fuller rationale.
   const [totalCount, setTotalCount] = useState(0);
   const [resolvedCount, setResolvedCount] = useState(0);
+  // Decoupled from `loading`/search/filter for the same reason as totalCount/resolvedCount above
+  // -- this worker's own service breakdown should read as "your whole queue," not flicker every
+  // time a search/date/page change re-triggers `load()`'s own loading flag.
+  const [serviceRows, setServiceRows] = useState<ServiceStatusCount[]>([]);
   const debouncedSearch = useDebouncedValue(search);
 
   // Which complaint has an action modal open, and which modal -- one at a time, keyed by
@@ -78,6 +86,8 @@ export default function WorkerDashboard() {
         lang,
         status: filter === "all" ? undefined : filter,
         search: debouncedSearch || undefined,
+        dateFrom: dateFrom || undefined,
+        dateTo: dateTo || undefined,
         page,
         pageSize: WORKER_PAGE_SIZE,
       });
@@ -104,23 +114,33 @@ export default function WorkerDashboard() {
     }
   }
 
+  async function loadServiceBreakdown() {
+    if (!token) return;
+    try {
+      setServiceRows(await api.complaintsByService(token));
+    } catch {
+      // Non-critical -- the donut just keeps its last known values on a transient failure.
+    }
+  }
+
   async function reload() {
-    await Promise.all([load(), loadStats()]);
+    await Promise.all([load(), loadStats(), loadServiceBreakdown()]);
   }
 
   // A search edit or filter-chip click always jumps back to page 1 -- the previous page number
   // almost never still makes sense against a newly-narrowed result set.
   useEffect(() => {
     setPage(1);
-  }, [debouncedSearch, filter]);
+  }, [debouncedSearch, filter, dateFrom, dateTo]);
 
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token, lang, filter, debouncedSearch, page]);
+  }, [token, lang, filter, debouncedSearch, dateFrom, dateTo, page]);
 
   useEffect(() => {
     loadStats();
+    loadServiceBreakdown();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
@@ -169,6 +189,15 @@ export default function WorkerDashboard() {
           </div>
         </div>
 
+        {serviceRows.length > 0 && (
+          <div className="surface-card admin-loc-ai-panel" style={{ marginBottom: 20 }}>
+            <h6>
+              <span>{t(lang, "admin.serviceChartTitle")}</span>
+            </h6>
+            <ServiceDonutPanel rows={serviceRows} lang={lang} statusLabel={(status) => t(lang, STATUS_LABEL_KEY[status])} />
+          </div>
+        )}
+
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 10, marginBottom: 16 }}>
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
             {(["all", "assigned", "accepted", "in_progress", "resolved"] as const).map((f) => (
@@ -190,15 +219,17 @@ export default function WorkerDashboard() {
             ))}
           </div>
           {totalCount > 0 && (
-            <div className="field" style={{ margin: 0, width: "100%", maxWidth: 320 }}>
-              <input
-                type="text"
-                aria-label={t(lang, "worker.searchComplaints")}
-                placeholder={t(lang, "worker.searchComplaints")}
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-              />
-            </div>
+            <SearchWithDateFilter
+              searchValue={search}
+              onSearchChange={setSearch}
+              searchPlaceholder={t(lang, "worker.searchComplaints")}
+              dateFrom={dateFrom}
+              dateTo={dateTo}
+              onDateFromChange={setDateFrom}
+              onDateToChange={setDateTo}
+              lang={lang}
+              width={320}
+            />
           )}
         </div>
 
