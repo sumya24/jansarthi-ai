@@ -59,7 +59,19 @@ jobs:
       # kept so the old-vs-new retrieval threshold comparison in docs/ask_janmitra_rag_architecture.md
       # stays reproducible, not part of the real ChromaDB retrieval path this CI job builds above.
       # If the skip count here ever changes, something else broke -- don't assume it's this one.
+      #
+      # SARVAM_API_KEY: most tests mock the Sarvam client entirely and never need this, but a
+      # few (e.g. test_response_language_follows_the_actual_text_not_a_stale_ui_toggle) deliberately
+      # exercise the REAL client to prove real behavior (language auto-detection from actual text,
+      # not a stubbed response) -- those need a real, funded key to pass, and silently fall back to
+      # a default/English-only result without one. Scoped to just this one step (not the whole
+      # job) -- nothing before this point needs it. Add SARVAM_API_KEY as a GitHub Actions repo
+      # secret (Settings -> Secrets and variables -> Actions) for this to take effect; with no
+      # secret configured, ${{ secrets.SARVAM_API_KEY }} is simply an empty string here, and only
+      # those few real-Sarvam-call tests fail -- this workflow doesn't otherwise require it.
       - name: Run backend tests
+        env:
+          SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
         run: python -m pytest tests/ -v
 
   frontend-build:
