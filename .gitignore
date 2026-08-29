@@ -27,8 +27,13 @@ blob-report/
 # Word's own lock file for an open .docx (~$<name>.docx) -- never a real file to track.
 ~$*.docx
 
-# Demo/test account credential lists -- local convenience exports, not source.
+# Demo/test account credential lists -- local convenience exports, not source. Real plaintext
+# passwords live in these (the DB itself only ever stores a bcrypt hash) -- never meant to be
+# committed, purely a local testing convenience regenerated on demand from the live DB.
 test_accounts*.csv
+JanSarthi_Test_Accounts.csv
+JanSarthi_Test_Accounts.xlsx
+JanSarthi_AI_Manual_Test_Script.docx
 
 # RAG knowledge base: knowledge_records/ and sources/ are the hand-authored source data;
 # everything below is a pure, reproducible function of that source (see
