@@ -149,7 +149,15 @@ def test_chroma_collection_opens_and_reports_expected_size():
     # already used for this city's Water/Drainage, Roads, and Streetlight records, just missing
     # its Waste sibling until now. See knowledge_records/verified/gujarat/ahmedabad.json (now 5
     # records).
-    assert store.size == 975
+    # 1053, not the earlier 975 -- 26 new records added across two changes: real, sourced
+    # VERIFIED knowledge for 6 newly-added cities (Vadodara, Pune, Mangaluru, Madurai, Kanpur,
+    # Asansol -- all 4 service categories each, 24 records), plus a real gap closed in Bengaluru's
+    # own knowledge base (it was missing ROADS_POTHOLES and STREETLIGHTS entirely -- added real
+    # BBMP contact channels for both, 2 records). See knowledge_records/verified/{gujarat/
+    # vadodara,maharashtra/pune,karnataka/mangaluru,tamil_nadu/madurai,uttar_pradesh/kanpur,
+    # west_bengal/asansol}.json and karnataka/bengaluru.json (now 4 records), plus
+    # sources/inventory.json's corresponding entries.
+    assert store.size == 1053
 
 
 def test_chroma_persist_dir_is_configurable_not_hardcoded():

@@ -695,18 +695,22 @@ def test_falls_back_to_citizens_home_ward_when_no_other_location_signal(client, 
 def test_does_not_substitute_home_ward_when_message_names_an_unrecognized_place(client, monkeypatch, make_citizen):
     """LIVE-REPORTED BUG ("Pune fallback"): a citizen whose home ward IS a real, resolvable city
     (Mohali) asks a civic-info question naming a DIFFERENT real place this app's knowledge base
-    simply doesn't cover (Pune) -- the answer must not silently substitute their home city and
-    answer as if the question had been about Mohali, with no indication anything was substituted.
-    Distinct from test_falls_back_to_citizens_home_ward_when_no_other_location_signal just above:
-    that citizen's message names NO place at all, so the home-ward substitution IS correct there;
-    this one's message DOES name a place, so it must not be silently overridden. Also confirms the
-    citizen sees an honest, non-"couldn't recognize" wording -- Pune IS a real, well-known place,
-    just not one this app's gazetteer covers, so telling the citizen it "isn't a location" would be
+    simply doesn't cover (originally Pune -- since replaced with Nashik below, because Pune itself
+    later gained real, sourced knowledge-base coverage as part of the app's 6->18 city expansion,
+    which would otherwise make this test's whole premise -- "a real place this app doesn't cover"
+    -- false; see data/rag_knowledge_base/knowledge_records/verified/maharashtra/pune.json) -- the
+    answer must not silently substitute their home city and answer as if the question had been
+    about Mohali, with no indication anything was substituted. Distinct from
+    test_falls_back_to_citizens_home_ward_when_no_other_location_signal just above: that citizen's
+    message names NO place at all, so the home-ward substitution IS correct there; this one's
+    message DOES name a place, so it must not be silently overridden. Also confirms the citizen
+    sees an honest, non-"couldn't recognize" wording -- Nashik IS a real, well-known place, just
+    not one this app's gazetteer covers, so telling the citizen it "isn't a location" would be
     misleading; see location_node's own `location_message_names_unresolved_place` and
     location_extractor.py's looks_like_it_names_an_unrecognized_place."""
     _install_real_service(monkeypatch)
     token, _ = make_citizen(phone="9100000030", ward="Ward 5 — Sector 71, Mohali")
-    resp = _ask(client, token, "What is the process for a new water connection in Pune?")
+    resp = _ask(client, token, "What is the process for a new water connection in Nashik?")
     body = resp.json()
     assert body["location"].get("city") != "Sahibzada Ajit Singh Nagar (Mohali)"
     assert "mohali" not in body["answer"].lower()
