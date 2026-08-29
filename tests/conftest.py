@@ -188,15 +188,27 @@ def make_admin(db_session):
 def make_worker(client, make_admin):
     """Factory fixture: seed an admin, then use it to create a worker via the real API."""
 
+    bootstrap_admin_token: list[str] = []
+
     def _make(phone: str = "9000000002", password: str = "secret123!", full_name: str = "Test Worker", ward: str = "Ward 14", preferred_language: str = "hi"):
         # Uses its own dedicated bootstrap-admin phone so this fixture composes safely
         # with a test that also calls make_admin() directly with the default phone.
-        bootstrap_admin_phone = "9999900000"
-        make_admin(phone=bootstrap_admin_phone, password="bootstrap-pass")
-        admin_login = client.post(
-            "/auth/login", json={"identifier": bootstrap_admin_phone, "password": "bootstrap-pass"}
-        )
-        admin_token = admin_login.json()["access_token"]
+        #
+        # BUG FIX: a test that calls make_worker() more than once (to seed two workers in two
+        # different wards/cities -- a real, now-existing need, see test_ask_janmitra.py's "Change
+        # location" tests) previously hit a UNIQUE constraint on `users.phone` the second time,
+        # since this fixture created a brand-new bootstrap admin on every call with the same
+        # hardcoded phone. Only create/log in as the bootstrap admin ONCE per test (cached in this
+        # closure, which pytest recreates fresh for every test via the `@pytest.fixture()` scope) --
+        # every subsequent call within the same test reuses that same token.
+        if not bootstrap_admin_token:
+            bootstrap_admin_phone = "9999900000"
+            make_admin(phone=bootstrap_admin_phone, password="bootstrap-pass")
+            admin_login = client.post(
+                "/auth/login", json={"identifier": bootstrap_admin_phone, "password": "bootstrap-pass"}
+            )
+            bootstrap_admin_token.append(admin_login.json()["access_token"])
+        admin_token = bootstrap_admin_token[0]
 
         response = client.post(
             "/admin/workers",

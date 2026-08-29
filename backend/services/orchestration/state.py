@@ -125,11 +125,15 @@ class GraphState(TypedDict, total=False):
     # in logs/tracing/tests rather than only implicit in `routed_to`/`follow_up_*`. One of "NONE"
     # (no complaint-shaped signal this turn), "DRAFT" (category and/or location still missing),
     # "AWAITING_CONFIRMATION" (category+location resolved, but the citizen has not yet explicitly
-    # confirmed -- create_complaint() has NOT run), "CONFIRMED" (explicit confirmation received
-    # this turn, complaint created), or "CANCELLED" (explicit cancellation received). This state
-    # is *derived* fresh each request from `conversation_history` (see complaint_flow_node's own
-    # docstring) -- there is still no server-side session/checkpointer; this field only makes that
-    # per-request derivation visible, it is not itself persisted between requests.
+    # confirmed -- create_complaint() has NOT run), "AWAITING_LOCATION_CHANGE" (the citizen picked
+    # "Change location" on the confirmation prompt and is being asked which ward/area to use
+    # instead -- see complaint_flow_node's own location-change handling), "CONFIRMED" (explicit
+    # confirmation received this turn, complaint created), or "CANCELLED" (explicit cancellation
+    # received, OR a citizen-picked replacement location was rejected for belonging to a different
+    # city than their own saved one -- see the same handling). This state is *derived* fresh each
+    # request from `conversation_history` (see complaint_flow_node's own docstring) -- there is
+    # still no server-side session/checkpointer; this field only makes that per-request derivation
+    # visible, it is not itself persisted between requests.
     complaint_workflow_state: str
 
     # --- status flow results ---
