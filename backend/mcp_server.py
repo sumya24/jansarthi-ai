@@ -89,6 +89,7 @@ def _get_retriever() -> RagRetriever:
             relevance_threshold=settings.RAG_EMBEDDING_RELEVANCE_THRESHOLD,
             verified_relevance_threshold=settings.RAG_VERIFIED_RELEVANCE_THRESHOLD,
             reranker=reranker,
+            hybrid_search_enabled=settings.RAG_HYBRID_SEARCH_ENABLED,
         )
     return _retriever
 

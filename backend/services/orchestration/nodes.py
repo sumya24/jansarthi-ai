@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
 
@@ -1377,7 +1378,70 @@ def rag_flow_node(state: GraphState, config: RunnableConfig) -> dict[str, Any]:
 # category's answer is a fresh generate() call every time) and no "new connection" post-filter
 # (out of scope for a genuinely multi-category message) -- both easy to add later if a real need
 # for them shows up here specifically.
+#
+# BUG FIX (code review, efficiency): each category's retrieve()+generate() pair is completely
+# independent of every other category's -- nothing in one iteration depends on a prior one's
+# result -- so running them one after another made a 3-category question take roughly 3x a
+# single-category question's wall-clock time (each category pays its own real Sarvam network
+# round-trip). Now run concurrently via a thread pool. This is NOT a new class of risk for this
+# codebase: FastAPI already serves multiple SIMULTANEOUS citizen requests by running this exact
+# same shared RagRetriever/AnswerGenerationService singletons concurrently across its own request
+# threadpool -- `_process_one_category()` below just does, within one request, the identical
+# concurrent-call shape this app's services already have to tolerate across requests every day.
 # ------------------------------------------------------------------
+
+
+def _process_one_category(
+    deps: GraphDeps,
+    text: str,
+    category: ServiceCategory,
+    location_city: str | None,
+    location_state: str | None,
+    language_name: str,
+    root: object | None,
+) -> dict[str, Any]:
+    """One category's full retrieve+generate step for `agent_flow_node`, factored out so it can
+    run on its own thread pool worker -- returns a plain, self-contained result dict (never
+    mutates anything shared with other categories), so the caller can safely run several of these
+    concurrently and merge the results afterward."""
+    category_span = tracing.start_child_run(
+        root, f"agent_rag_{category.value.lower()}", "retriever", inputs={"category": category.value},
+    )
+    outcome = deps.retriever.retrieve(text, category, location_city, location_state)
+    tracing.end_run(
+        category_span,
+        outputs={"result_count": len(outcome.results), "insufficient_knowledge": outcome.insufficient_knowledge},
+    )
+    category_label = category.value.replace("_", " ").title()
+    if outcome.insufficient_knowledge or not outcome.results:
+        return {
+            "section": f"**{category_label}**: I don't currently have reliable information for this.",
+            "sources": [], "was_llm_generated": False, "token_usage": None,
+        }
+
+    context_chunks = [r.metadata.get("content", "") for r in outcome.results]
+    context_labels = [chunk_context_label(r) for r in outcome.results]
+    answer_text, was_llm_generated, token_usage = deps.answer_service.generate(
+        text, context_chunks, language_name, context_labels
+    )
+    sources = [
+        {
+            "source_id": r.metadata.get("source_id"),
+            "source_title": r.metadata.get("source_title"),
+            "source_organization": r.metadata.get("source_organization"),
+            "source_url": r.metadata.get("source_url"),
+            "source_type": r.metadata.get("source_type"),
+            "verification_status": r.metadata.get("verification_status"),
+            "geographic_scope": r.metadata.get("geographic_scope"),
+        }
+        for r in outcome.results
+    ]
+    return {
+        "section": f"**{category_label}**: {answer_text}",
+        "sources": sources,
+        "was_llm_generated": was_llm_generated,
+        "token_usage": token_usage,
+    }
 
 
 def agent_flow_node(state: GraphState, config: RunnableConfig) -> dict[str, Any]:
@@ -1394,6 +1458,19 @@ def agent_flow_node(state: GraphState, config: RunnableConfig) -> dict[str, Any]
         inputs={"query": tracing.redact_text(text), "categories": [c.value for c in categories]},
     )
 
+    # ThreadPoolExecutor.map() preserves input order in its results -- sections/source-dedup below
+    # stay in the same deterministic category order as before, even though the work itself now
+    # runs concurrently. max_workers is capped at a small, fixed ceiling (not literally
+    # len(categories)) purely as a sane upper bound -- detect_multiple_categories() never returns
+    # more than a handful of categories in practice.
+    with ThreadPoolExecutor(max_workers=min(len(categories), 8) or 1) as executor:
+        results = list(executor.map(
+            lambda category: _process_one_category(
+                deps, text, category, location_city, location_state, language_name, root,
+            ),
+            categories,
+        ))
+
     sections: list[str] = []
     all_sources: list[dict[str, Any]] = []
     seen_source_ids: set[str] = set()
@@ -1402,46 +1479,20 @@ def agent_flow_node(state: GraphState, config: RunnableConfig) -> dict[str, Any]
     total_cost_inr = 0.0
     total_tokens = 0
 
-    for category in categories:
-        category_span = tracing.start_child_run(
-            root, f"agent_rag_{category.value.lower()}", "retriever", inputs={"category": category.value},
-        )
-        outcome = deps.retriever.retrieve(text, category, location_city, location_state)
-        tracing.end_run(
-            category_span,
-            outputs={"result_count": len(outcome.results), "insufficient_knowledge": outcome.insufficient_knowledge},
-        )
-        category_label = category.value.replace("_", " ").title()
-        if outcome.insufficient_knowledge or not outcome.results:
-            sections.append(f"**{category_label}**: I don't currently have reliable information for this.")
-            continue
-
-        context_chunks = [r.metadata.get("content", "") for r in outcome.results]
-        context_labels = [chunk_context_label(r) for r in outcome.results]
-        answer_text, was_llm_generated, token_usage = deps.answer_service.generate(
-            text, context_chunks, language_name, context_labels
-        )
-        any_llm_generated = any_llm_generated or was_llm_generated
+    for result in results:
+        sections.append(result["section"])
+        any_llm_generated = any_llm_generated or result["was_llm_generated"]
+        token_usage = result["token_usage"]
         if token_usage:
             any_cost_known = True
             total_cost_inr += token_usage.get("total_cost_inr") or 0.0
             total_tokens += token_usage.get("total_tokens") or 0
-        sections.append(f"**{category_label}**: {answer_text}")
-
-        for r in outcome.results:
-            source_id = r.metadata.get("source_id")
+        for source in result["sources"]:
+            source_id = source["source_id"]
             if source_id in seen_source_ids:
                 continue
             seen_source_ids.add(source_id)
-            all_sources.append({
-                "source_id": source_id,
-                "source_title": r.metadata.get("source_title"),
-                "source_organization": r.metadata.get("source_organization"),
-                "source_url": r.metadata.get("source_url"),
-                "source_type": r.metadata.get("source_type"),
-                "verification_status": r.metadata.get("verification_status"),
-                "geographic_scope": r.metadata.get("geographic_scope"),
-            })
+            all_sources.append(source)
 
     # Only "insufficient" if EVERY category came back with nothing usable -- a citizen who
     # reported 3 issues and got 2 real answers plus one honest "don't have that" section still

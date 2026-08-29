@@ -524,6 +524,47 @@ def test_agent_flow_node_partial_coverage_is_not_treated_as_fully_insufficient()
     assert len(result["sources"]) == 1
 
 
+def test_agent_flow_node_processes_categories_concurrently_not_sequentially():
+    """BUG FIX (code review, efficiency): each category's retrieve()+generate() pair used to run
+    one after another even though they're fully independent -- a 3-category question took
+    roughly 3x a single category's wall-clock time. Proves the fix with a REAL timing measurement
+    (not just call-count correctness, already covered by the other tests above): a message naming
+    3 categories, each with a fake generate() that sleeps 0.3s, must complete in well under
+    3 x 0.3s = 0.9s if the three are genuinely running concurrently."""
+    import time
+
+    chunk = ScoredChunk(
+        chunk_id="c1", score=0.9,
+        metadata={"content": "Some real content.", "source_id": "SRC", "verification_status": "VERIFIED"},
+    )
+    fake_retriever = Mock()
+    fake_retriever.retrieve = Mock(return_value=RetrievalOutcome(results=[chunk]))
+
+    def slow_generate(question, chunks, language, context_labels=None):
+        time.sleep(0.3)
+        return ("A real answer.", True, None)
+
+    fake_answer_service = Mock()
+    fake_answer_service.generate = Mock(side_effect=slow_generate)
+    deps = _minimal_graph_deps(retriever=fake_retriever, answer_service=fake_answer_service)
+    config = {"configurable": {"deps": deps}}
+    state = {
+        "normalized_message": "There is garbage piling up, a pothole on my street, and the streetlight is broken.",
+        "response_language": "en",
+    }
+
+    start = time.perf_counter()
+    result = agent_flow_node(state, config)
+    elapsed = time.perf_counter() - start
+
+    assert fake_answer_service.generate.call_count == 3
+    # Sequential would be >=0.9s; concurrent should land close to one slot (0.3s) plus overhead.
+    # A generous 0.7s ceiling comfortably distinguishes "ran concurrently" from "ran sequentially"
+    # without being flaky on a loaded CI machine.
+    assert elapsed < 0.7, f"expected concurrent execution (~0.3s), took {elapsed:.2f}s -- looks sequential"
+    assert result["routed_to"] == "RAG_MULTI_CATEGORY"
+
+
 def test_intent_node_wraps_existing_classifier():
     update = intent_node({"normalized_message": "I need a new electricity connection"}, config={})
     assert update["out_of_scope_service"] == "ELECTRICITY"

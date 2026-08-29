@@ -67,6 +67,10 @@ class _VectorStore(Protocol):
 
     def get_candidates(self, metadata_filter: dict[str, str] | None) -> list[tuple[str, str, dict[str, Any], Any]]: ...
 
+    def get_candidate_texts(self, metadata_filter: dict[str, str] | None) -> list[tuple[str, str, dict[str, Any]]]: ...
+
+    def get_embeddings(self, chunk_ids: list[str]) -> dict[str, Any]: ...
+
 
 class _Reranker(Protocol):
     def score(self, query: str, passages: list[str]) -> list[float]: ...
@@ -93,11 +97,16 @@ class RagRetriever:
         relevance_threshold: float = 0.79,
         verified_relevance_threshold: float = 0.74,
         reranker: _Reranker | None = None,
+        hybrid_search_enabled: bool = True,
     ) -> None:
         self._store = vector_store
         self._embedding_provider = embedding_provider
         self._top_k = top_k
         self._relevance_threshold = relevance_threshold
+        # See config.py's RAG_HYBRID_SEARCH_ENABLED docstring for why this defaults True (a
+        # different default than `reranker` above, deliberately) and for the real env-var
+        # escape hatch this constructor flag exists to make usable.
+        self._hybrid_search_enabled = hybrid_search_enabled
         # See config.py's RAG_VERIFIED_RELEVANCE_THRESHOLD docstring for the measured cross-lingual
         # gap this exists for. Must never be ABOVE the main threshold -- it exists to admit MORE
         # verified content in edge cases, never less.
@@ -106,6 +115,18 @@ class RagRetriever:
         # backend/services/reranker.py. None (the default) means every existing caller that
         # doesn't pass one gets this file's original heuristic-only rerank, unchanged.
         self._reranker = reranker
+        # BUG FIX (code review, efficiency): a BM25 index (and the text pool it's built from) is
+        # identical for every query sharing the same metadata_filter until the knowledge base is
+        # next re-ingested -- rebuilding it from scratch on every single retrieve() call was pure
+        # waste for the extremely common case of repeat traffic to the same city+category (this
+        # app's own real usage pattern -- civic complaints cluster heavily by category and city).
+        # Keyed on a hashable form of metadata_filter; this instance is already a long-lived
+        # per-process singleton (same lifetime as the Chroma collection/embedding model it wraps
+        # -- see AskJanMitraService's own module docstring), so caching for the process lifetime
+        # matches how every other expensive one-time load in this pipeline is already handled.
+        # Capped (see _widen_with_bm25) so an unusual flood of distinct filters can't grow this
+        # unboundedly over a very long-running process.
+        self._bm25_cache: dict[Any, tuple[Any, list[tuple[str, str, dict[str, Any]]]] | None] = {}
 
     def retrieve(
         self,
@@ -126,7 +147,8 @@ class RagRetriever:
         # Ask the store for more than top_k so the VERIFIED-preference rerank below has something
         # to work with beyond the raw top_k by score alone.
         candidates = self._store.search(query_vector, top_k=self._top_k * 3, metadata_filter=metadata_filter or None)
-        candidates = self._widen_with_bm25(query, query_vector, candidates, metadata_filter or None)
+        if self._hybrid_search_enabled:
+            candidates = self._widen_with_bm25(query, query_vector, candidates, metadata_filter or None)
 
         if not candidates:
             reason = "No knowledge records exist for this service/location combination."
@@ -236,6 +258,41 @@ class RagRetriever:
 
         return RetrievalOutcome(results=above_threshold[: self._top_k])
 
+    # Hard cap on distinct metadata_filter combinations cached at once -- this app's real filter
+    # space (a fixed set of ServiceCategory values times a bounded set of covered cities/states)
+    # never approaches this in practice; it exists only so a pathological flood of distinct
+    # filters (e.g. many one-off free-text city names) can't grow this cache unboundedly over a
+    # very long-running process. Clearing the whole cache on overflow (rather than an LRU) is a
+    # deliberate simplification -- this is expected to never actually trigger.
+    _BM25_CACHE_MAX_ENTRIES = 500
+
+    def _get_or_build_bm25_index(self, metadata_filter: dict[str, str] | None):
+        """Returns `(bm25_index_or_None, pool_texts)` for this metadata_filter, building and
+        caching it on first use. `bm25_index` is `None` when the filtered pool is empty (nothing
+        to widen with, ever, for this filter). See `self._bm25_cache`'s own docstring (in
+        `__init__`) for why caching this is safe and worthwhile."""
+        cache_key = tuple(sorted(metadata_filter.items())) if metadata_filter else None
+        cached = self._bm25_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        if len(self._bm25_cache) >= self._BM25_CACHE_MAX_ENTRIES:
+            logger.warning(
+                "RAG retrieval: BM25 index cache hit its %d-entry cap -- clearing (see "
+                "_widen_with_bm25's own comment; this is not expected in normal operation)",
+                self._BM25_CACHE_MAX_ENTRIES,
+            )
+            self._bm25_cache.clear()
+
+        pool_texts = self._store.get_candidate_texts(metadata_filter)
+        if not pool_texts:
+            result = (None, [])
+        else:
+            corpus_tokens = [tokenize(content) for _, content, _ in pool_texts]
+            result = (BM25Okapi(corpus_tokens), pool_texts)
+        self._bm25_cache[cache_key] = result
+        return result
+
     def _widen_with_bm25(
         self,
         query: str,
@@ -246,18 +303,24 @@ class RagRetriever:
         """Adds any chunk BM25 keyword-matches within the SAME metadata-filtered pool that vector
         search's `candidates` didn't already surface -- see this module's docstring for the full
         "widen, never replace/fuse" design. Returns `candidates` unchanged (same list, same order)
-        if the filtered pool is empty or too small for BM25 to be meaningful, or if the query has
-        no tokens to match on at all."""
-        pool = self._store.get_candidates(metadata_filter)
-        if not pool:
+        if the filtered pool is empty, or if the query has no tokens to match on at all.
+
+        BUG FIX (code review, efficiency): this used to (a) rebuild the BM25 index from scratch on
+        every call regardless of whether an identical `metadata_filter` was just seen (see
+        `_get_or_build_bm25_index()`/`self._bm25_cache`), and (b) fetch a REAL EMBEDDING for every
+        chunk in the entire filtered pool up front, even though only a small handful ever turn out
+        to be BM25 widening candidates. Now only the pool's TEXT is fetched/cached up front
+        (`get_candidate_texts()`), and real embeddings are fetched (`get_embeddings()`) only for
+        the specific chunk ids that actually rank in BM25's own top results and aren't already
+        vector-search hits -- bounded by `top_k * 3`, never by corpus size."""
+        bm25, pool_texts = self._get_or_build_bm25_index(metadata_filter)
+        if bm25 is None:
             return candidates
 
-        corpus_tokens = [tokenize(content) for _, content, _, _ in pool]
         query_tokens = tokenize(query)
         if not query_tokens:
             return candidates
 
-        bm25 = BM25Okapi(corpus_tokens)
         scores = bm25.get_scores(query_tokens)
 
         already_present = {c.chunk_id for c in candidates}
@@ -269,11 +332,24 @@ class RagRetriever:
             key=lambda pair: pair[0],
             reverse=True,
         )
+        # Filter down to genuinely NEW candidates BEFORE fetching embeddings -- so the embedding
+        # fetch below is scoped to exactly the chunks that might get added, never anything already
+        # present as a vector-search hit.
+        top_new = [
+            (score, idx) for score, idx in ranked[: self._top_k * 3]
+            if pool_texts[idx][0] not in already_present
+        ]
+        if not top_new:
+            return candidates
+
+        new_embeddings = self._store.get_embeddings([pool_texts[idx][0] for _, idx in top_new])
+
         widened = list(candidates)
-        for score, idx in ranked[: self._top_k * 3]:
-            chunk_id, content, metadata, vector = pool[idx]
-            if chunk_id in already_present:
-                continue
+        for score, idx in top_new:
+            chunk_id, content, metadata = pool_texts[idx]
+            vector = new_embeddings.get(chunk_id)
+            if vector is None:
+                continue  # shouldn't happen (see get_embeddings()'s own docstring) -- never crash retrieval over it
             real_score = cosine_similarity_any(query_vector, vector)
             # ChromaVectorStore's metadata doesn't include "content" (Chroma stores chunk text
             # separately as a "document" -- see its get_candidates()/search() docstrings);
@@ -283,7 +359,6 @@ class RagRetriever:
             merged_metadata = dict(metadata)
             merged_metadata["content"] = content
             widened.append(ScoredChunk(chunk_id=chunk_id, score=real_score, metadata=merged_metadata))
-            already_present.add(chunk_id)
             logger.info(
                 "RAG retrieval: BM25 widened candidate pool with chunk %s (bm25=%.3f, real cosine=%.3f)",
                 chunk_id, score, real_score,

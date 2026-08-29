@@ -124,6 +124,7 @@ class AskJanMitraService:
             relevance_threshold=relevance_threshold if relevance_threshold is not None else settings.RAG_EMBEDDING_RELEVANCE_THRESHOLD,
             verified_relevance_threshold=verified_relevance_threshold if verified_relevance_threshold is not None else settings.RAG_VERIFIED_RELEVANCE_THRESHOLD,
             reranker=self._reranker,
+            hybrid_search_enabled=settings.RAG_HYBRID_SEARCH_ENABLED,
         )
         self._location_extractor = location_extractor or self._build_default_extractor()
         self._answer_service = answer_service or AnswerGenerationService()

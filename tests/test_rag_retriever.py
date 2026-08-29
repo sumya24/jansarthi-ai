@@ -48,6 +48,12 @@ class _FakeVectorStore:
     def get_candidates(self, metadata_filter: dict[str, str] | None) -> list[tuple]:
         return []
 
+    def get_candidate_texts(self, metadata_filter: dict[str, str] | None) -> list[tuple]:
+        return []
+
+    def get_embeddings(self, chunk_ids: list[str]) -> dict:
+        return {}
+
 
 def _chunk(chunk_id: str, score: float, city: str, category: str, status: str) -> ScoredChunk:
     return ScoredChunk(
@@ -174,6 +180,13 @@ class _FakeVectorStoreWithPool:
 
     def get_candidates(self, metadata_filter: dict[str, str] | None) -> list[tuple]:
         return list(self._pool)
+
+    def get_candidate_texts(self, metadata_filter: dict[str, str] | None) -> list[tuple]:
+        return [(chunk_id, content, metadata) for chunk_id, content, metadata, _vector in self._pool]
+
+    def get_embeddings(self, chunk_ids: list[str]) -> dict:
+        wanted = set(chunk_ids)
+        return {chunk_id: vector for chunk_id, _content, _metadata, vector in self._pool if chunk_id in wanted}
 
 
 class _FixedVectorEmbeddingProvider:
@@ -415,3 +428,170 @@ def test_reranker_is_never_called_for_a_single_candidate():
     )
     outcome = retriever.retrieve("query", ServiceCategory.STREETLIGHTS, "Nashik", "Maharashtra")
     assert [c.metadata["source_id"] for c in outcome.results] == ["ONLY_ONE"]
+
+
+# --- BM25 index caching + bounded embedding fetch (code review, efficiency) -----------------
+#
+# See rag_retriever.py's _get_or_build_bm25_index()/_widen_with_bm25() docstrings: the BM25 index
+# used to be rebuilt from scratch on every retrieve() call, and every chunk in the filtered pool
+# got a real embedding fetched up front regardless of whether BM25 ever surfaced it. These tests
+# prove both are now fixed: the index is built once per distinct metadata_filter, and embeddings
+# are only ever fetched for the small set of NEW candidates BM25 actually ranks highly.
+
+
+class _CountingVectorStoreWithPool:
+    """Same contract as `_FakeVectorStoreWithPool` above, plus call counters on the two calls
+    that used to be the efficiency problem -- lets these tests assert ON the call pattern itself,
+    not just the final (already-covered-elsewhere) correctness of the result."""
+
+    def __init__(self, search_results: list[ScoredChunk], pool: list[tuple]) -> None:
+        self._search_results = search_results
+        self._pool = pool
+        self.get_candidate_texts_call_count = 0
+        self.get_embeddings_call_args: list[list[str]] = []
+
+    def search(self, query_vector, top_k: int, metadata_filter: dict[str, str] | None) -> list[ScoredChunk]:
+        return list(self._search_results)
+
+    def get_candidates(self, metadata_filter: dict[str, str] | None) -> list[tuple]:
+        return list(self._pool)
+
+    def get_candidate_texts(self, metadata_filter: dict[str, str] | None) -> list[tuple]:
+        self.get_candidate_texts_call_count += 1
+        return [(chunk_id, content, metadata) for chunk_id, content, metadata, _vector in self._pool]
+
+    def get_embeddings(self, chunk_ids: list[str]) -> dict:
+        self.get_embeddings_call_args.append(list(chunk_ids))
+        wanted = set(chunk_ids)
+        return {chunk_id: vector for chunk_id, _content, _metadata, vector in self._pool if chunk_id in wanted}
+
+
+def _bm25_realistic_pool(vector_hit_metadata: dict) -> list[tuple]:
+    """A pool with enough unrelated filler documents to keep BM25's IDF math sane (see this
+    file's own earlier comment on why a too-tiny corpus makes classic BM25 IDF go negative for a
+    term shared by every document) -- reused by both tests below."""
+    return [
+        ("VECTOR_HIT", "general streetlight complaint information", vector_hit_metadata, [1.0, 0.0]),
+        (
+            "BM25_ONLY_HIT",
+            "streetlight pole number 42 is broken near the market",
+            {
+                "source_id": "BM25_ONLY_HIT", "city": "Nashik",
+                "service_category": "STREETLIGHTS", "verification_status": "VERIFIED",
+            },
+            [0.85, 0.5268026970889531],
+        ),
+        ("FILLER_1", "garbage collection schedule for residential areas", {"source_id": "FILLER_1", "city": "Nashik", "service_category": "STREETLIGHTS", "verification_status": "SYNTHETIC"}, [0.01, 0.01]),
+        ("FILLER_2", "water supply timings for this ward", {"source_id": "FILLER_2", "city": "Nashik", "service_category": "STREETLIGHTS", "verification_status": "SYNTHETIC"}, [0.01, 0.01]),
+        ("FILLER_3", "park maintenance report for the month", {"source_id": "FILLER_3", "city": "Nashik", "service_category": "STREETLIGHTS", "verification_status": "SYNTHETIC"}, [0.01, 0.01]),
+    ]
+
+
+def test_bm25_index_is_built_once_and_cached_across_repeated_calls_with_the_same_filter():
+    vector_hit = _chunk("VECTOR_HIT", 0.90, "Nashik", "STREETLIGHTS", "VERIFIED")
+    store = _CountingVectorStoreWithPool(
+        search_results=[vector_hit], pool=_bm25_realistic_pool(vector_hit.metadata),
+    )
+    retriever = RagRetriever(
+        store, _FixedVectorEmbeddingProvider([1.0, 0.0]),
+        relevance_threshold=0.79, verified_relevance_threshold=0.74,
+    )
+
+    retriever.retrieve("streetlight pole number 42 is broken", ServiceCategory.STREETLIGHTS, "Nashik", "Maharashtra")
+    retriever.retrieve("streetlight pole number 42 is broken", ServiceCategory.STREETLIGHTS, "Nashik", "Maharashtra")
+    retriever.retrieve("streetlight pole number 42 is broken", ServiceCategory.STREETLIGHTS, "Nashik", "Maharashtra")
+
+    assert store.get_candidate_texts_call_count == 1, (
+        "the pool/BM25 index must be fetched+built once for this filter, then reused -- not "
+        "rebuilt from scratch on every retrieve() call"
+    )
+
+
+def test_bm25_index_cache_is_keyed_separately_per_distinct_filter():
+    """A DIFFERENT metadata_filter must still get its own fresh build -- the cache must not
+    incorrectly reuse one category/city's index for a different one."""
+    vector_hit = _chunk("VECTOR_HIT", 0.90, "Nashik", "STREETLIGHTS", "VERIFIED")
+    store = _CountingVectorStoreWithPool(
+        search_results=[vector_hit], pool=_bm25_realistic_pool(vector_hit.metadata),
+    )
+    retriever = RagRetriever(
+        store, _FixedVectorEmbeddingProvider([1.0, 0.0]),
+        relevance_threshold=0.79, verified_relevance_threshold=0.74,
+    )
+
+    retriever.retrieve("streetlight pole number 42 is broken", ServiceCategory.STREETLIGHTS, "Nashik", "Maharashtra")
+    retriever.retrieve("streetlight pole number 42 is broken", ServiceCategory.WASTE_SANITATION, "Nashik", "Maharashtra")
+    retriever.retrieve("streetlight pole number 42 is broken", ServiceCategory.STREETLIGHTS, "Pune", "Maharashtra")
+
+    assert store.get_candidate_texts_call_count == 3, (
+        "three genuinely distinct filters were used -- each must get its own cache entry, not "
+        "share one incorrectly"
+    )
+
+
+def test_bm25_only_fetches_embeddings_for_new_candidates_not_the_whole_pool():
+    """The pool has 5 chunks total; only BM25_ONLY_HIT is a genuine new widening candidate
+    (VECTOR_HIT is already a vector-search hit, the 3 FILLER chunks score 0 against this query).
+    get_embeddings() must be called with ONLY the new candidate(s) -- never the whole pool, and
+    never the already-present vector hit."""
+    vector_hit = _chunk("VECTOR_HIT", 0.90, "Nashik", "STREETLIGHTS", "VERIFIED")
+    store = _CountingVectorStoreWithPool(
+        search_results=[vector_hit], pool=_bm25_realistic_pool(vector_hit.metadata),
+    )
+    retriever = RagRetriever(
+        store, _FixedVectorEmbeddingProvider([1.0, 0.0]),
+        relevance_threshold=0.79, verified_relevance_threshold=0.74,
+    )
+
+    retriever.retrieve("streetlight pole number 42 is broken", ServiceCategory.STREETLIGHTS, "Nashik", "Maharashtra")
+
+    assert len(store.get_embeddings_call_args) == 1
+    fetched_ids = store.get_embeddings_call_args[0]
+    assert fetched_ids == ["BM25_ONLY_HIT"]
+
+
+def test_bm25_does_not_call_get_embeddings_at_all_when_nothing_new_to_widen_with():
+    """If every BM25-positive-scoring chunk is already a vector-search hit, there's nothing new
+    to fetch an embedding for -- get_embeddings() must not be called at all (not even with an
+    empty list), matching _widen_with_bm25's own early-return for this case."""
+    vector_hit = _chunk("VECTOR_HIT", 0.90, "Nashik", "STREETLIGHTS", "VERIFIED")
+    # Pool where the ONLY chunk with real query-token overlap is already the vector hit itself.
+    pool = [
+        ("VECTOR_HIT", "streetlight pole number 42 is broken near the market", vector_hit.metadata, [1.0, 0.0]),
+        ("FILLER_1", "garbage collection schedule for residential areas", {"source_id": "FILLER_1", "city": "Nashik", "service_category": "STREETLIGHTS", "verification_status": "SYNTHETIC"}, [0.01, 0.01]),
+        ("FILLER_2", "water supply timings for this ward", {"source_id": "FILLER_2", "city": "Nashik", "service_category": "STREETLIGHTS", "verification_status": "SYNTHETIC"}, [0.01, 0.01]),
+    ]
+    store = _CountingVectorStoreWithPool(search_results=[vector_hit], pool=pool)
+    retriever = RagRetriever(
+        store, _FixedVectorEmbeddingProvider([1.0, 0.0]),
+        relevance_threshold=0.79, verified_relevance_threshold=0.74,
+    )
+
+    retriever.retrieve("streetlight pole number 42 is broken", ServiceCategory.STREETLIGHTS, "Nashik", "Maharashtra")
+
+    assert store.get_embeddings_call_args == []
+
+
+def test_hybrid_search_enabled_false_skips_bm25_widening_entirely():
+    """See config.py's RAG_HYBRID_SEARCH_ENABLED docstring (code review finding: no escape hatch
+    existed at all before this) -- with it off, retrieve() must behave exactly as if hybrid
+    search were never built: no pool fetch, no BM25 build, no embedding fetch, and a chunk that
+    only BM25 could have surfaced must NOT appear in the results."""
+    vector_hit = _chunk("VECTOR_HIT", 0.90, "Nashik", "STREETLIGHTS", "VERIFIED")
+    store = _CountingVectorStoreWithPool(
+        search_results=[vector_hit], pool=_bm25_realistic_pool(vector_hit.metadata),
+    )
+    retriever = RagRetriever(
+        store, _FixedVectorEmbeddingProvider([1.0, 0.0]),
+        relevance_threshold=0.79, verified_relevance_threshold=0.74,
+        hybrid_search_enabled=False,
+    )
+
+    outcome = retriever.retrieve(
+        "streetlight pole number 42 is broken", ServiceCategory.STREETLIGHTS, "Nashik", "Maharashtra"
+    )
+
+    assert store.get_candidate_texts_call_count == 0
+    assert store.get_embeddings_call_args == []
+    result_ids = [c.metadata["source_id"] for c in outcome.results]
+    assert result_ids == ["VECTOR_HIT"]  # BM25_ONLY_HIT never surfaces with hybrid search off

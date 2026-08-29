@@ -46,6 +46,24 @@ def test_get_retriever_wires_in_the_reranker_same_as_the_real_http_api(monkeypat
     assert retriever._reranker is sentinel_reranker
 
 
+def test_get_retriever_wires_in_the_hybrid_search_flag_same_as_the_real_http_api(monkeypatch):
+    """Same parity concern as the reranker test above, for RAG_HYBRID_SEARCH_ENABLED (see
+    config.py's own docstring: a code-review finding was that hybrid search shipped with no way
+    to disable it at all -- once a settings flag exists, this MCP tool must actually honor it,
+    not just RagRetriever's constructor supporting it in principle)."""
+    from backend.services.ask_janmitra_service import AskJanMitraService
+
+    monkeypatch.setattr(mcp_server, "_retriever", None)
+    monkeypatch.setattr(AskJanMitraService, "_load_default_store", staticmethod(lambda: object()))
+    monkeypatch.setattr(AskJanMitraService, "_load_default_embedding_provider", staticmethod(lambda: object()))
+    monkeypatch.setattr(AskJanMitraService, "_load_default_reranker", staticmethod(lambda: None))
+    monkeypatch.setattr(mcp_server.settings, "RAG_HYBRID_SEARCH_ENABLED", False)
+
+    retriever = mcp_server._get_retriever()
+
+    assert retriever._hybrid_search_enabled is False
+
+
 # --- search_civic_knowledge_base -- real ChromaDB + real embedding model, no mocks (matches
 # tests/test_rag_vector_store.py's own posture for this exact stack) ------------------------
 

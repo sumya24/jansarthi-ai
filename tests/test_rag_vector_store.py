@@ -438,6 +438,57 @@ def test_get_candidates_on_empty_collection_returns_empty_not_a_crash():
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+# --- N: get_candidate_texts()/get_embeddings() -- the split introduced after a code review
+# flagged get_candidates()'s per-request cost (fetching every embedding in the filtered pool up
+# front, most of which a BM25 widening pass never actually needs) ---------------------------
+
+
+def test_get_candidate_texts_matches_get_candidates_minus_embeddings():
+    store = _real_store()
+    metadata_filter = {"service_category": "STREETLIGHTS", "city": MOHALI}
+    full = store.get_candidates(metadata_filter)
+    texts_only = store.get_candidate_texts(metadata_filter)
+    assert len(texts_only) == len(full)
+    assert {c[0] for c in texts_only} == {c[0] for c in full}
+    for chunk_id, content, metadata in texts_only:
+        assert isinstance(content, str) and content
+        assert metadata["service_category"] == "STREETLIGHTS"
+
+
+def test_get_embeddings_returns_real_vectors_for_requested_ids_only():
+    store = _real_store()
+    pool = store.get_candidate_texts({"service_category": "STREETLIGHTS", "city": MOHALI})
+    assert len(pool) >= 2
+    wanted_ids = [pool[0][0], pool[1][0]]
+    embeddings = store.get_embeddings(wanted_ids)
+    assert set(embeddings.keys()) == set(wanted_ids)
+    for vector in embeddings.values():
+        assert len(vector) == 384
+        assert all(isinstance(x, float) for x in vector)
+
+
+def test_get_embeddings_matches_get_candidates_own_vectors():
+    """The split must not silently change WHICH vector comes back for a given chunk -- fetching
+    it via the new targeted get_embeddings() must agree with the old all-at-once get_candidates()."""
+    store = _real_store()
+    metadata_filter = {"service_category": "STREETLIGHTS", "city": MOHALI}
+    full = store.get_candidates(metadata_filter)
+    chunk_id, _content, _metadata, expected_vector = full[0]
+    targeted = store.get_embeddings([chunk_id])
+    assert targeted[chunk_id] == pytest.approx(expected_vector, abs=1e-9)
+
+
+def test_get_embeddings_empty_id_list_returns_empty_without_a_crash():
+    store = _real_store()
+    assert store.get_embeddings([]) == {}
+
+
+def test_get_embeddings_unknown_id_is_simply_omitted_not_an_error():
+    store = _real_store()
+    result = store.get_embeddings(["this_chunk_id_does_not_exist_12345"])
+    assert result == {}
+
+
 def test_citation_fields_present_for_verified_chunk():
     store = _real_store()
     provider = _get_shared_provider()
