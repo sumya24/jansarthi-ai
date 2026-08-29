@@ -73,8 +73,28 @@ def db_session():
 
 @pytest.fixture()
 def client(db_session):
-    """A FastAPI TestClient wired to the isolated in-memory database."""
-    return TestClient(app)
+    """A FastAPI TestClient wired to the isolated in-memory database.
+
+    Automatically echoes the csrf_token cookie (set by login/signup/refresh -- see
+    backend/deps.py's set_auth_cookies) back as the X-CSRF-Token request header on every call,
+    exactly what a real browser session's JS does (see frontend-react/src/lib/api.ts's
+    getCsrfToken()). Needed because TestClient is itself an httpx.Client and keeps a real cookie
+    jar across requests -- after one login, every later request in this same test carries the
+    access_token/refresh_token cookies too, which is exactly what CSRFMiddleware treats as "a
+    cookie-authenticated session" and starts requiring the CSRF header on. Without this hook, every
+    test touching a mutating endpoint after login would fail with 403 "Invalid or missing CSRF
+    token" -- not a bug in the middleware, just this client acting like the browser it's now
+    standing in for.
+    """
+    test_client = TestClient(app)
+
+    def _attach_csrf_header(request):
+        csrf_token = test_client.cookies.get("csrf_token")
+        if csrf_token:
+            request.headers["X-CSRF-Token"] = csrf_token
+
+    test_client.event_hooks["request"] = [_attach_csrf_header]
+    return test_client
 
 
 @pytest.fixture()

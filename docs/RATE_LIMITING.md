@@ -15,7 +15,7 @@ Two layers, both built on the same small hand-rolled limiter (`backend/services/
 
 | Routes | Limit | Window | Identifier |
 |---|---|---|---|
-| Every route except `/health` | 60 | 60s | authenticated user id, else client IP (general baseline) |
+| Every route except `/health` | 120 | 60s | authenticated user id, else client IP (general baseline) |
 | `POST /auth/login` | 5 | 60s | client IP |
 | `POST /ask-janmitra`, `/ask-janmitra/image`, `/ask-janmitra/voice` | 10 (shared across all 3) | 60s | authenticated user id |
 
@@ -26,9 +26,19 @@ regardless of load elsewhere.
 
 `GENERAL_RATE_LIMIT`, `GENERAL_RATE_LIMIT_WINDOW_SECONDS`, `LOGIN_RATE_LIMIT`,
 `LOGIN_RATE_LIMIT_WINDOW_SECONDS`, `AI_RATE_LIMIT`, `AI_RATE_LIMIT_WINDOW_SECONDS` (see
-`.env.example`). Defaults (60/60s, 5/60s, 10/60s) are sized against this app's real measured
+`.env.example`). Defaults (120/60s, 5/60s, 10/60s) are sized against this app's real measured
 usage -- a location-clarification round-trip alone is 2 Ask Sarthi calls, a busy dashboard page
 load is a handful of API calls -- with real headroom for a normal demo.
+
+`GENERAL_RATE_LIMIT` was raised from its original 60 to 120 after a live-reported false trip: the
+Admin dashboard's Workers/Complaints/by-ward-chart/AI-Monitoring widgets together fire roughly
+5-9 requests per page load (the higher end was itself a bug, since fixed -- see
+`backend/routes/admin.py`'s `ComplaintStatusCounts`, which replaced five separate per-status
+requests with one), `NotificationBell` polls every 15s in the background for every logged-in
+session regardless of role, and a real admin actively working the page (refreshing, switching
+between sections, a second tab open) measurably approached 60/60s with nothing actually
+abusive happening. 120 keeps real headroom for that genuine case across citizen, worker, and
+admin alike, while a truly abusive script (200+/min) is still caught quickly.
 
 ## Identifier
 

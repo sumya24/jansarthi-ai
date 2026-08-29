@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta, timezone
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from backend.models import AiAlertState, AiRequestLog, User
@@ -37,6 +38,7 @@ def record_ai_request(
     *,
     request_id: str,
     langsmith_trace_id: str | None,
+    phoenix_trace_id: str | None,
     conversation_id: str | None,
     intent: str | None,
     service_category: str | None,
@@ -44,13 +46,21 @@ def record_ai_request(
     success: bool,
     error_type: str | None,
     latency_ms: float,
+    ai_cost_inr: float | None = None,
+    ai_model_name: str | None = None,
+    ai_total_tokens: int | None = None,
 ) -> None:
-    """Persist one Ask Sarthi request's outcome. Best-effort -- see this module's docstring."""
+    """Persist one Ask Sarthi request's outcome. Best-effort -- see this module's docstring.
+
+    `ai_cost_inr`/`ai_model_name`/`ai_total_tokens` default to None so every existing caller/test
+    not yet passing them keeps working unchanged -- only non-None when a real Sarvam
+    answer-generation LLM call happened this turn (see GraphState's own docstring)."""
     try:
         db.add(
             AiRequestLog(
                 request_id=request_id,
                 langsmith_trace_id=langsmith_trace_id,
+                phoenix_trace_id=phoenix_trace_id,
                 conversation_id=conversation_id,
                 intent=intent,
                 service_category=service_category,
@@ -58,6 +68,9 @@ def record_ai_request(
                 success=success,
                 error_type=error_type,
                 latency_ms=latency_ms,
+                ai_cost_inr=ai_cost_inr,
+                ai_model_name=ai_model_name,
+                ai_total_tokens=ai_total_tokens,
             )
         )
         db.commit()
@@ -102,8 +115,42 @@ def get_ai_monitoring_summary(db: Session, since: datetime | None = None) -> dic
         "complaint_requests": by_route.get("COMPLAINT_CREATED", 0) + by_route.get("COMPLAINT_CREATION_FAILED", 0),
         "status_requests": by_route.get("COMPLAINT_STATUS_API", 0),
         "out_of_scope_requests": by_route.get("NONE_OUT_OF_SCOPE", 0),
+        # The real threshold check_and_fire_alerts() uses for "High AI latency" -- exposed so the
+        # Recent Requests table (whose default page size, REQUESTS_PAGE_SIZE=20 in
+        # AdminAiMonitoring.tsx, deliberately matches _ALERT_WINDOW_SIZE below) can highlight
+        # exactly the requests that would trip the alert, instead of an admin having to guess or
+        # duplicate this number on the frontend. LIVE-REPORTED: clicking a "High AI latency"
+        # notification landed on this page with no way to tell which requests were actually slow.
+        "latency_alert_threshold_ms": _LATENCY_ALERT_THRESHOLD_MS,
         "clarification_requests": by_route.get("NONE_CLARIFICATION_NEEDED", 0),
     }
+
+
+def get_daily_ai_stats(db: Session, days: int = 7) -> list[dict]:
+    """Per-day request volume + average latency for the Admin dashboard's AI health trend chart --
+    distinct from get_ai_monitoring_summary()'s single running total, this is what lets that chart
+    show a trend line instead of one number.
+
+    Aggregated in Python like the rest of this module (see its own docstring) -- grouped by
+    calendar day (UTC, since `created_at` is stored as such). Returns the most recent `days` days
+    that actually had at least one request, not `days` calendar days -- a quiet stretch (a weekend,
+    a maintenance window) shouldn't pad the chart with empty rows that read as an outage.
+    """
+    rows = db.query(AiRequestLog.created_at, AiRequestLog.latency_ms).all()
+    by_day: dict[str, list[float]] = {}
+    for created_at, latency_ms in rows:
+        day = created_at.strftime("%Y-%m-%d")
+        by_day.setdefault(day, []).append(latency_ms)
+
+    ordered_days = sorted(by_day.keys())[-days:]
+    return [
+        {
+            "date": day,
+            "request_count": len(by_day[day]),
+            "average_latency_ms": sum(by_day[day]) / len(by_day[day]),
+        }
+        for day in ordered_days
+    ]
 
 
 def get_recent_ai_requests(db: Session, limit: int = 50) -> list[AiRequestLog]:
@@ -115,6 +162,59 @@ def get_recent_ai_requests(db: Session, limit: int = 50) -> list[AiRequestLog]:
     insertion-consistent, order.
     """
     return db.query(AiRequestLog).order_by(AiRequestLog.id.desc()).limit(limit).all()
+
+
+def get_recent_ai_requests_page(
+    db: Session,
+    page: int,
+    page_size: int,
+    search: str | None = None,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+) -> tuple[list[AiRequestLog], int]:
+    """Same ordering as get_recent_ai_requests() above, but with real offset/limit pagination and
+    a total count -- feeds the Admin AI Monitoring page's "Recent Requests" table now that it has
+    real page numbers instead of always just showing the newest N with no way to see older ones.
+    get_recent_ai_requests() itself is left as the simple "first N" it always was, for callers
+    that genuinely just want that (and for the existing test covering it).
+
+    `search`: matches request_id/intent/routed_to (route) -- the three columns actually visible/
+    identifying in that table's own rows, same "search the columns a user can see" contract as
+    list_workers()'s own `search` (full_name/ward/phone).
+
+    `date_from`/`date_to`: an inclusive calendar-day range over `created_at` -- `date_to` is
+    treated as the END of that day (< date_to + 1 day), not midnight at its start, so picking the
+    same day for both ends still returns that whole day's requests rather than none."""
+    query = db.query(AiRequestLog)
+    if search and search.strip():
+        like = f"%{search.strip()}%"
+        query = query.filter(
+            or_(AiRequestLog.request_id.ilike(like), AiRequestLog.intent.ilike(like), AiRequestLog.routed_to.ilike(like))
+        )
+    if date_from is not None:
+        query = query.filter(AiRequestLog.created_at >= date_from)
+    if date_to is not None:
+        query = query.filter(AiRequestLog.created_at < date_to + timedelta(days=1))
+    query = query.order_by(AiRequestLog.id.desc())
+    total = query.count()
+    safe_page = max(page, 1)
+    safe_size = max(min(page_size, 100), 1)
+    rows = query.offset((safe_page - 1) * safe_size).limit(safe_size).all()
+    return rows, total
+
+
+def delete_ai_request_log(db: Session, log_id: int) -> bool:
+    """Deletes one AiRequestLog row (Admin dashboard's "Recent Requests" table, same delete-a-row
+    pattern already used for workers/complaints elsewhere in this admin area). Returns False if no
+    row with that id exists, so the route can 404 instead of silently no-opping. This permanently
+    removes that request from the AI Monitoring history/summary counts -- there is no undo, same
+    as deleting a worker or complaint."""
+    row = db.query(AiRequestLog).filter(AiRequestLog.id == log_id).first()
+    if row is None:
+        return False
+    db.delete(row)
+    db.commit()
+    return True
 
 
 def check_and_fire_alerts(db: Session) -> list[str]:

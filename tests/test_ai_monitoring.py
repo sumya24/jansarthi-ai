@@ -62,6 +62,7 @@ def test_summary_is_all_zero_with_no_requests(db_session):
         "status_requests": 0,
         "out_of_scope_requests": 0,
         "clarification_requests": 0,
+        "latency_alert_threshold_ms": ai_request_log_repository._LATENCY_ALERT_THRESHOLD_MS,
     }
 
 
@@ -111,6 +112,7 @@ def test_record_ai_request_persists_a_row(db_session):
         db,
         request_id="xyz",
         langsmith_trace_id="11111111-1111-1111-1111-111111111111",
+        phoenix_trace_id=None,
         conversation_id=None,
         intent="TYPE_A_COMPLAINT",
         service_category="GARBAGE",
@@ -135,6 +137,7 @@ def test_record_ai_request_never_raises_on_db_failure(db_session):
         db,
         request_id="xyz",
         langsmith_trace_id=None,
+        phoenix_trace_id=None,
         conversation_id=None,
         intent=None,
         service_category=None,

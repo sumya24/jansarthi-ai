@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 
 from backend.config import settings
 from backend.database import SessionLocal, init_db
-from backend.middleware import GeneralRateLimitMiddleware, SecurityHeadersMiddleware
+from backend.middleware import CSRFMiddleware, GeneralRateLimitMiddleware, SecurityHeadersMiddleware
 from backend.routes import admin, ask_janmitra, auth, complaints, locations, notifications
 from backend.services.upload_cleanup_service import cleanup_orphaned_uploads
 
@@ -177,6 +177,7 @@ app = FastAPI(title="JanSarthi AI", version="0.1.0", lifespan=lifespan)
 # CORS headers on this middleware's own 429 responses).
 app.add_middleware(GeneralRateLimitMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(CSRFMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
@@ -190,7 +191,14 @@ app.add_middleware(
     # browser-only restriction. That's what made the report download filename fall back to the
     # generic "report.pdf" (see frontend-react/src/lib/api.ts's requestBlob()) instead of the
     # real "JanSarthi_Complaint_JM-00042_Report.pdf" the backend was already sending correctly.
-    expose_headers=["Content-Disposition"],
+    #
+    # X-Total-Count has the exact same problem, for the exact same CORS reason -- every
+    # requestPaginated() caller (My Complaints', Home's, Admin's, and Worker's own stat cards,
+    # among others) reads response.headers.get("X-Total-Count") and silently falls back to
+    # items.length when it's null, capping every one of those numbers at whatever page_size was
+    # requested (usually 1, for a cheap count-only call) instead of the real total -- invisible in
+    # every demo account so far only because no citizen had more than one complaint until now.
+    expose_headers=["Content-Disposition", "X-Total-Count"],
 )
 app.include_router(auth.router)
 app.include_router(admin.router)

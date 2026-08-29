@@ -147,7 +147,7 @@ def make_target(retriever, answer_service):
 
         context_chunks = [r.metadata["content"] for r in outcome.results]
         context_labels = [chunk_context_label(r) for r in outcome.results]
-        answer_text, _was_llm = answer_service.generate(query, context_chunks, language_name, context_labels)
+        answer_text, _was_llm, _token_usage = answer_service.generate(query, context_chunks, language_name, context_labels)
         return {"insufficient_knowledge": False, "answer": answer_text, "context_chunks": context_chunks}
 
     return target

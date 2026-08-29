@@ -1,7 +1,24 @@
 # Add Arize Phoenix as a second, self-hosted tracing backend alongside LangSmith
 
-**Status: planned, not yet implemented.** Kept here as a local reference copy of the approved plan
-(originally written to `C:\Users\Asus\.claude\plans\snazzy-strolling-narwhal.md`).
+**Status: implemented and verified locally, 2026-08-26.** §1-4, 7 below are done (dependency,
+config, `tracing.py` dual-write, DB column + admin/frontend link, tests). §5-6 (production
+docker-compose/Caddy) are deliberately NOT done yet -- scoped to local only per the user's explicit
+request ("we are doing that local stuff"). See "What was actually built" at the bottom of this file
+for the real, current setup and how to run it.
+
+**Second round, same day: Sessions, Metrics, Prompts, Evaluators added on top of basic tracing.**
+See "Round 2" at the very bottom of this file -- Phoenix's Sessions/Metrics views are now real
+(conversation grouping + Sarvam token counts), and two new one-off scripts
+(`scripts/push_prompts_to_phoenix.py`, `scripts/phoenix_rag_evaluation.py`) mirror this project's
+existing LangSmith equivalents. **Correction to the dependency guidance below**: `arize-phoenix-client`
+(unlike the full `arize-phoenix` server package) is ALSO safe to install in this project's main
+environment, confirmed directly -- see Round 2's own section for why.
+
+**Third round, same day: real dollar cost + two Metrics gaps the user spotted live in Phoenix's
+UI, plus a real bug (an incomplete tuple-signature sweep from Round 2, missed twice).** See
+"Round 3" at the very bottom -- real Sarvam pricing (confirmed from Sarvam's own docs), a working
+model-name tag, an explicit OK status, and a genuinely more defensive token/cost extraction that
+can no longer discard a real successful answer if `usage` ever comes back malformed.
 
 ## Context
 
@@ -230,3 +247,303 @@ so production's quota isn't consumed by testing.
 5. Trigger one real Ask Sarthi request against production, then check both the LangSmith UI (new
    account) and `https://jansarthi-ai.duckdns.org/phoenix/...` (Basic Auth-gated) show the same
    trace, and confirm the Admin AI Monitoring page shows both trace links for that row.
+
+## What was actually built (2026-08-26) -- read this before touching tracing.py again
+
+**Scope actually done: §1-4 and §7 above, local only.** §5-6 (production docker-compose/Caddy
+deployment) are NOT done -- deliberately deferred, the user asked for the local setup only this
+round.
+
+**Real deviations from the plan above, found while implementing (all now correct in code):**
+- **No `docker run arizephoenix/phoenix` used locally.** Docker Desktop's engine wasn't actually
+  running on this machine when this was built. Instead: the full `arize-phoenix` server package
+  is installed in its own **isolated venv** at `.phoenix-venv/` (gitignored) in the project root --
+  genuinely isolated from the backend's own Python environment. **Critical lesson, don't repeat
+  it**: `pip install arize-phoenix` (the FULL server package) directly into the project's shared
+  Python environment silently upgraded `fastapi` 0.115.6->0.141.1, `uvicorn`, and `sqlalchemy` away
+  from this project's pinned `requirements.txt` versions (its dependency tree pulls in a totally
+  unrelated FastAPI/SQLAlchemy/boto3/mcp/etc. stack). Caught and fixed by reinstalling
+  `requirements.txt` and uninstalling `arize-phoenix`/`arize-phoenix-client`/`arize-phoenix-evals`/
+  `arize-phoenix-sqlean` from the shared env, keeping ONLY the lightweight `arize-phoenix-otel`
+  client package there (which imports cleanly alongside the pinned fastapi once the heavy server
+  package is gone). **Never `pip install arize-phoenix` (no `-otel` suffix) into this project's own
+  environment -- only `arize-phoenix-otel`.** The real server always runs from `.phoenix-venv/`:
+  `"...\.phoenix-venv\Scripts\python.exe" -m phoenix.server.main serve`.
+- **Phoenix's default gRPC OTLP port (4317) was already in use** on this machine by an unrelated
+  process (`alloy-windows-amd64`, a Grafana Alloy collector -- not touched/killed, cause unknown,
+  presumably something else on this machine). Phoenix started with `PHOENIX_GRPC_PORT=44317` set
+  instead (the app only ever uses the HTTP OTLP endpoint on :6006 anyway, so this doesn't matter
+  functionally).
+- **The id-carrier design needed one addition not in the original plan**: Phoenix's own (OTel)
+  trace id is a completely different id space from the `RunTree` uuid used as the `_phoenix_spans`
+  dict key -- OTel generates it internally, it can't be forced to match. Added a second dict,
+  `_phoenix_trace_ids: dict[uuid.UUID, str]`, populated at span-start time and deliberately NOT
+  cleared on span end (unlike `_phoenix_spans`) -- callers need to read the real trace id AFTER the
+  request already finished, to persist it as `AiRequestLog.phoenix_trace_id`. New public function:
+  `tracing.get_phoenix_trace_id(run_id)`.
+- **A real bug found by the existing test suite, fixed**: `tests/test_ask_janmitra_tracing.py`
+  monkeypatches `graph_module.tracing.start_root_run` to return the literal string `"FAKE_ROOT"`
+  (not a real `RunTree`) while leaving `nodes_module.tracing.start_child_run`/`end_run` as the REAL
+  functions, to test the plumbing in isolation. The first version of this code did `parent.id`
+  unguarded, which crashed on that string sentinel. Fixed to `getattr(parent, "id", None)` in both
+  `start_child_run` and `end_run`, matching this module's existing "never raise" philosophy.
+- **`janmitra.db` doesn't exist any more -- it's `jansarthi.db`** (project was renamed after this
+  plan was first written; `backend/config.py`'s `DATABASE_URL` default confirms it). The migration
+  script (`scripts/add_phoenix_trace_id_column.py`) was first written pointing at the old
+  `janmitra.db` filename by mistake (copying an older script's convention) -- created a harmless
+  empty stray `janmitra.db` file before being caught and fixed. Any NEW one-off DB scripts in this
+  project should point at `jansarthi.db`.
+- **Real Phoenix UI trace-link format, confirmed by reading Phoenix's own bundled JS** (not
+  guessed): `/projects/{project_id}/traces/{trace_id}` -- NOT `/projects/{trace_id}` as originally
+  guessed in this plan. The project id is fixed once the project first exists; find it via
+  `GET http://localhost:6006/v1/projects`. Local `.env`'s working value:
+  `PHOENIX_TRACE_URL_TEMPLATE=http://localhost:6006/projects/UHJvamVjdDoy/traces/{trace_id}`
+  (that literal project id is specific to this machine's local Phoenix instance -- a fresh Phoenix
+  instance/project will get a different one).
+
+**Verified working end-to-end, live, 2026-08-26** (not just unit tests): a real `/ask-janmitra`
+RAG request produced BOTH a real LangSmith trace AND a real Phoenix trace (correct
+`ask_janmitra_graph` root -> `rag_retrieval`/`answer_generation`/`final_response_grounding`
+children, checked directly via Phoenix's own REST API), `ai_request_logs` got both
+`langsmith_trace_id` and a real 32-hex-char `phoenix_trace_id`, and `GET
+/admin/ai-monitoring/requests` returned both `trace_url` and `phoenix_trace_url` correctly
+populated for that row (older, pre-Phoenix rows correctly show `phoenix_trace_url: null`, not an
+error).
+
+**Regression check**: `tests/test_langsmith_tracing.py` + `tests/test_ask_janmitra_tracing.py` +
+`tests/test_ai_monitoring.py` = 63 passed (both with Phoenix enabled and explicitly disabled).
+`pytest tests/ --collect-only` = 886 tests, zero import/collection errors across the whole suite.
+A full `pytest tests/` run was attempted but didn't finish in a reasonable time on this machine
+(consistent with previously-documented Windows page-file/memory pressure under a long combined
+test run, not something caused by this change) -- not re-attempted given the above already gives
+strong confidence; worth a clean full run later when convenient.
+
+**How to run this locally, from scratch, next time:**
+```powershell
+# 1. Start the isolated Phoenix server (separate terminal, stays running)
+"C:\...\janmitra-ai\.phoenix-venv\Scripts\python.exe" -m phoenix.server.main serve
+# (if port 4317 is taken by something else: $env:PHOENIX_GRPC_PORT=44317 first)
+
+# 2. .env already has PHOENIX_TRACING=true / PHOENIX_COLLECTOR_ENDPOINT / PHOENIX_PROJECT_NAME /
+#    PHOENIX_TRACE_URL_TEMPLATE set -- just start the backend normally.
+python -m uvicorn backend.main:app --reload --port 8000
+
+# 3. Open http://localhost:6006 to browse traces directly, or use the Admin AI Monitoring page's
+#    new "View Phoenix trace" link next to the existing LangSmith one.
+```
+
+**Still not done, if picked up again:**
+- §5-6 (production): adding the `phoenix` service to `docker-compose.prod.yml`, the Caddy
+  reverse-proxy + Basic Auth block, and deploying to the actual GCP VM. Nothing here touches
+  production yet.
+- The LangSmith account-swap's own follow-up decision (local dev sharing the same key vs. its own)
+  was never actually decided -- worth revisiting, especially since the *new* LangSmith account
+  independently hit its own rate limit again during this same session (confirmed live via a 429
+  during a local pytest run) -- the local/production key-sharing question from §8 above is still
+  unresolved and still causing real pain.
+
+---
+
+## Round 2 (same day, 2026-08-26): Sessions, Metrics, Prompts, Evaluators
+
+User noticed Phoenix's UI has far more than a Traces tab and asked to build out everything
+genuinely usable at "production level." Implemented: Sessions (real conversation grouping),
+Metrics (real Sarvam token counts), and two new one-off scripts mirroring the existing LangSmith
+tooling (Prompts push, RAG evaluation). Datasets & Experiments beyond the eval script, and
+Playground/REST/GraphQL, needed no work -- see the approved plan for why.
+
+**Correction, confirmed directly this round: `arize-phoenix-client` is ALSO safe in the main env.**
+Round 1's guidance ("only `arize-phoenix-otel` belongs in this project's environment") was
+one step too cautious. `arize-phoenix-client` (REST client for Prompts/Datasets/Experiments) has
+its own lightweight dependency tree (httpx, openinference-instrumentation,
+openinference-semantic-conventions, opentelemetry-exporter-otlp, opentelemetry-sdk, tqdm) that's
+the SAME family `arize-phoenix-otel` already pulls in -- installing it added exactly one new
+package, zero new heavy ones, and `fastapi`/`starlette`/`sqlalchemy` stayed pinned throughout
+(checked directly before and after). It's now a normal `requirements.txt` entry. The constraint
+that's still real: the FULL `arize-phoenix` server package (and its `[evals]` extra,
+`arize-phoenix-evals`) must never go in the main env -- that's the one with the actual
+FastAPI/SQLAlchemy conflict, confirmed the hard way in Round 1.
+
+### A. Sessions -- real, end-to-end
+
+`AiRequestLog.conversation_id`/`GraphState`'s `conversation_id` existed as unused plumbing before
+this round (always `None` -- nothing generated or sent one). Now real:
+- `frontend-react/src/pages/AskJanMitra.tsx`: a `conversationId` state, generated via
+  `crypto.randomUUID()`, persisted in `localStorage` alongside chat history (same key-per-user,
+  same reload-survives lifecycle -- see `loadOrCreateConversationId()`'s docstring), regenerated
+  only on "New chat" (`handleNewChat()`). Threaded through all three entry points (`askJanMitra`,
+  `askJanMitraWithImage`, and via a new `conversationId` prop into `VoiceAssistantOverlay.tsx` for
+  `askJanMitraVoice`) so a voice turn groups into the SAME session as the rest of the chat.
+- `backend/schemas/ask_janmitra.py`: `AskJanMitraRequest.conversation_id: str | None = None` (new
+  field). Both multipart routes (`/ask-janmitra/image`, `/ask-janmitra/voice`) gained a matching
+  `Form(None)` param.
+- `backend/services/ask_janmitra_service.py`: `_build_initial_state()` now sets
+  `GraphState["conversation_id"]`; `ask()`/`ask_with_image()`/`ask_voice()` all pass it through.
+  Also fixed a real, if minor, pre-existing gap while touching this: `_run()`'s exception path
+  hardcoded `conversation_id=None` in its `AiRequestLog` write instead of reading it from
+  `initial_state` -- fixed alongside this change.
+- `backend/services/orchestration/graph.py`'s `root_run_inputs_and_metadata()`: added
+  `conversation_id` to the metadata dict handed to `tracing.start_root_run()`.
+- `backend/services/observability/tracing.py`: `_phoenix_start_span()` gained a `metadata` param
+  (only ever passed by `start_root_run()`, never `start_child_run()` -- a child doesn't need its
+  own session id, Phoenix groups the whole trace under whatever the ROOT span carries), reads
+  `conversation_id` out of it and sets `SpanAttributes.SESSION_ID`.
+- **Verified live**: two real `/ask-janmitra` requests with the same `conversation_id` both showed
+  up under that same session in Phoenix's own span data (`attributes["session.id"]`), checked
+  directly via the REST API. `AiRequestLog.conversation_id` also now populates correctly (checked
+  in the DB directly) -- a free side benefit, that column existed but was always `None` before.
+
+### B. Metrics -- real Sarvam token counts
+
+- `backend/services/answer_generation_service.py`: `generate()`'s return type changed from
+  `tuple[str, bool]` to `tuple[str, bool, dict[str, int] | None]` -- the third value is
+  `{"prompt_tokens", "completion_tokens", "total_tokens"}` read straight from Sarvam's own
+  `response.usage` (confirmed the SDK actually returns this, `sarvamai.types.completion_usage.
+  CompletionUsage` -- real data, not estimated), `None` on the fallback/no-LLM path (nothing to
+  report). **7 call sites updated for the new 3-tuple**: the real one in
+  `backend/services/orchestration/nodes.py`'s `rag_flow_node`, plus 6 test-double fakes across
+  `tests/test_ask_janmitra*.py`/`test_orchestration_graph.py`/`test_image_content_validation.py`/
+  `test_rag_answer_cache_integration.py` that construct a 2-tuple return value.
+- `backend/services/observability/tracing.py`: `_phoenix_end_span()` now special-cases
+  `prompt_tokens`/`completion_tokens`/`total_tokens` keys in `outputs` (when present) to ALSO set
+  the dedicated `SpanAttributes.LLM_TOKEN_COUNT_PROMPT`/`COMPLETION`/`TOTAL` attributes Phoenix's
+  Metrics view actually reads -- they stay in the generic JSON `output.value` blob too (harmless
+  duplication).
+- **Verified the mechanism live, but couldn't visually confirm a populated number**: Sarvam's
+  credits were exhausted for real during this round's live testing (`402 insufficient_quota_error`,
+  confirmed directly) -- every live test either hit the RAG answer cache (a prior turn's real
+  answer, correctly reported with NO token data since no fresh LLM call happened) or the fallback
+  path (also correctly no token data). Both are the intended, honest behavior -- token counts
+  should only appear for a genuinely fresh LLM call. Not re-verified with real numbers visible in
+  the Phoenix UI; worth a quick recheck once Sarvam credits are available again.
+
+### C. Prompts -- `scripts/push_prompts_to_phoenix.py`
+
+Mirrors `scripts/push_prompts_to_langsmith.py` exactly (same two prompt files, same mirror-only
+contract). Uses `phoenix.client.Client(base_url="http://localhost:6006").prompts.create(...)`.
+`model_provider="OPENAI"` is a labeling compromise (Phoenix has no "SARVAM" option; Sarvam's own
+API is OpenAI-shaped, same as this app's other Sarvam integration comments already note) --
+`model_name` is still the real `sarvam-105b`. **Run and verified for real**: pushed successfully
+on the first try, confirmed via `GET /v1/prompts` showing the real prompt with the right name/
+description.
+
+### D. Evaluators -- `scripts/phoenix_rag_evaluation.py`
+
+Mirrors `scripts/langsmith_rag_evaluation.py` exactly (same dataset, same two scores --
+`retrieval_correctness` deterministic, `groundedness` LLM-as-judge via Sarvam). Uses
+`client.experiments.run_experiment(dataset=..., task=..., evaluators=[...])` -- Phoenix's near-1:1
+equivalent of LangSmith's `client.evaluate()`. **Run and verified for real**: uploaded all 21
+cases as a real Phoenix Dataset (confirmed via `GET /v1/datasets`), ran the real production RAG
+pipeline against all 21 (Sarvam being down meant every case hit the fallback path, not a script
+bug -- the task function correctly handled every failure without crashing), completed "21 task
+runs, 2 evaluator runs, 42 evaluations." One real, now-fixed bug found by this live run: the
+final summary line accessed `ran.experiment.id`, but `run_experiment()` actually returns a
+`RanExperiment` TypedDict (`ran["experiment_id"]`, not an object with a nested `.experiment`) --
+fixed, not re-run again afterward (re-running would just create a duplicate experiment entry and
+spend more of the currently-exhausted Sarvam quota for no new information -- the fix itself is a
+one-line, unambiguous dict-key correction, confirmed against `RanExperiment`'s real type
+definition directly rather than re-run).
+
+### Also hit and fixed this round (unrelated bug, found via the existing test suite)
+
+`start_child_run()`/`end_run()` originally did `parent.id`/`run.id` unguarded before my Phoenix
+additions. `tests/test_ask_janmitra_tracing.py` deliberately monkeypatches
+`graph_module.tracing.start_root_run` to return the literal string `"FAKE_ROOT"` (not a real
+`RunTree`) while leaving `nodes_module.tracing.start_child_run`/`end_run` as the real functions, to
+test the plumbing in isolation -- my first version crashed on that string sentinel. Fixed to
+`getattr(parent, "id", None)` / `getattr(run, "id", None)`, matching this module's existing
+"never raise" philosophy. Caught by running the real test suite, not by inspection.
+
+### Regression check
+
+`pytest tests/test_ask_janmitra*.py tests/test_orchestration_graph.py
+tests/test_image_content_validation.py tests/test_rag_answer_cache_integration.py` (the files
+touching the changed `generate()` signature) = 120 passed, 2 failed -- both failures confirmed
+unrelated to this round's changes (real Sarvam 402 mid-test, and the same known Windows
+page-file/embedding-model-load issue documented elsewhere in this project's memory). `npx tsc -b`
+on the frontend showed 2 pre-existing errors in `AdminAiMonitoring.tsx` (an unrelated,
+already-in-progress search feature from other work on this file, not touched here) and zero new
+errors from this round's own changes.
+
+---
+
+## Round 3 (same day, 2026-08-26): real dollar cost, plus two dashboard gaps the user actually
+## spotted live in Phoenix's own UI (screenshot-driven, not guessed)
+
+User opened Phoenix's Metrics dashboard and reported several real gaps by name: "Total Cost: $0",
+"Status: Unset" on the trace, empty "Top model by cost"/"Top model by tokens" charts, empty
+Span/Trace/Session Annotation Store sections. Then separately asked me to look up Sarvam's real
+pricing online rather than needing it supplied.
+
+**Real Sarvam pricing, confirmed directly from Sarvam's own docs
+(`https://docs.sarvam.ai/api/getting-started/pricing`, checked 2026-08-26)**: sarvam-105b is
+Rs29.28/1M input tokens, Rs10.98/1M cached-input tokens (unused -- Sarvam's SDK never reports a
+cached-token count for this model), Rs73.2/1M output tokens. Converted to USD at ~95.5 INR/USD
+(also checked live that day) purely so Phoenix's Metrics view -- which hardcodes a literal "$" in
+front of the number -- shows something roughly right instead of a silently mislabeled rupee
+figure. This conversion is a real, documented approximation (exchange rates move daily); the INR
+rate itself is not.
+
+**What was actually fixed:**
+1. **Real cost, not $0**: `answer_generation_service.py`'s `generate()` now also computes
+   `prompt_cost_usd`/`completion_cost_usd`/`total_cost_usd` from the real token counts against the
+   confirmed Sarvam rate above (constants `_SARVAM_INPUT_COST_PER_TOKEN_USD`/
+   `_SARVAM_OUTPUT_COST_PER_TOKEN_USD`), folded into the same `token_usage` dict the Metrics work
+   already added. `tracing.py`'s `_phoenix_end_span()` promotes these three keys to
+   `SpanAttributes.LLM_COST_PROMPT`/`LLM_COST_COMPLETION`/`LLM_COST_TOTAL`.
+2. **"Top model by cost/tokens" empty**: never fixable by cost data alone -- those charts need to
+   know WHICH model answered, and nothing set `SpanAttributes.LLM_MODEL_NAME` before this round.
+   `nodes.py`'s `answer_generation` span now tags `model_name: settings.LLM_MODEL` (only when a
+   real LLM call actually happened, same reasoning as token/cost data -- a cached or fallback
+   answer wasn't produced by any model just now).
+3. **"Status: Unset"**: `_phoenix_end_span()` never explicitly set an OK status on success, only
+   ERROR on failure -- an "Unset" span in Phoenix's UI is otherwise indistinguishable from one that
+   crashed before ever finishing. Now sets `Status(StatusCode.OK)` explicitly in the non-error path.
+4. **Span/Trace/Session Annotation Store, still empty -- correctly, not a bug**: this is a
+   genuinely different, NOT-yet-built feature -- live, automatic quality-scoring of every real
+   citizen question as it happens. What exists today (the offline `phoenix_rag_evaluation.py`
+   script) only scores a fixed 21-question test set, once, manually -- it never attaches scores to
+   real production traces/sessions. Flagged to the user as a real option, not started without
+   being asked (would add judge-LLM latency/cost to every single live request).
+5. **"Prompt/completion token DETAILS" (the more granular sub-breakdown) empty -- also correct,
+   not a bug**: checked directly with a live Sarvam call -- `usage.prompt_tokens_details` and
+   `usage.completion_tokens_details` both come back `None` from Sarvam's own API. There is no
+   deeper breakdown to surface; Sarvam's API doesn't provide one.
+
+**A real, more serious bug found while re-testing: the Round 2 `generate()` signature change (2-tuple
+-> 3-tuple) was NOT fully swept the first time.** Missed call sites, found via a second, wider
+grep pass after a live pytest run surfaced the first one as a real failure (not a flaky/environment
+one this time):
+- `tests/test_orchestration_graph.py:387` -- a second, differently-styled mock
+  (`fake_answer_service.generate = Mock(return_value=(...))`) in the SAME file my first pass had
+  already partially fixed (a different mock, styled as a `lambda`, further down the same file, was
+  already caught the first time -- this second one used a different pattern and slipped through).
+- `tests/test_rag_grounding_topic_mismatch.py` -- FOUR call sites calling the REAL
+  `AnswerGenerationService.generate()` directly (not mocked at all) and unpacking a 2-tuple --
+  would have raised `ValueError: not enough values to unpack` the moment anyone ran this file.
+- `scripts/langsmith_rag_evaluation.py` -- the EXISTING LangSmith eval script (not touched in
+  Round 2) also unpacks `generate()`'s return -- would have crashed the instant it was next run.
+All fixed (added the third tuple element / an extra unpacked variable). **Lesson, if
+`generate()`'s signature is ever touched again**: grep for literally every call/mock pattern
+(`.generate(`, `.generate =`, `svc.generate`, `answer_service.generate`) across `tests/`,
+`scripts/`, AND `backend/` before considering it done -- a single grep pattern missed real call
+sites twice in one day.
+
+**Also found and fixed, a real defensive-coding gap**: the original token/cost extraction code sat
+inside `generate()`'s OUTER try/except (the same one that catches a genuine Sarvam API failure) --
+meaning if `response.usage` ever came back in an unexpected shape (confirmed this can actually
+happen: a test's plain `Mock()` response object makes `usage.prompt_tokens` a `Mock`, and
+`Mock * float` raises `TypeError`), the WHOLE call would look like a failed Sarvam request and
+silently discard a real, successfully-generated answer in favor of the fallback -- a much worse
+outcome than just losing some Metrics data for that one turn. Fixed: token/cost extraction now
+has its own inner try/except, so a malformed usage object can only cost observability data, never
+throw away a real answer that already succeeded.
+
+### Regression check (Round 3)
+`pytest tests/test_rag_grounding_topic_mismatch.py tests/test_orchestration_graph.py
+tests/test_rag_answer_cache_integration.py` = 60 passed (0 failed -- this is the exact set that
+had 1 real failure before the fixes above). `pytest tests/ --collect-only` = 886 tests, zero
+import/collection errors project-wide, confirming no other file references the old 2-tuple shape.
+Live-verified once more with a real, fresh Sarvam call: real cost (`$0.00029` prompt + `$0.00115`
+completion for one real answer), real model name (`sarvam-105b`), and `OK` status all showed up
+correctly in Phoenix's own span data, checked directly via its REST API.

@@ -15,7 +15,14 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from backend.config import settings
-from backend.deps import client_ip
+from backend.deps import (
+    ACCESS_TOKEN_COOKIE,
+    CSRF_HEADER_NAME,
+    CSRF_TOKEN_COOKIE,
+    REFRESH_TOKEN_COOKIE,
+    client_ip,
+    extract_access_token,
+)
 from backend.services import metrics as sentry_metrics
 from backend.services.auth_service import InvalidTokenError, decode_access_token
 from backend.services.rate_limiter import RateLimiter
@@ -29,14 +36,15 @@ _EXEMPT_PATHS = {"/health"}
 
 def _general_identifier(request: Request) -> str:
     """Authenticated user id when a valid token is present, client IP otherwise -- matches
-    require_ai_rate_limit's "prefer real user identity" preference, but decodes the token directly
-    here (verifies signature + expiry, no DB lookup) rather than depending on get_current_user, to
-    keep this middleware cheap on every single request. An invalid/missing/expired token is NOT
-    rejected here -- that 401 is each route's own auth dependency's job; this middleware only
-    needs *an* identifier to count against, never authenticates anything itself."""
-    auth_header = request.headers.get("Authorization", "")
-    if auth_header.startswith("Bearer "):
-        token = auth_header.removeprefix("Bearer ").strip()
+    require_ai_rate_limit's "prefer real user identity" preference. Checks both auth sources
+    extract_access_token supports (Authorization header, then the access_token cookie), but still
+    decodes the token directly here (verifies signature + expiry, no DB lookup) rather than
+    depending on get_current_user, to keep this middleware cheap on every single request. An
+    invalid/missing/expired token is NOT rejected here -- that 401 is each route's own auth
+    dependency's job; this middleware only needs *an* identifier to count against, never
+    authenticates anything itself."""
+    token = extract_access_token(request)
+    if token:
         try:
             payload = decode_access_token(token)
             return f"user:{payload['sub']}"
@@ -94,3 +102,50 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         return response
+
+
+_CSRF_SAFE_METHODS = {"GET", "HEAD", "OPTIONS", "TRACE"}
+# Endpoints reachable with no prior session -- there is no csrf_token cookie yet to check against,
+# and (login/signup aside) no authenticated session for a cross-site attacker to ride along with
+# either way. Logout is included too: a CSRF-forced logout only ends the citizen's own session
+# early, never touches another account or any data, which isn't worth the complexity of routing a
+# CSRF header through the one call site (auth.tsx's logout()) that fires during the same teardown
+# that's already clearing everything else.
+_CSRF_EXEMPT_PATHS = {
+    "/auth/login", "/auth/signup", "/auth/refresh", "/auth/logout",
+    "/auth/signup/email/send-code", "/auth/signup/email/verify-code",
+    "/auth/forgot-password", "/auth/reset-password",
+}
+
+
+class CSRFMiddleware(BaseHTTPMiddleware):
+    """Double-submit-cookie CSRF protection for cookie-authenticated sessions -- the httpOnly
+    access_token/refresh_token cookies (see deps.set_auth_cookies) ride along with ANY request to
+    this origin a citizen's browser makes, including one a malicious page on another site tricks
+    it into firing; a non-httpOnly csrf_token cookie plus a header the frontend must deliberately
+    read and attach (X-CSRF-Token) closes that gap, since only same-origin JS can read the cookie
+    to put it in the header in the first place.
+
+    Only actually enforced when the request carries one of the two auth cookies -- a request
+    authenticating instead via a plain Authorization: Bearer header (every existing backend test,
+    or any future non-browser API client) can't be forged cross-site the way a cookie can, so this
+    middleware is a complete no-op for that whole traffic shape. Also skipped for safe methods
+    (never mutate anything) and the handful of pre-session endpoints in _CSRF_EXEMPT_PATHS.
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        has_cookie_session = bool(
+            request.cookies.get(ACCESS_TOKEN_COOKIE) or request.cookies.get(REFRESH_TOKEN_COOKIE)
+        )
+        if (
+            request.method in _CSRF_SAFE_METHODS
+            or request.url.path in _CSRF_EXEMPT_PATHS
+            or not has_cookie_session
+        ):
+            return await call_next(request)
+
+        cookie_value = request.cookies.get(CSRF_TOKEN_COOKIE)
+        header_value = request.headers.get(CSRF_HEADER_NAME)
+        if not cookie_value or not header_value or cookie_value != header_value:
+            return JSONResponse(status_code=403, content={"detail": "Invalid or missing CSRF token."})
+        return await call_next(request)

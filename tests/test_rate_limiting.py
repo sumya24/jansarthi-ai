@@ -286,7 +286,18 @@ def test_general_limit_keys_authenticated_requests_by_user_not_shared_ip(client,
     general middleware prefers the authenticated user id over IP whenever a valid token is
     present."""
     token_a, _ = make_citizen(phone="9100000020")
+    # Login/signup now also sets real session cookies (see backend/deps.py's set_auth_cookies),
+    # and `client` is one shared TestClient/cookie jar for this whole test -- without clearing
+    # citizen A's leftover access_token cookie first, citizen B's OWN signup (its OTP send-code/
+    # verify-code calls have no Authorization header of their own yet) would get silently
+    # attributed to citizen A's identifier instead of falling back to IP, quietly eating into the
+    # very budget this test measures below. A real browser never hits this: logging in as a
+    # second account overwrites rather than merges with the first, and nobody signs up a second
+    # account in the middle of a still-logged-in first session the way this test's shared client
+    # does purely for convenience.
+    client.cookies.clear()
     token_b, _ = make_citizen(phone="9100000021")
+    client.cookies.clear()
 
     for _ in range(settings.GENERAL_RATE_LIMIT):
         response = client.get("/complaints", headers={"Authorization": f"Bearer {token_a}"})
