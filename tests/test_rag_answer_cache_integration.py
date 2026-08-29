@@ -20,7 +20,7 @@ def _install_llm_answer_service(monkeypatch, db_session) -> Mock:
 
     store, provider = _get_shared_chroma_deps()
     fake_answers = Mock()
-    fake_answers.generate = Mock(side_effect=lambda q, chunks, lang, context_labels=None: (f"LLM ANSWER: {q}", True))
+    fake_answers.generate = Mock(side_effect=lambda q, chunks, lang, context_labels=None: (f"LLM ANSWER: {q}", True, None))
     service = AskJanMitraService(
         vector_store=store, embedding_provider=provider,
         answer_service=fake_answers, complaint_agent=_FakeComplaintAgent(),

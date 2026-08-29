@@ -30,6 +30,7 @@ from typing import Any
 from langchain_core.runnables import RunnableConfig
 from sqlalchemy.orm import Session
 
+from backend.config import settings
 from backend.models import User
 from backend.repositories import complaint_repository, evidence_repository
 from backend.schemas.rag_knowledge import ServiceCategory
@@ -62,6 +63,18 @@ from backend.services.translation_service import TranslationService
 logger = logging.getLogger(__name__)
 
 _COMPLAINT_NUMBER_PATTERN = re.compile(r"(?:complaint|complain)\s*#?\s*(\d+)|#(\d+)|\b(\d{2,6})\b", re.IGNORECASE)
+
+# Real Sarvam pricing for its translation models (confirmed against docs.sarvam.ai/api/
+# getting-started/pricing, checked 2026-08-26): Rs20/10K characters, billed per character, same
+# rate for both sarvam-translate:v1 and mayura:v1 (`_localize` below only ever uses the former --
+# it always translates FROM English, never auto-detects a source). Reported in real Indian Rupees,
+# not converted to USD -- same reasoning as answer_generation_service.py's per-token rate (see that
+# module's `_SARVAM_INPUT_COST_PER_TOKEN_INR` comment): this app's real Sarvam bill is in Rupees,
+# and Phoenix's own dashboard hardcodes a "$" prefix regardless of what currency the number
+# actually represents, so a USD conversion would only add a second, needless approximation. Billed
+# character count isn't spelled out beyond "per character" on that page, so this uses the input
+# text length (the one number known before the call is made) -- the one real approximation left.
+_SARVAM_TRANSLATE_COST_PER_CHAR_INR = 20 / 10_000
 
 _OUT_OF_SCOPE_TOPIC_NAMES = {
     "ELECTRICITY": "electricity connection/meter",
@@ -159,18 +172,54 @@ def _localize(text: str, state: GraphState, config: RunnableConfig) -> str:
 
     English is a no-op (skips a needless network call on the common case). A translation failure
     degrades to the original English text -- same honest fallback `AnswerGenerationService` and
-    the voice flow's own TTS step already use -- never blocks the response."""
+    the voice flow's own TTS step already use -- never blocks the response.
+
+    LIVE-REPORTED GAP, closed here: this is a real Sarvam API call (`sarvam-translate:v1`), just
+    on a completely different endpoint from `AnswerGenerationService.generate()`'s chat-completion
+    call -- it used to run with no span at all, so real, billable translation usage was invisible
+    in both LangSmith and Phoenix (a citizen conversing in Marathi/Hindi/etc. triggers this on
+    every single non-RAG reply -- greetings, clarifications, out-of-scope notices -- yet none of
+    that spend ever showed up anywhere). Traced the same way `answer_generation`'s span is: a
+    `model_name` + `total_cost_inr` pair in `outputs`, which `tracing._phoenix_end_span()` already
+    knows how to promote to Phoenix's dedicated LLM attributes -- no changes needed there. No
+    token-count attributes are set (translation is billed per character, not per token; setting
+    them would misrepresent this span's cost basis on Phoenix's Metrics view)."""
     language = state.get("response_language") or "en"
     if language == "en":
         return text
     deps = _deps(config)
     if deps.translation_service is None:
         return text
+    root = _trace_root(config)
+    span = tracing.start_child_run(root, "response_translation", "llm", inputs={"target_language": language, "input_char_count": len(text)})
     try:
-        return deps.translation_service.to_language(text, language)
+        translated = deps.translation_service.to_language(text, language)
     except AIServiceError as exc:
         logger.warning("Ask Sarthi: localizing response text to %s failed, keeping English: %s", language, exc)
+        tracing.end_run(span, error=str(exc))
         return text
+    tracing.end_run(
+        span,
+        outputs={
+            "model_name": "sarvam-translate:v1",
+            "output_char_count": len(translated),
+            "total_cost_inr": len(text) * _SARVAM_TRANSLATE_COST_PER_CHAR_INR,
+            # LIVE-REPORTED GAP: Phoenix's own "Top models by cost/tokens" dashboard widgets only
+            # ever read a registered model's per-token price times a token-count attribute -- they
+            # never read `total_cost_inr` above directly (that only feeds each trace's OWN
+            # Attributes tab, already correct on its own). Translation is billed per CHARACTER, not
+            # per token, so there is no real "token count" to give it -- this reuses Phoenix's
+            # token-count slot to carry the real character count instead (the same quantity
+            # `total_cost_inr` above was computed from), with a matching per-"million-characters"
+            # price registered for this model name in Phoenix's own Settings/Models (see
+            # PHOENIX_TRACING_PLAN.md). The real cost is unaffected either way; only Phoenix's own
+            # axis label says "tokens" when it means characters here -- a cosmetic mismatch, same
+            # spirit as the "$" prefix meaning Rupees everywhere else in this app's Phoenix setup.
+            "prompt_tokens": len(text),
+            "total_tokens": len(text),
+        },
+    )
+    return translated
 
 
 def _localize_options(options: list[str], state: GraphState, config: RunnableConfig) -> list[str]:
@@ -1200,13 +1249,21 @@ def rag_flow_node(state: GraphState, config: RunnableConfig) -> dict[str, Any]:
     cached_answer = get_cached_answer(ctx.db, text, language_code, category, location_city, location_state)
     if cached_answer is not None:
         answer_text, was_llm_generated = cached_answer, True
+        token_usage = None
         tracing.end_run(answer_span, outputs={"answer_was_llm_generated": True, "cache_hit": True})
     else:
-        answer_text, was_llm_generated = deps.answer_service.generate(text, context_chunks, language_name, context_labels)
-        tracing.end_run(
-            answer_span,
-            outputs={"answer_was_llm_generated": was_llm_generated, "cache_hit": False, "answer": tracing.redact_text(answer_text)},
-        )
+        answer_text, was_llm_generated, token_usage = deps.answer_service.generate(text, context_chunks, language_name, context_labels)
+        answer_outputs = {"answer_was_llm_generated": was_llm_generated, "cache_hit": False, "answer": tracing.redact_text(answer_text)}
+        if token_usage:
+            # Only tagged when a real LLM call actually happened this turn (token_usage is only
+            # non-None on that path, see AnswerGenerationService.generate()'s own docstring) --
+            # a fallback/cache-hit answer wasn't produced by any model just now, so it gets no
+            # model tag, same reasoning as why it gets no token counts either. Lets Phoenix's
+            # Metrics view group "top model by cost/tokens" -- otherwise those charts have
+            # nothing to group by, even though the raw token counts are present.
+            answer_outputs.update(token_usage)
+            answer_outputs["model_name"] = settings.LLM_MODEL
+        tracing.end_run(answer_span, outputs=answer_outputs)
         # Never cache the no-LLM-available fallback (raw chunk echo) -- only a genuinely
         # LLM-generated answer, so a temporary credits/network outage can never freeze a
         # degraded answer into the cache for everyone else who asks the same thing later.
@@ -1266,6 +1323,11 @@ def rag_flow_node(state: GraphState, config: RunnableConfig) -> dict[str, Any]:
         "verification_status": overall_status,
         "routed_to": "RAG",
         "answer_was_llm_generated": was_llm_generated,
+        # See GraphState's own docstring for these three -- only non-None when a real LLM call
+        # happened THIS turn (never on a cache hit or the no-LLM-available fallback).
+        "ai_cost_inr": token_usage.get("total_cost_inr") if token_usage else None,
+        "ai_model_name": settings.LLM_MODEL if token_usage else None,
+        "ai_total_tokens": token_usage.get("total_tokens") if token_usage else None,
     }
 
 

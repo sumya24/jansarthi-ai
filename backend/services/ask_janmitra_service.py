@@ -52,6 +52,7 @@ from backend.services.orchestration.graph import build_graph, root_run_inputs_an
 from backend.services.orchestration.nodes import GraphDeps, RequestContext
 from backend.services.orchestration.state import GraphState
 from backend.services.rag_retriever import RagRetriever
+from backend.services.audio_duration import get_audio_duration_seconds
 from backend.services.sarvam_client import AIServiceError, SarvamClient
 from backend.services.stt_service import transcribe_chunks
 from backend.services.translation_service import TranslationService
@@ -61,6 +62,21 @@ from backend.services.vision_service import VisionService, VisionServiceError
 logger = logging.getLogger(__name__)
 
 _LANGUAGE_NAMES = {code: info["name"] for code, info in settings.SUPPORTED_LANGUAGES.items()}
+
+# Real Sarvam pricing for text-to-speech (confirmed against docs.sarvam.ai/api/getting-started/
+# pricing, checked 2026-08-27): Rs30/10K characters for bulbul:v3 (billed per character, same as
+# translation -- see orchestration/nodes.py's _SARVAM_TRANSLATE_COST_PER_CHAR_INR for the same
+# reasoning: reported in real Indian Rupees, not USD, since Phoenix's dashboard hardcodes a "$"
+# regardless of the number's real currency). Billed on the input (spoken) text length -- the one
+# number known before the call is made, same approximation as translation's own cost.
+_SARVAM_TTS_COST_PER_CHAR_INR = 30 / 10_000
+
+# Real Sarvam pricing for speech-to-text (same pricing page, same date): Rs30/hour of audio for
+# the basic saaras:v3 transcription this app uses (no diarization/translation add-on). Needs a
+# real audio DURATION, not just byte count -- see audio_duration.py's own docstring for how that's
+# obtained (and its one honest gap: some browsers' recorded audio has no readable duration at
+# all, in which case this cost is skipped entirely for that turn rather than guessed at).
+_SARVAM_STT_COST_PER_SECOND_INR = 30 / 3600
 
 
 class AskJanMitraService:
@@ -172,6 +188,7 @@ class AskJanMitraService:
             language=request.language,
             conversation_history=request.conversation_history,
             input_mode="STT" if request.was_voice_input else "TEXT",
+            conversation_id=request.conversation_id,
         )
         response, _final_state, _latency_ms = self._run(db, ctx, initial_state, request.language)
         return response
@@ -189,6 +206,7 @@ class AskJanMitraService:
         conversation_history: list[ConversationTurn],
         image: UploadFile,
         was_voice_input: bool = False,
+        conversation_id: str | None = None,
     ) -> AskJanMitraResponse:
         """Same pipeline as `ask()`, plus an attached image. Validates and saves the image to
         disk via the same `evidence_service.validate_and_write()` every other photo upload in
@@ -216,7 +234,7 @@ class AskJanMitraService:
         request_id = trace_id.hex[:12]
         prelim_state = self._build_initial_state(
             question=question, language=language, conversation_history=conversation_history,
-            input_mode=input_mode, has_image=True,
+            input_mode=input_mode, conversation_id=conversation_id, has_image=True,
         )
         inputs, metadata = root_run_inputs_and_metadata(prelim_state, request_id)
         root_run = tracing.start_root_run(
@@ -225,10 +243,26 @@ class AskJanMitraService:
 
         vision_span = tracing.start_child_run(root_run, "vision_processing", "tool", inputs={"has_image": True})
         saved, image_description = self._process_image(image)
-        tracing.end_run(
-            vision_span,
-            outputs={"caption_produced": image_description is not None, "caption_length": len(image_description or "")},
-        )
+        vision_outputs = {
+            "caption_produced": image_description is not None,
+            "caption_length": len(image_description or ""),
+            # No cost attribute -- unlike every other model this app calls, this is a free,
+            # local, self-hosted model (see vision_service.py's own docstring), not a billed
+            # external API. `model_name` alone still lets Phoenix show which model ran.
+            "model_name": self._vision_service.model_name,
+        }
+        if image_description:
+            # isinstance guard, not a None check: in tests, `self._vision_service` is often a bare
+            # Mock() with only `describe_image` stubbed -- an unconfigured `count_tokens` call
+            # returns a Mock object, not None, which this filters out the same as a real failure.
+            token_count = self._vision_service.count_tokens(image_description)
+            if isinstance(token_count, int):
+                # Reuses the same "total_tokens" key answer_generation's real token count uses --
+                # tracing.py's _phoenix_end_span() already promotes it to Phoenix's dedicated
+                # token-count attribute, so this shows up in the Metrics token charts too, with no
+                # new promotion logic needed there.
+                vision_outputs["total_tokens"] = token_count
+        tracing.end_run(vision_span, outputs=vision_outputs)
 
         ctx = RequestContext(
             db=db,
@@ -243,6 +277,7 @@ class AskJanMitraService:
             language=language,
             conversation_history=conversation_history,
             input_mode=input_mode,
+            conversation_id=conversation_id,
             has_image=True,
             image_description=image_description,
         )
@@ -263,6 +298,7 @@ class AskJanMitraService:
         location_text: str | None,
         conversation_history: list[ConversationTurn],
         image: UploadFile | None = None,
+        conversation_id: str | None = None,
     ) -> AskVoiceResponse:
         """Voice-to-voice: transcribes the citizen's spoken turn via the same chunked-STT
         pipeline `ComplaintAgent`'s voice-complaint flow already uses (see
@@ -302,29 +338,53 @@ class AskJanMitraService:
 
         prelim_state = self._build_initial_state(
             question="", language=language, conversation_history=conversation_history,
-            input_mode=input_mode, has_image=has_image,
+            input_mode=input_mode, conversation_id=conversation_id, has_image=has_image,
         )
         inputs, metadata = root_run_inputs_and_metadata(prelim_state, request_id)
         root_run = tracing.start_root_run(
             "ask_janmitra_graph", run_id=trace_id, inputs=inputs, metadata=metadata, tags=["ask_janmitra"],
         )
 
-        stt_span = tracing.start_child_run(root_run, "speech_to_text", "tool", inputs={"segment_count": len(audio_segments)})
+        stt_span = tracing.start_child_run(root_run, "speech_to_text", "llm", inputs={"segment_count": len(audio_segments)})
         try:
             question = transcribe_chunks(self._sarvam_client, audio_segments, "unknown")
         except AIServiceError as exc:
             tracing.end_run(stt_span, error=str(exc))
             tracing.end_run(root_run, error=str(exc))
             raise
-        tracing.end_run(stt_span, outputs={"transcript_length": len(question), "transcript": tracing.redact_text(question)})
+        stt_outputs = {"transcript_length": len(question), "transcript": tracing.redact_text(question)}
+        # Best-effort real cost: only set when EVERY segment's duration was actually readable --
+        # silently summing just the known ones would understate the real total rather than being
+        # honestly absent (see audio_duration.py's own docstring for why some segments have no
+        # readable duration at all).
+        segment_durations = [get_audio_duration_seconds(chunk) for chunk in audio_segments]
+        if segment_durations and all(d is not None for d in segment_durations):
+            total_seconds = sum(segment_durations)
+            stt_outputs["model_name"] = "saaras:v3"
+            stt_outputs["total_cost_inr"] = total_seconds * _SARVAM_STT_COST_PER_SECOND_INR
+            # Same reasoning as the translation/TTS spans: STT is billed per SECOND of audio, not
+            # per token, so Phoenix's own per-model dashboard widgets have nothing to work with
+            # unless this slot carries a real duration-derived count. Milliseconds (not whole
+            # seconds) to keep meaningful precision for short voice questions -- `total_cost_inr`
+            # above is the real, unrounded source of truth regardless.
+            total_ms = round(total_seconds * 1000)
+            stt_outputs["prompt_tokens"] = total_ms
+            stt_outputs["total_tokens"] = total_ms
+        tracing.end_run(stt_span, outputs=stt_outputs)
 
         if has_image:
             vision_span = tracing.start_child_run(root_run, "vision_processing", "tool", inputs={"has_image": True})
             saved, image_description = self._process_image(image)
-            tracing.end_run(
-                vision_span,
-                outputs={"caption_produced": image_description is not None, "caption_length": len(image_description or "")},
-            )
+            vision_outputs = {
+                "caption_produced": image_description is not None,
+                "caption_length": len(image_description or ""),
+                "model_name": self._vision_service.model_name,
+            }
+            if image_description:
+                token_count = self._vision_service.count_tokens(image_description)
+                if isinstance(token_count, int):
+                    vision_outputs["total_tokens"] = token_count
+            tracing.end_run(vision_span, outputs=vision_outputs)
         else:
             saved, image_description = None, None
 
@@ -341,6 +401,7 @@ class AskJanMitraService:
             language=language,
             conversation_history=conversation_history,
             input_mode=input_mode,
+            conversation_id=conversation_id,
             has_image=has_image,
             image_description=image_description,
         )
@@ -355,10 +416,24 @@ class AskJanMitraService:
         # who asked (and got answered) in a different language than their UI toggle would hear
         # speech in the WRONG language despite reading a correct answer.
         tts_bcp47 = to_bcp47(base_response.language)
-        tts_span = tracing.start_child_run(root_run, "text_to_speech", "tool", inputs={"answer_length": len(base_response.answer)})
+        tts_span = tracing.start_child_run(root_run, "text_to_speech", "llm", inputs={"answer_length": len(base_response.answer)})
         try:
-            audio_base64 = self._sarvam_client.synthesize_speech(base_response.answer, tts_bcp47)
-            tracing.end_run(tts_span, outputs={"audio_produced": True})
+            audio_base64 = self._sarvam_client.synthesize_speech_long(base_response.answer, tts_bcp47)
+            tracing.end_run(
+                tts_span,
+                outputs={
+                    "audio_produced": True,
+                    "model_name": settings.TTS_MODEL,
+                    "total_cost_inr": len(base_response.answer) * _SARVAM_TTS_COST_PER_CHAR_INR,
+                    # Same reasoning as _localize()'s response_translation span (orchestration/
+                    # nodes.py): TTS is billed per character, not per token, so Phoenix's own
+                    # per-model cost/token dashboard widgets have nothing to work with unless this
+                    # slot carries the real character count -- the actual `total_cost_inr` above is
+                    # unaffected either way.
+                    "prompt_tokens": len(base_response.answer),
+                    "total_tokens": len(base_response.answer),
+                },
+            )
         except AIServiceError as exc:
             logger.warning("Ask Sarthi voice flow: TTS failed, returning text-only: %s", exc)
             tracing.end_run(tts_span, outputs={"audio_produced": False}, error=str(exc))
@@ -399,6 +474,7 @@ class AskJanMitraService:
         language: str,
         conversation_history: list[ConversationTurn],
         input_mode: str,
+        conversation_id: str | None = None,
         has_image: bool = False,
         image_description: str | None = None,
     ) -> GraphState:
@@ -406,6 +482,7 @@ class AskJanMitraService:
             "user_message": question,
             "original_language": language,
             "input_type": "text",
+            "conversation_id": conversation_id,
             "conversation_history": [
                 {
                     "role": t.role,
@@ -475,7 +552,8 @@ class AskJanMitraService:
                 db,
                 request_id=request_id,
                 langsmith_trace_id=str(trace_id) if tracing.is_enabled() else None,
-                conversation_id=None,
+                phoenix_trace_id=tracing.get_phoenix_trace_id(trace_id),
+                conversation_id=initial_state.get("conversation_id"),
                 intent=None,
                 service_category=None,
                 routed_to="ERROR",
@@ -496,6 +574,7 @@ class AskJanMitraService:
             db,
             request_id=request_id,
             langsmith_trace_id=str(trace_id) if tracing.is_enabled() else None,
+            phoenix_trace_id=tracing.get_phoenix_trace_id(trace_id),
             conversation_id=final_state.get("conversation_id"),
             intent=final_state.get("intent"),
             service_category=final_state.get("service_category"),
@@ -503,6 +582,9 @@ class AskJanMitraService:
             success=True,
             error_type=None,
             latency_ms=latency_ms,
+            ai_cost_inr=final_state.get("ai_cost_inr"),
+            ai_model_name=final_state.get("ai_model_name"),
+            ai_total_tokens=final_state.get("ai_total_tokens"),
         )
         ai_request_log_repository.check_and_fire_alerts(db)
 

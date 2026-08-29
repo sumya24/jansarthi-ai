@@ -67,10 +67,10 @@ class _FakeComplaintAgent:
 def _install_real_service(monkeypatch):
     store, provider = _get_shared_chroma_deps()
     fake_answers = Mock()
-    fake_answers.generate = Mock(side_effect=lambda q, chunks, lang, context_labels=None: (q, False))
+    fake_answers.generate = Mock(side_effect=lambda q, chunks, lang, context_labels=None: (q, False, None))
     fake_sarvam = Mock()
     fake_sarvam.transcribe = Mock(return_value="Street light near my home is not working.")
-    fake_sarvam.synthesize_speech = Mock(return_value="ZmFrZQ==")
+    fake_sarvam.synthesize_speech_long = Mock(return_value="ZmFrZQ==")
     fake_vision = Mock()
     fake_vision.describe_image = Mock(return_value=_FAKE_CAPTION)
 

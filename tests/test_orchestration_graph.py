@@ -384,7 +384,7 @@ def test_rag_flow_node_translates_the_no_llm_fallback_answer_when_llm_answer_gen
     fake_retriever = Mock()
     fake_retriever.retrieve = Mock(return_value=RetrievalOutcome(results=[fake_chunk]))
     fake_answer_service = Mock()
-    fake_answer_service.generate = Mock(return_value=("Required information: exact location.", False))
+    fake_answer_service.generate = Mock(return_value=("Required information: exact location.", False, None))
     fake_translation_service = Mock()
     fake_translation_service.to_language = Mock(return_value="आवश्यक जानकारी: सटीक स्थान।")
     deps = _minimal_graph_deps(
@@ -703,7 +703,7 @@ def test_clarification_default_message_unchanged_when_no_location_given_at_all(c
 
 def test_complaint_agent_failure_returns_honest_error_not_a_fake_complaint_id(client, monkeypatch, make_citizen, make_worker):
     fake_answers = Mock()
-    fake_answers.generate = lambda q, chunks, lang, context_labels=None: ("x", False)
+    fake_answers.generate = lambda q, chunks, lang, context_labels=None: ("x", False, None)
 
     class _RaisingComplaintAgent:
         def create_complaint(self, **kwargs):

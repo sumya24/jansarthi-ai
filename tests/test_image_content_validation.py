@@ -167,7 +167,7 @@ def _install_service_with_vision_spy(monkeypatch):
     describe_image was never called for a rejected upload."""
     store, provider = _get_shared_chroma_deps()
     fake_answers = Mock()
-    fake_answers.generate = Mock(side_effect=lambda q, chunks, lang, context_labels=None: (q, False))
+    fake_answers.generate = Mock(side_effect=lambda q, chunks, lang, context_labels=None: (q, False, None))
     fake_vision = Mock()
     fake_vision.describe_image = Mock(return_value="A caption.")
     service = AskJanMitraService(

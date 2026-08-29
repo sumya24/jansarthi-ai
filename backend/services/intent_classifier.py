@@ -206,7 +206,17 @@ _SERVICE_INFO_KEYWORDS: dict[str, list[str]] = {
            "kahan se milega", "kaha se milega", "kahan milega",
            "kitne paise", "kitna paisa", "paise lagenge", "fees kitni", "kitni fees",
            "kaunsa department", "department kaunsa", "responsible department",
-           "schedule kya hai", "kya schedule hai", "maintenance kaun karta hai", "kaun karta hai"],
+           "schedule kya hai", "kya schedule hai", "maintenance kaun karta hai", "kaun karta hai",
+           # LIVE-REPORTED GAP: this app's own intent_ambiguous clarification (nodes.py, ~line
+           # 1014) literally ASKS "...or would you like information about it?" -- but a citizen
+           # who naturally replies by echoing that exact phrasing back ("Information about it.")
+           # had no matching keyword anywhere in this list, only the bare button label "What is
+           # the procedure?" did. That free-typed, entirely natural reply fell through to the
+           # complaint-leaning default and wrongly asked "What issue would you like to report?" --
+           # a real, reproduced failure, not hypothetical. Phrases, not a bare "information" alone,
+           # to avoid over-matching an unrelated sentence that happens to contain that word.
+           "information about it", "more information", "just information", "some information",
+           "want information", "need information", "give me information", "want more information"],
     "hi": ["नया कनेक्शन", "नया पानी कनेक्शन", "आवेदन", "दस्तावेज", "संपर्क नंबर", "कैसे लगवाएं",
            # Same class of bug as the English fee/schedule fixes above, caught the same way (this
            # time by testing the app's own built-in "How are potholes prioritized for repair?" /
@@ -405,7 +415,12 @@ _HOW_TO_FILE_COMPLAINT_KEYWORDS: dict[str, list[str]] = {
 # forms in hand) -- flagged, not guessed.
 _CATEGORY_KEYWORDS: dict[ServiceCategory, dict[str, list[str]]] = {
     ServiceCategory.WASTE_SANITATION: {
-        "en": ["garbage", "waste", "trash", "sanitation", "dump", "litter", "rubbish"],
+        # "stray dog"/"public toilet"/"restroom" added after a live-reported gap: both are real
+        # municipal sanitation-department responsibilities (animal control and public toilet
+        # upkeep), but neither mentions "garbage"/"waste" etc., so they fell through to
+        # unclassified even though a clear category exists for them.
+        "en": ["garbage", "waste", "trash", "sanitation", "dump", "litter", "rubbish",
+               "stray dog", "public toilet", "public restroom", "restroom"],
         "hi": ["कचरा", "कचरे", "कूड़ा", "कूड़े"], "mr": ["कचरा", "कचऱ्या"], "or": ["ଆବର୍ଜନା"],
         "gu": ["કચરો", "કચરાની"], "bn": ["আবর্জনা", "ময়লা"],
     },

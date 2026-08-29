@@ -70,6 +70,11 @@ class AskJanMitraRequest(BaseModel):
     # it's the most deliberate signal (see ask_janmitra_service.py's location-resolution order).
     location_text: str | None = None
     conversation_history: list[ConversationTurn] = Field(default_factory=list)
+    # Client-generated id grouping every turn of one chat together -- purely a Phoenix/
+    # observability signal (see observability/tracing.py's Sessions handling), never read by any
+    # routing/business logic. None for older/unaware clients, same "defaults to behaving exactly
+    # as before this field existed" posture as was_voice_input below.
+    conversation_id: str | None = None
     # True when `question`'s text came from Mic 1 (useSpeechToText.ts filling the input, possibly
     # then hand-edited) rather than being typed from scratch -- purely a LangSmith/observability
     # signal (see orchestration/graph.py's root-run metadata "input_mode": "TEXT" vs "STT"), never

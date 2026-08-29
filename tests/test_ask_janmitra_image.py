@@ -77,7 +77,7 @@ def _install_real_service(monkeypatch, *, caption: str | None = _FAKE_CAPTION, c
     # Echoes the query text back as the "answer" -- lets tests assert on exactly what text
     # reached RAG (e.g. whether an image caption got folded into it), not just that *an* answer
     # came back.
-    fake_answers.generate = Mock(side_effect=lambda q, chunks, lang, context_labels=None: (q, False))
+    fake_answers.generate = Mock(side_effect=lambda q, chunks, lang, context_labels=None: (q, False, None))
 
     fake_vision = Mock()
     if caption_error:

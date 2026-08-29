@@ -67,7 +67,7 @@ def _install_real_service(
 ):
     store, provider = _get_shared_chroma_deps()
     fake_answers = Mock()
-    fake_answers.generate = Mock(side_effect=lambda q, chunks, lang, context_labels=None: (q, False))
+    fake_answers.generate = Mock(side_effect=lambda q, chunks, lang, context_labels=None: (q, False, None))
 
     fake_sarvam = Mock()
     if stt_error:
@@ -75,9 +75,14 @@ def _install_real_service(
     else:
         fake_sarvam.transcribe = Mock(return_value=transcript)
     if tts_error:
-        fake_sarvam.synthesize_speech = Mock(side_effect=AIServiceError("TTS down"))
+        fake_sarvam.synthesize_speech_long = Mock(side_effect=AIServiceError("TTS down"))
     else:
-        fake_sarvam.synthesize_speech = Mock(return_value="ZmFrZS1hdWRpby1ieXRlcw==")
+        fake_sarvam.synthesize_speech_long = Mock(return_value="ZmFrZS1hdWRpby1ieXRlcw==")
+    # Identity passthrough -- this fake never needed real translation semantics before (nothing
+    # asserted on the translated text's content), but it must still return a real string: an
+    # unstubbed Mock() attribute returns a Mock object, and _localize() (orchestration/nodes.py)
+    # now genuinely reads len() off this value for its own Phoenix cost-tracing span.
+    fake_sarvam.translate = Mock(side_effect=lambda text, source_language_code, target_language_code: text)
 
     fake_vision = Mock()
     if caption_error:
@@ -118,8 +123,8 @@ def test_voice_returns_real_transcribed_text_and_real_audio(client, monkeypatch,
     assert body["audio_base64"] == "ZmFrZS1hdWRpby1ieXRlcw=="
     assert body["audio_format"] == "wav"
     fake_sarvam.transcribe.assert_called_once()
-    fake_sarvam.synthesize_speech.assert_called_once()
-    tts_call_text = fake_sarvam.synthesize_speech.call_args[0][0]
+    fake_sarvam.synthesize_speech_long.assert_called_once()
+    tts_call_text = fake_sarvam.synthesize_speech_long.call_args[0][0]
     assert tts_call_text == body["answer"]
 
 
@@ -150,8 +155,8 @@ def test_voice_answer_and_speech_follow_the_actual_spoken_language_not_the_reque
     stt_call_language = fake_sarvam.transcribe.call_args[0][1]
     assert stt_call_language == "unknown"
 
-    fake_sarvam.synthesize_speech.assert_called_once()
-    tts_call_language = fake_sarvam.synthesize_speech.call_args[0][1]
+    fake_sarvam.synthesize_speech_long.assert_called_once()
+    tts_call_language = fake_sarvam.synthesize_speech_long.call_args[0][1]
     assert tts_call_language == "mr-IN"
 
 
@@ -276,7 +281,7 @@ def test_voice_plus_image_folds_the_caption_into_the_spoken_question(client, mon
     assert body["question"] == "Who do I contact about road potholes in Nagpur?"
     assert _FAKE_CAPTION in body["answer"]
     assert body["audio_base64"] is not None
-    fake_sarvam.synthesize_speech.assert_called_once()
+    fake_sarvam.synthesize_speech_long.assert_called_once()
 
 
 def test_voice_plus_image_with_no_spoken_text_gets_a_real_spoken_clarification(client, monkeypatch, make_citizen):

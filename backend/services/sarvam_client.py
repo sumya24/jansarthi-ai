@@ -1,6 +1,10 @@
 """Thin wrapper around the Sarvam AI SDK for speech-to-text, translation, and text-to-speech."""
 
+import base64
+import io
 import logging
+import re
+import wave
 
 import httpx
 from sarvamai import SarvamAI
@@ -16,6 +20,72 @@ class AIServiceError(Exception):
     Callers should catch this and return a clear error to the user instead
     of letting the failure crash the request.
     """
+
+
+# LIVE-REPORTED BUG: Sarvam's TTS (bulbul:v2) silently truncates long input text with NO error and
+# NO indication in the response (`audios` is still populated, no length/finish-reason field at
+# all) -- confirmed directly, live: a real 318-character answer (an image caption + a follow-up
+# question) came back as ~12.5s of audio that stops mid-answer, the entire follow-up question
+# missing, while a 145-character version of the same answer came back complete at ~7.6s. Not a
+# documented character limit (Sarvam's own docs describe a much higher ~2500-char cap for a
+# different model version) -- looks like an undocumented ~12-13s max OUTPUT DURATION on this
+# specific model, silently cutting whatever doesn't fit rather than erroring.
+#
+# Fixed the same way this app's own STT already handles the opposite direction of this problem
+# (see stt_service.py's `transcribe_chunks()`): split into sentence-safe chunks, synthesize each
+# separately, stitch the resulting WAV audio back into one file. `_TTS_SAFE_CHUNK_CHARS` is chosen
+# with real margin below the observed ~12.5s cutoff (145 chars -> 7.6s intact, confirmed via a
+# real round-trip: synthesized, then transcribed back, and checked the transcript covered the
+# whole input) -- not the exact edge, deliberately, since the true limit is time-based and this
+# app doesn't know each chunk's real speaking rate in advance.
+_TTS_SAFE_CHUNK_CHARS = 180
+
+
+def _split_text_for_tts(text: str, max_chars: int = _TTS_SAFE_CHUNK_CHARS) -> list[str]:
+    """Splits `text` into chunks that each stay under `max_chars`, breaking only at sentence
+    boundaries (never mid-sentence) so each chunk is still natural to synthesize on its own. A
+    single sentence longer than `max_chars` is kept whole as its own (over-budget) chunk --
+    correctly risking that one chunk being cut over cutting it awkwardly mid-word, and this app's
+    own real answer text (short, template-shaped sentences) essentially never produces one."""
+    sentences = [s for s in re.split(r"(?<=[.!?])\s+", text.strip()) if s]
+    if not sentences:
+        return [text] if text.strip() else []
+
+    chunks: list[str] = []
+    current = ""
+    for sentence in sentences:
+        candidate = f"{current} {sentence}".strip() if current else sentence
+        if len(candidate) <= max_chars or not current:
+            current = candidate
+        else:
+            chunks.append(current)
+            current = sentence
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def _concatenate_wav_audio(wav_byte_chunks: list[bytes]) -> bytes:
+    """Stitches several base64-decoded WAV audio chunks (same format -- all produced by the same
+    Sarvam TTS call, just different text) into one WAV file. Uses the stdlib `wave` module, not a
+    new dependency -- correct here specifically because every chunk shares the same sample
+    format (mono/stereo, sample width, frame rate), all coming from the same TTS call in the same
+    request; concatenating arbitrary WAV files with different formats would need real resampling,
+    which this does not attempt."""
+    frame_chunks: list[bytes] = []
+    params = None
+    for wav_bytes in wav_byte_chunks:
+        with wave.open(io.BytesIO(wav_bytes), "rb") as reader:
+            if params is None:
+                params = reader.getparams()
+            frame_chunks.append(reader.readframes(reader.getnframes()))
+
+    output = io.BytesIO()
+    with wave.open(output, "wb") as writer:
+        writer.setparams(params)
+        for frames in frame_chunks:
+            writer.writeframes(frames)
+    return output.getvalue()
 
 
 class SarvamClient:
@@ -130,6 +200,10 @@ class SarvamClient:
                 speaker=speaker or settings.TTS_SPEAKER,
                 model=model or settings.TTS_MODEL,
                 output_audio_codec="wav",
+                # Own, longer read timeout -- see settings.SARVAM_TTS_READ_TIMEOUT_SECONDS'
+                # docstring: synthesis time scales with text length, unlike the fast STT/
+                # translation calls this client's shared timeout was originally tuned for.
+                request_options={"timeout_in_seconds": int(settings.SARVAM_TTS_READ_TIMEOUT_SECONDS)},
             )
             audios = getattr(response, "audios", None) or []
             if not audios:
@@ -141,6 +215,41 @@ class SarvamClient:
         except Exception as exc:
             logger.error("TTS failed (language=%s): %s", language_code, exc, exc_info=True)
             raise AIServiceError("Text-to-speech service failed. Please try again.") from exc
+
+    def synthesize_speech_long(
+        self, text: str, language_code: str, speaker: str | None = None, model: str | None = None
+    ) -> str:
+        """Same as `synthesize_speech()`, but safe for text longer than Sarvam's own undocumented
+        per-call output-duration limit -- see `_TTS_SAFE_CHUNK_CHARS`'s own comment for the live-
+        reproduced bug this closes. Splits `text` into sentence-safe chunks, synthesizes each
+        separately, and stitches the resulting audio into one WAV file; a `text` short enough to
+        need only one chunk makes exactly the same single call `synthesize_speech()` would.
+
+        Args:
+            text: The text to speak -- any length.
+            language_code: BCP-47 language code to speak in, e.g. "mr-IN".
+            speaker: One of Sarvam's named `bulbul` voices. Defaults to `settings.TTS_SPEAKER`.
+            model: Sarvam TTS model version. Defaults to `settings.TTS_MODEL`.
+
+        Returns:
+            The synthesized audio as a base64-encoded WAV string.
+
+        Raises:
+            AIServiceError: If any chunk's Sarvam API call fails -- same fail-open contract as
+                `synthesize_speech()` (the caller already treats a total TTS failure as a
+                text-only degrade, see ask_janmitra_service.py's own TTS call site).
+        """
+        chunks = _split_text_for_tts(text)
+        if len(chunks) <= 1:
+            return self.synthesize_speech(text, language_code, speaker, model)
+
+        logger.info("TTS: splitting %d-character answer into %d chunk(s)", len(text), len(chunks))
+        audio_chunks = [
+            base64.b64decode(self.synthesize_speech(chunk, language_code, speaker, model))
+            for chunk in chunks
+        ]
+        combined = _concatenate_wav_audio(audio_chunks)
+        return base64.b64encode(combined).decode("ascii")
 
     def translate(self, text: str, source_language_code: str, target_language_code: str) -> str:
         """Translate text between two languages using Sarvam's translation model.

@@ -79,7 +79,7 @@ def _real_ask_janmitra_service(**overrides) -> AskJanMitraService:
     calls -- see test_complaints_api.py's `_agent` mock)."""
     store, provider = _get_shared_chroma_deps()
     fake_answers = Mock()
-    fake_answers.generate = lambda q, chunks, lang, context_labels=None: (f"ANSWER: {chunks[0]}", False)
+    fake_answers.generate = lambda q, chunks, lang, context_labels=None: (f"ANSWER: {chunks[0]}", False, None)
     kwargs = {
         "vector_store": store,
         "embedding_provider": provider,

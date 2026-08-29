@@ -106,6 +106,16 @@ class GraphState(TypedDict, total=False):
     verification_status: str | None
     insufficient_knowledge: bool
     answer_was_llm_generated: bool
+    # Real Sarvam cost/usage for this turn's answer_generation LLM call, in Indian Rupees (see
+    # answer_generation_service.py's AnswerGenerationService.generate() docstring for the exact
+    # rate) -- surfaced here (rather than staying only inside the Phoenix span, see
+    # observability/tracing.py) so ai_request_log_repository.record_ai_request() can persist it
+    # onto AiRequestLog, for the Admin AI Monitoring page's own cost column (see routes/admin.py).
+    # None on every path that didn't call the LLM this turn: fallback, cache hit, or a flow that
+    # never reaches rag_flow_node at all (greeting, out-of-scope, complaint creation, ...).
+    ai_cost_inr: float | None
+    ai_model_name: str | None
+    ai_total_tokens: int | None
 
     # --- complaint flow results ---
     complaint_id: int | None
