@@ -106,7 +106,14 @@ export interface AskJanMitraResponse {
     | "COMPLAINT_CREATED"
     | "COMPLAINT_STATUS_API"
     | "NONE_OUT_OF_SCOPE"
-    | "NONE_CLARIFICATION_NEEDED";
+    | "NONE_CLARIFICATION_NEEDED"
+    /** A prompt-injection guardrail blocked this turn before it ever reached an LLM -- see
+     * backend/services/guardrails.py. */
+    | "NONE_BLOCKED_GUARDRAIL"
+    /** A genuinely multi-category question (e.g. a flooded street + a blocked drain + a broken
+     * streetlight in one message), answered per-category then combined -- see
+     * backend/services/orchestration/nodes.py's agent_flow_node. */
+    | "RAG_MULTI_CATEGORY";
   answer_was_llm_generated: boolean;
   /** Set only when routed_to === "COMPLAINT_CREATED" — see backend/services/orchestration/
    * nodes.py's complaint_flow_node (LangGraph orchestration phase). A TYPE_A complaint-shaped

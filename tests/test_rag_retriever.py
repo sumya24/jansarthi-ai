@@ -20,6 +20,8 @@ naturally-occurring case where every VERIFIED chunk for a city+category scores b
 threshold while a SYNTHETIC one clears it.
 """
 
+import pytest
+
 from backend.schemas.rag_knowledge import ServiceCategory
 from backend.services.rag_retriever import RagRetriever
 from backend.services.vector_store import ScoredChunk
@@ -32,13 +34,19 @@ class _FakeEmbeddingProvider:
 
 class _FakeVectorStore:
     """Returns a fixed, pre-scored candidate list regardless of the query vector or top_k --
-    lets these tests dictate exact scores instead of depending on real embedding-model output."""
+    lets these tests dictate exact scores instead of depending on real embedding-model output.
+    `get_candidates()` returns an empty pool by default (no BM25 widening -- see this module's
+    hybrid-search tests further down for a store that actually exercises that path), so all the
+    threshold/rescue/rerank/citation tests above are unaffected by hybrid search's addition."""
 
     def __init__(self, candidates: list[ScoredChunk]) -> None:
         self._candidates = candidates
 
     def search(self, query_vector, top_k: int, metadata_filter: dict[str, str] | None) -> list[ScoredChunk]:
         return list(self._candidates)
+
+    def get_candidates(self, metadata_filter: dict[str, str] | None) -> list[tuple]:
+        return []
 
 
 def _chunk(chunk_id: str, score: float, city: str, category: str, status: str) -> ScoredChunk:
@@ -139,3 +147,271 @@ def test_rescue_does_not_cross_contaminate_a_different_city_or_category():
     assert "TN_GCC_REAL_RECORD" in source_ids
     assert "SYNTHETIC_REPRESENTATIVE_DATA" not in source_ids
     assert "SYNTHETIC_OTHER_CITY" in source_ids
+
+
+# --- Hybrid search (BM25 widening the candidate pool) -----------------------------------------
+#
+# See rag_retriever.py's module docstring for the design: BM25 only ever WIDENS the candidate
+# pool with chunks pure vector search's fixed top_k*3 window didn't return at all -- it never
+# supplies the final score. Every chunk BM25 adds still gets a REAL cosine similarity against the
+# query before the existing threshold/rescue/rerank/citation logic runs, completely unaware
+# hybrid search happened at all.
+
+
+class _FakeVectorStoreWithPool:
+    """Unlike `_FakeVectorStore` above, `search()` and `get_candidates()` are independently
+    controllable here -- lets these tests simulate a chunk that pure vector search's top_k*3
+    window genuinely never returned (simply absent from `search_results`) while still being
+    present in the full metadata-filtered pool `get_candidates()` exposes, exactly the situation
+    BM25 widening exists to catch."""
+
+    def __init__(self, search_results: list[ScoredChunk], pool: list[tuple]) -> None:
+        self._search_results = search_results
+        self._pool = pool
+
+    def search(self, query_vector, top_k: int, metadata_filter: dict[str, str] | None) -> list[ScoredChunk]:
+        return list(self._search_results)
+
+    def get_candidates(self, metadata_filter: dict[str, str] | None) -> list[tuple]:
+        return list(self._pool)
+
+
+class _FixedVectorEmbeddingProvider:
+    """Returns the same real (dense, list-of-floats) vector for every query -- lets these tests
+    control the exact cosine similarity `cosine_similarity_any` computes against each pool
+    chunk's own fixed vector, rather than depending on real embedding-model output."""
+
+    def __init__(self, vector: list[float]) -> None:
+        self._vector = vector
+
+    def embed_query(self, text: str) -> list[float]:
+        return self._vector
+
+
+def test_bm25_surfaces_an_exact_keyword_match_pure_vector_search_missed():
+    """BM25_ONLY_HIT contains the query's exact, distinctive terms ("pole number 42") but is
+    absent from the fake store's search() results entirely (simulating vector search's top_k*3
+    ANN window missing it) -- it must still appear in the final results, via BM25 widening, and
+    with its REAL cosine similarity (0.85, from its fixed vector) as its score, not a BM25 score."""
+    vector_hit = _chunk("VECTOR_HIT", 0.90, "Nashik", "STREETLIGHTS", "VERIFIED")
+    pool = [
+        ("VECTOR_HIT", "general streetlight complaint information", vector_hit.metadata, [1.0, 0.0]),
+        (
+            "BM25_ONLY_HIT",
+            "streetlight pole number 42 is broken near the market",
+            {
+                "source_id": "BM25_ONLY_HIT", "city": "Nashik",
+                "service_category": "STREETLIGHTS", "verification_status": "VERIFIED",
+            },
+            [0.85, 0.5268026970889531],  # unit vector, cosine 0.85 against [1.0, 0.0]
+        ),
+        (
+            "UNRELATED_LOW_SCORE",
+            "garbage collection schedule for residential areas",
+            {
+                "source_id": "UNRELATED_LOW_SCORE", "city": "Nashik",
+                "service_category": "STREETLIGHTS", "verification_status": "SYNTHETIC",
+            },
+            [0.1, 0.9949874371066199],  # cosine 0.1 against [1.0, 0.0] -- irrelevant filler
+        ),
+    ]
+    store = _FakeVectorStoreWithPool(search_results=[vector_hit], pool=pool)
+    retriever = RagRetriever(
+        store, _FixedVectorEmbeddingProvider([1.0, 0.0]),
+        relevance_threshold=0.79, verified_relevance_threshold=0.74,
+    )
+
+    outcome = retriever.retrieve(
+        "streetlight pole number 42 is broken", ServiceCategory.STREETLIGHTS, "Nashik", "Maharashtra"
+    )
+
+    assert not outcome.insufficient_knowledge
+    source_ids = {c.metadata["source_id"] for c in outcome.results}
+    assert "BM25_ONLY_HIT" in source_ids
+    assert "UNRELATED_LOW_SCORE" not in source_ids
+    bm25_result = next(c for c in outcome.results if c.metadata["source_id"] == "BM25_ONLY_HIT")
+    assert bm25_result.score == pytest.approx(0.85, abs=1e-6)
+
+
+def test_bm25_widened_higher_scoring_candidate_correctly_outranks_a_lower_verified_one():
+    """BUG FIX (code review): the VERIFIED-preference band used to be anchored to
+    `above_threshold[0].score`, which was always the true top score back when the list came
+    straight out of `store.search()` (sorted). Hybrid search appends BM25-widened candidates --
+    with their own real cosine scores, which can legitimately be HIGHER than every vector-search
+    score -- to the END of that list, so `above_threshold[0]` is no longer guaranteed to be the
+    top score.
+
+    Under the old bug: top_score anchors to VECTOR_TOP_BUT_LOWER's own score (0.79, position 0),
+    so it trivially satisfies its OWN "near-top" floor and wins the VERIFIED bonus -- outranking
+    the genuinely higher-scoring BM25_WIDENED_HIGHEST (0.95, SYNTHETIC, never eligible for the
+    bonus) even though 0.79 is nowhere near the TRUE top score. Fixed: the band anchors to the
+    real max (0.95), so 0.79 no longer qualifies and the higher-scoring chunk correctly wins.
+
+    (Different cities on the two chunks are deliberate test-isolation, not part of the bug itself
+    -- keeps this test's citation-honesty filtering trivially a no-op, since that mechanism is
+    already covered by its own dedicated tests above and isn't what this test is about. The
+    filler chunks below are load-bearing, not decoration: with only the two chunks under test,
+    BM25's classic IDF formula goes NEGATIVE for a term appearing in every document in a
+    too-tiny corpus -- a real BM25 math quirk, unrelated to the bug this test targets -- so
+    enough unrelated filler is included to keep the corpus large enough for BM25 to behave
+    the way it does on this app's real, hundreds-of-chunks-sized pools.)"""
+    vector_top_but_lower = _chunk("VECTOR_TOP_BUT_LOWER", 0.79, "Nashik", "STREETLIGHTS", "VERIFIED")
+    pool = [
+        ("VECTOR_TOP_BUT_LOWER", "general streetlight complaint information", vector_top_but_lower.metadata, [1.0, 0.0]),
+        (
+            "BM25_WIDENED_HIGHEST",
+            "streetlight pole number 42 is broken near the market",
+            {
+                "source_id": "BM25_WIDENED_HIGHEST", "city": "OtherCity",
+                "service_category": "STREETLIGHTS", "verification_status": "SYNTHETIC",
+            },
+            [0.95, 0.3122498999199199],  # unit vector, cosine 0.95 against [1.0, 0.0]
+        ),
+        ("FILLER_1", "garbage collection schedule for residential areas", {"source_id": "FILLER_1", "city": "OtherCity", "service_category": "STREETLIGHTS", "verification_status": "SYNTHETIC"}, [0.01, 0.01]),
+        ("FILLER_2", "water supply timings for this ward", {"source_id": "FILLER_2", "city": "OtherCity", "service_category": "STREETLIGHTS", "verification_status": "SYNTHETIC"}, [0.01, 0.01]),
+        ("FILLER_3", "park maintenance report for the month", {"source_id": "FILLER_3", "city": "OtherCity", "service_category": "STREETLIGHTS", "verification_status": "SYNTHETIC"}, [0.01, 0.01]),
+    ]
+    store = _FakeVectorStoreWithPool(search_results=[vector_top_but_lower], pool=pool)
+    retriever = RagRetriever(
+        store, _FixedVectorEmbeddingProvider([1.0, 0.0]),
+        relevance_threshold=0.79, verified_relevance_threshold=0.74,
+    )
+
+    outcome = retriever.retrieve(
+        "streetlight pole number 42 is broken", ServiceCategory.STREETLIGHTS, "Nashik", "Maharashtra"
+    )
+
+    result_ids = [c.metadata["source_id"] for c in outcome.results]
+    assert result_ids[0] == "BM25_WIDENED_HIGHEST", (
+        "the real highest-scoring chunk must rank first -- if VECTOR_TOP_BUT_LOWER (0.79) ranks "
+        "first instead, the VERIFIED-preference band is still anchored to the wrong (stale, "
+        "position-0) top score instead of the true max"
+    )
+
+
+def test_bm25_widened_candidate_still_has_to_clear_the_real_relevance_threshold():
+    """Widening the pool must never bypass the threshold -- a chunk BM25 finds via an exact
+    keyword match but whose REAL cosine similarity to the query is low must still be dropped,
+    exactly like any vector-search candidate that scores too low."""
+    vector_hit = _chunk("VECTOR_HIT", 0.90, "Nashik", "STREETLIGHTS", "VERIFIED")
+    pool = [
+        ("VECTOR_HIT", "general streetlight complaint information", vector_hit.metadata, [1.0, 0.0]),
+        (
+            "BM25_MATCH_BUT_LOW_COSINE",
+            "streetlight pole number 42 is broken near the market",
+            {
+                "source_id": "BM25_MATCH_BUT_LOW_COSINE", "city": "Nashik",
+                "service_category": "STREETLIGHTS", "verification_status": "VERIFIED",
+            },
+            [0.3, 0.9539392014169456],  # cosine 0.3 against [1.0, 0.0] -- below threshold
+        ),
+    ]
+    store = _FakeVectorStoreWithPool(search_results=[vector_hit], pool=pool)
+    retriever = RagRetriever(
+        store, _FixedVectorEmbeddingProvider([1.0, 0.0]),
+        relevance_threshold=0.79, verified_relevance_threshold=0.74,
+    )
+
+    outcome = retriever.retrieve(
+        "streetlight pole number 42 is broken", ServiceCategory.STREETLIGHTS, "Nashik", "Maharashtra"
+    )
+
+    source_ids = {c.metadata["source_id"] for c in outcome.results}
+    assert "BM25_MATCH_BUT_LOW_COSINE" not in source_ids
+
+
+def test_bm25_widening_is_a_no_op_when_the_pool_is_empty():
+    """If get_candidates() returns nothing (e.g. the metadata filter matches zero chunks, or this
+    store simply doesn't have a broader pool to offer), retrieve() must behave exactly as it did
+    before hybrid search existed -- no crash, no change to the vector-search-only result."""
+    candidates = [_chunk("ONLY_HIT", 0.90, "Nashik", "STREETLIGHTS", "VERIFIED")]
+    outcome = _retriever(candidates).retrieve(
+        "streetlight pole number 42 is broken", ServiceCategory.STREETLIGHTS, "Nashik", "Maharashtra"
+    )
+    source_ids = {c.metadata["source_id"] for c in outcome.results}
+    assert source_ids == {"ONLY_HIT"}
+
+
+# --- Cross-encoder reranker (optional, layered on top -- see rag_retriever.py's module
+# docstring) -----------------------------------------------------------------------------------
+
+
+class _FakeReranker:
+    """Returns a fixed score per passage (matched by exact text), regardless of the query -- lets
+    these tests dictate exact cross-encoder scores instead of depending on the real model."""
+
+    def __init__(self, scores_by_content: dict[str, float]) -> None:
+        self._scores_by_content = scores_by_content
+
+    def score(self, query: str, passages: list[str]) -> list[float]:
+        return [self._scores_by_content[p] for p in passages]
+
+
+def _chunk_with_content(chunk_id: str, score: float, content: str, status: str = "VERIFIED") -> ScoredChunk:
+    return ScoredChunk(
+        chunk_id=chunk_id,
+        score=score,
+        metadata={
+            "source_id": chunk_id, "city": "Nashik", "service_category": "STREETLIGHTS",
+            "verification_status": status, "content": content,
+        },
+    )
+
+
+def test_reranker_score_determines_final_order_not_the_raw_cosine_score():
+    """LOWER_COSINE_BUT_BETTER_MATCH has a lower raw cosine score than HIGHER_COSINE_WORSE_MATCH
+    but a HIGHER cross-encoder score -- when a reranker is configured, the cross-encoder's
+    judgment must win, proving it's genuinely the primary sort key, not just a tie-breaker."""
+    candidates = [
+        _chunk_with_content("HIGHER_COSINE_WORSE_MATCH", 0.85, "generic content A"),
+        _chunk_with_content("LOWER_COSINE_BUT_BETTER_MATCH", 0.80, "generic content B"),
+    ]
+    reranker = _FakeReranker({"generic content A": 1.0, "generic content B": 9.0})
+    store = _FakeVectorStore(candidates)
+    retriever = RagRetriever(
+        store, _FakeEmbeddingProvider(), relevance_threshold=0.79, verified_relevance_threshold=0.74,
+        reranker=reranker,
+    )
+    outcome = retriever.retrieve("query", ServiceCategory.STREETLIGHTS, "Nashik", "Maharashtra")
+    result_ids = [c.metadata["source_id"] for c in outcome.results]
+    assert result_ids[0] == "LOWER_COSINE_BUT_BETTER_MATCH"
+
+
+def test_reranker_verified_preference_still_applies_as_a_tie_breaker():
+    """Even with a reranker configured, a VERIFIED chunk within the top cross-encoder-score band
+    must still be preferred over a SYNTHETIC one that scored marginally higher -- the tie-breaker
+    survives the switch to a different score space, just recalibrated to that space's own spread
+    (a third, much-lower-scoring filler candidate widens the spread so a small 0.1 gap between the
+    top two clearly falls inside the resulting 10% band)."""
+    candidates = [
+        _chunk_with_content("SYNTHETIC_SLIGHTLY_HIGHER", 0.85, "synthetic content", status="SYNTHETIC"),
+        _chunk_with_content("VERIFIED_NEAR_TOP", 0.80, "verified content", status="VERIFIED"),
+        _chunk_with_content("LOW_SCORE_FILLER", 0.80, "filler content", status="VERIFIED"),
+    ]
+    reranker = _FakeReranker({"synthetic content": 10.0, "verified content": 9.9, "filler content": 0.0})
+    store = _FakeVectorStore(candidates)
+    retriever = RagRetriever(
+        store, _FakeEmbeddingProvider(), relevance_threshold=0.79, verified_relevance_threshold=0.74,
+        reranker=reranker,
+    )
+    outcome = retriever.retrieve("query", ServiceCategory.STREETLIGHTS, "Nashik", "Maharashtra")
+    result_ids = [c.metadata["source_id"] for c in outcome.results]
+    assert result_ids[0] == "VERIFIED_NEAR_TOP"
+
+
+def test_reranker_is_never_called_for_a_single_candidate():
+    """No point paying a real model call to rerank a list of one -- also confirms this doesn't
+    crash on the single-element case (min()/max() over one score, or a zero-width band)."""
+    candidates = [_chunk_with_content("ONLY_ONE", 0.90, "only content")]
+
+    class _RerankerThatMustNotBeCalled:
+        def score(self, query, passages):
+            raise AssertionError("reranker.score() must not be called for a single candidate")
+
+    store = _FakeVectorStore(candidates)
+    retriever = RagRetriever(
+        store, _FakeEmbeddingProvider(), relevance_threshold=0.79, verified_relevance_threshold=0.74,
+        reranker=_RerankerThatMustNotBeCalled(),
+    )
+    outcome = retriever.retrieve("query", ServiceCategory.STREETLIGHTS, "Nashik", "Maharashtra")
+    assert [c.metadata["source_id"] for c in outcome.results] == ["ONLY_ONE"]

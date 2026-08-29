@@ -130,7 +130,11 @@ class AskJanMitraResponse(BaseModel):
     # Which subsystem actually produced `answer` — lets the frontend (and tests) verify TYPE_C
     # never got its answer from RAG, per this phase's hard requirement.
     routed_to: str = "RAG"  # "RAG" | "COMPLAINT_CREATED" | "COMPLAINT_STATUS_API" |
-                            # "NONE_OUT_OF_SCOPE" | "NONE_CLARIFICATION_NEEDED"
+                            # "NONE_OUT_OF_SCOPE" | "NONE_CLARIFICATION_NEEDED" |
+                            # "NONE_BLOCKED_GUARDRAIL" (see backend/services/guardrails.py --
+                            # a prompt-injection check blocked this turn before it reached an LLM) |
+                            # "RAG_MULTI_CATEGORY" (see orchestration/nodes.py's agent_flow_node --
+                            # a genuinely multi-category question answered per-category, then combined)
     answer_was_llm_generated: bool = False
     # Set only when routed_to == "COMPLAINT_CREATED" (see the LangGraph orchestrator's
     # complaint_flow node, backend/services/orchestration/nodes.py) — a TYPE_A complaint-shaped

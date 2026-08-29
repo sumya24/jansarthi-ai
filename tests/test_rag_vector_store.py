@@ -157,7 +157,20 @@ def test_chroma_collection_opens_and_reports_expected_size():
     # vadodara,maharashtra/pune,karnataka/mangaluru,tamil_nadu/madurai,uttar_pradesh/kanpur,
     # west_bengal/asansol}.json and karnataka/bengaluru.json (now 4 records), plus
     # sources/inventory.json's corresponding entries.
-    assert store.size == 1053
+    # 1057, not the earlier 1053 -- live-reported gap: Pune's general grievance channel record
+    # covers reporting an EXISTING water/drainage problem, but "What is the process for a new
+    # water connection in Pune?" was still answered with no real new-connection info (the
+    # post-retrieval new-connection filter in orchestration/nodes.py correctly rejected the
+    # general-channel chunk, since it isn't about new connections, and fell back to the honest
+    # "don't have that" reply -- exposing a genuine content gap, not a code bug). Closed with 1
+    # new record (MH_PMC_WATER_NEW_CONNECTION, service_id WATER_NEW_CONNECTION_PUNE), sourced
+    # from a direct fetch of PMC's own Enterprise GIS Portal help document ("Steps to Apply for
+    # Water Connection", gis.pmc.gov.in) -- the real registration -> plumber sign-off -> JE
+    # assessment -> DE approval -> demand note -> payment workflow, with SLA/fee honestly
+    # reported as NOT FOUND since the source doesn't state either. See
+    # knowledge_records/verified/maharashtra/pune.json (now 5 records) and
+    # sources/inventory.json's corresponding entry.
+    assert store.size == 1057
 
 
 def test_chroma_persist_dir_is_configurable_not_hardcoded():
@@ -368,6 +381,61 @@ def test_synthetic_chunk_never_has_a_source_url_after_round_trip():
     synthetic = [r for r in results if r.metadata.get("verification_status") == "SYNTHETIC"]
     assert len(synthetic) > 0
     assert all(r.metadata.get("source_url") is None for r in synthetic)
+
+
+# --- M: get_candidates() -- the full metadata-filtered pool hybrid search (rag_retriever.py)
+# builds a BM25 index over -----------------------------------------------------------------
+
+
+def test_get_candidates_returns_the_full_filtered_pool_not_a_ranked_top_k():
+    """Unlike search(), get_candidates() takes no top_k and does no vector ranking at all -- it
+    must return every chunk matching the filter, and its count must match what search() with a
+    generously large top_k already finds (i.e. nothing is silently missing)."""
+    store = _real_store()
+    provider = _get_shared_provider()
+    qv = provider.embed_query("street light not working")
+    metadata_filter = {"service_category": "STREETLIGHTS", "city": MOHALI}
+    ranked = store.search(qv, top_k=1000, metadata_filter=metadata_filter)
+    pool = store.get_candidates(metadata_filter)
+    assert len(pool) == len(ranked)
+    assert {chunk_id for chunk_id, _, _, _ in pool} == {r.chunk_id for r in ranked}
+
+
+def test_get_candidates_includes_content_and_a_real_embedding_per_chunk():
+    store = _real_store()
+    metadata_filter = {"service_category": "STREETLIGHTS", "city": MOHALI}
+    pool = store.get_candidates(metadata_filter)
+    assert len(pool) > 0
+    for chunk_id, content, metadata, vector in pool:
+        assert isinstance(chunk_id, str) and chunk_id
+        assert isinstance(content, str) and content
+        assert metadata["service_category"] == "STREETLIGHTS"
+        assert metadata["city"] == MOHALI
+        # A real dense sentence-embedding vector, not a placeholder -- non-trivial length, real floats.
+        assert len(vector) > 0
+        assert all(isinstance(x, float) for x in vector)
+
+
+def test_get_candidates_respects_the_same_filter_semantics_as_search_single_and_multi_key():
+    """Covers both of ChromaVectorStore's own where-clause branches (single-key vs. $and) --
+    get_candidates() must filter identically to search() in both shapes, not just the common one."""
+    store = _real_store()
+    single_key_pool = store.get_candidates({"service_category": "STREETLIGHTS"})
+    multi_key_pool = store.get_candidates({"service_category": "STREETLIGHTS", "city": MOHALI})
+    assert len(multi_key_pool) > 0
+    assert len(multi_key_pool) < len(single_key_pool)
+    assert all(metadata["city"] == MOHALI for _, _, metadata, _ in multi_key_pool)
+
+
+def test_get_candidates_on_empty_collection_returns_empty_not_a_crash():
+    tmp_dir = Path(tempfile.mkdtemp())
+    try:
+        store = ChromaVectorStore(tmp_dir, "empty_test_collection")
+        store.load()
+        assert store.get_candidates({"service_category": "STREETLIGHTS"}) == []
+        assert store.get_candidates(None) == []
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 def test_citation_fields_present_for_verified_chunk():

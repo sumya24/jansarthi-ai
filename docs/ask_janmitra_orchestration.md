@@ -76,6 +76,7 @@ structure is in `backend/services/orchestration/graph.py`.
 | `location_resolution` | `LocationExtractor` | Same priority order as the pre-graph service: explicit `location_text` > location in the message text > GPS > conversation history. |
 | `complaint_flow` | `ComplaintAgent`, `assign_next_worker`, `LocationResolver` | **New this phase** — see §9. |
 | `rag_flow` | `RagRetriever`, `AnswerGenerationService` | Unchanged retrieval pipeline (see the RAG architecture doc), orchestrated here instead of inline. |
+| `agent_flow` | `RagRetriever`, `AnswerGenerationService` | **Built later, see §17** — the same two services called once per detected category for a genuinely multi-category question, combined into one response. |
 | `status_flow` | `Complaint` DB query | Unchanged complaint-number-regex + ownership-checked lookup — never touches RAG. |
 | `clarification_flow` | — | Builds a follow-up question; which one depends on `clarification_reason` (category, location, or an ambiguous multi-city match). |
 | `out_of_scope_flow` | — | The honest "I don't have that" response for a known-but-unsupported service. |
@@ -107,6 +108,9 @@ _route_after_location(state):
     intent == TYPE_A_COMPLAINT       -> "complaint_flow"   (always -- it decides for itself
                                                               whether it still needs info, see §9)
     location ambiguous OR missing    -> "clarification_flow"
+    >=2 categories detected          -> "agent_flow"        (see §17 -- a genuinely multi-category
+                                                              question, checked via deterministic
+                                                              keyword matching, never an LLM call)
     else                              -> "rag_flow"
 
 _route_after_complaint(state):
@@ -264,16 +268,42 @@ gracefully:
   final report for the one genuinely flaky (AI/network-latency, unrelated-to-this-phase) result
   found and confirmed transient.
 
-## 17. Future agent integration
+## 17. The supervisor/multi-agent node (`agent_flow_node`)
 
-No autonomous agent exists in this phase, deliberately — the spec is explicit that this phase is
-about workflow orchestration, not agentic reasoning, and every decision point in this graph
-(intent, location, routing) is already deterministic and correctly served by plain code. A future
-phase could introduce a genuine agent for a task that actually needs autonomous tool selection —
-e.g. a multi-step "help me understand and resolve a complex civic issue that spans several
-service categories" conversation, where the number and order of RAG queries genuinely can't be
-predetermined. If/when that happens, the integration point is clean: a new node
-(`agent_flow_node`, say) that receives the same `GraphDeps`/`GraphState` shape every other node
-already does, wired in via one more conditional-edge branch — no other node needs to change. Not
-built now because nothing in this phase's actual requirements needs it, and the spec explicitly
-warns against introducing agents "merely for technology count."
+**Built** (a later phase than the rest of this document) for exactly the case originally scoped
+here: a genuinely multi-category question, e.g. a citizen reporting a flooded street, a blocked
+drain, AND a broken streetlight in one message — one where the number of RAG queries genuinely
+can't be predetermined by a single `service_category` field the way every other TYPE_B question
+can.
+
+**Still deliberately NOT an autonomous/reasoning agent** — no LLM decides which categories to
+query, how many times, or in what order. `intent_classifier.py`'s `detect_multiple_categories()`
+decides the category LIST, deterministically, via the same keyword-matching approach every other
+routing decision in this graph already uses (see §7) — `_route_after_location` routes to
+`agent_flow` only when 2+ categories are detected, otherwise the existing single-category
+`rag_flow` runs exactly as before, unchanged. `agent_flow_node` itself just calls
+`RagRetriever.retrieve()` + `AnswerGenerationService.generate()` once per detected category (the
+same two services `rag_flow_node` already calls once) and combines the results into one response,
+with a labeled section per category and a merged, deduplicated citation list. `insufficient_
+knowledge` is only true if EVERY category came back with nothing usable — a citizen who reported
+three issues and got two real answers plus one honest "don't have that" section still got real
+help, unlike `rag_flow_node`'s single-category all-or-nothing case.
+
+Deliberately narrower than `rag_flow_node` in two ways, not silently dropped: no `RagAnswerCache`
+integration (each category's answer is a fresh `generate()` call every time) and no "new
+connection" post-filter (out of scope for a multi-category message) — both straightforward to add
+later if a real need shows up here specifically.
+
+`detect_multiple_categories()` reuses `classify()`'s own `_CATEGORY_KEYWORDS`, with one
+deliberate narrowing: `ROADS_POTHOLES` drops the bare "road" family keywords (kept for `classify()`
+itself, where "first match wins" already handles the collision via check ordering — see that
+dict's own STREETLIGHTS-vs-ROADS_POTHOLES comment). Without that narrowing, almost every
+streetlight complaint that names the road it's on would look like a "streetlights + roads"
+multi-category message, which it structurally is not — a real false-positive risk this narrowing
+exists specifically to avoid, verified directly in `tests/test_intent_classifier.py`.
+
+Built on top of Part 8's MCP tool wrapper (`backend/mcp_server.py`) only in the sense that both
+now exist as real, callable entry points into the same underlying services — `agent_flow_node`
+itself calls `RagRetriever`/`AnswerGenerationService` directly (in-process, same as every other
+node), not through the MCP server, since there is no reason for an in-process LangGraph node to
+make a network/subprocess round-trip to reach code that already lives in the same process.

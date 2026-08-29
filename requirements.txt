@@ -11,6 +11,11 @@ pytest-mock==3.14.0
 httpx==0.28.1
 bcrypt==4.0.1
 hypothesis==6.151.9
+
+# Retry/backoff around real outbound Sarvam AI calls (see backend/services/sarvam_client.py) --
+# already an installed transitive dependency (of langgraph/langchain-core below); pinned
+# explicitly here now that sarvam_client.py imports it directly for its own retry decorator.
+tenacity==9.1.2
 reportlab==5.0.0  # worker complaint-resolution report PDF generation, see backend/services/complaint_report_service.py
 
 # Error monitoring (see backend/main.py's init_error_monitoring()) -- OFF by default, only
@@ -33,6 +38,11 @@ torch==2.13.0
 sentence-transformers==5.7.0
 chromadb==1.5.9
 numpy==2.3.0
+# Hybrid search: BM25 keyword scoring alongside the existing vector search (see
+# rag_retriever.py's own module docstring for why) -- pure Python, no server, no GPU, indexes the
+# already-filtered candidate pool in-process per query. Already installed with no dependents of
+# its own (confirmed via `pip show`), now pinned explicitly since RagRetriever imports it directly.
+rank-bm25==0.2.2
 
 # Ask Sarthi orchestration layer -- see docs/ask_janmitra_orchestration.md and
 # backend/services/orchestration/. LangGraph is the workflow-orchestration engine (StateGraph,
@@ -90,3 +100,9 @@ mutagen==1.48.1
 transformers==4.57.1
 pillow==11.0.0
 accelerate==1.2.1
+
+# MCP (Model Context Protocol) tool wrapper around the RAG/complaint services (see
+# backend/mcp_server.py's module docstring) -- the official SDK, run standalone via
+# `python -m backend.mcp_server`, never imported by the live FastAPI app itself. Already
+# installed with no dependents of its own (confirmed via `pip show`), now pinned explicitly.
+mcp==1.29.1

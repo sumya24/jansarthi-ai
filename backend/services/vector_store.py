@@ -99,6 +99,20 @@ class FlatVectorStore:
         scored.sort(key=lambda c: c.score, reverse=True)
         return scored[:top_k]
 
+    def get_candidates(self, metadata_filter: dict[str, str] | None = None) -> list[tuple[str, str, dict[str, Any], SparseVector]]:
+        """Returns every chunk matching metadata_filter (no ranking, no top_k cap) as
+        `(chunk_id, content, metadata, vector)` -- the full filtered candidate pool a caller
+        builds its own index over. Added for hybrid search (see rag_retriever.py's module
+        docstring): `RagRetriever` builds a BM25 keyword index from this pool, scoped to the exact
+        same metadata filter vector search already applied, so BM25 can surface an exact-keyword
+        match vector search's `top_k * 3` ANN window happened to miss -- without ever widening
+        *which* chunks are eligible in the first place."""
+        return [
+            (chunk_id, metadata.get("content", ""), metadata, vector)
+            for chunk_id, vector, metadata in self._vectors
+            if _matches(metadata, metadata_filter)
+        ]
+
 
 class ChromaVectorStore:
     """Persistent, on-disk vector database via ChromaDB (`chromadb.PersistentClient`) -- the
@@ -172,6 +186,19 @@ class ChromaVectorStore:
         cleaned = [{k: v for k, v in m.items() if v is not None} for m in metadatas]
         self._collection.upsert(ids=chunk_ids, embeddings=vectors, documents=documents, metadatas=cleaned)
 
+    @staticmethod
+    def _build_where(metadata_filter: dict[str, str] | None) -> dict[str, Any] | None:
+        """Translates this codebase's plain `{field: value}` filter dict into Chroma's `where`
+        clause syntax -- shared by `search()` and `get_candidates()` since both need the exact
+        same metadata filter applied, just via different Chroma query methods (see
+        `get_candidates()`'s docstring for why it can't just call `search()` internally)."""
+        if not metadata_filter:
+            return None
+        if len(metadata_filter) == 1:
+            (key, value), = metadata_filter.items()
+            return {key: {"$eq": value}}
+        return {"$and": [{key: {"$eq": value}} for key, value in metadata_filter.items()]}
+
     def search(
         self,
         query_vector: DenseVector,
@@ -183,13 +210,7 @@ class ChromaVectorStore:
         if self._collection.count() == 0:
             return []
 
-        where = None
-        if metadata_filter:
-            if len(metadata_filter) == 1:
-                (key, value), = metadata_filter.items()
-                where = {key: {"$eq": value}}
-            else:
-                where = {"$and": [{key: {"$eq": value}} for key, value in metadata_filter.items()]}
+        where = self._build_where(metadata_filter)
 
         # Chroma can return fewer than n_results if fewer chunks match `where` -- never an error,
         # just fewer candidates, exactly like FlatVectorStore's post-filter behavior.
@@ -220,3 +241,24 @@ class ChromaVectorStore:
             merged_metadata["content"] = document
             scored.append(ScoredChunk(chunk_id=chunk_id, score=score, metadata=merged_metadata))
         return scored
+
+    def get_candidates(self, metadata_filter: dict[str, str] | None = None) -> list[tuple[str, str, dict[str, Any], DenseVector]]:
+        """Same contract as `FlatVectorStore.get_candidates()` -- see that docstring. Uses
+        Chroma's `.get()` (a pure metadata-filtered fetch, no vector ranking at all), not
+        `.query()` (used by `search()` above, which always ranks by vector similarity) -- `.get()`
+        is the only way to retrieve the *entire* filtered pool rather than just a ranked top_k."""
+        if self._collection is None:
+            self.load()
+        if self._collection.count() == 0:
+            return []
+
+        where = self._build_where(metadata_filter)
+        results = self._collection.get(where=where, include=["documents", "metadatas", "embeddings"])
+        ids = results["ids"]
+        documents = results["documents"]
+        metadatas = results["metadatas"]
+        embeddings = results["embeddings"]
+        return [
+            (chunk_id, document, metadata, list(embedding))
+            for chunk_id, document, metadata, embedding in zip(ids, documents, metadatas, embeddings)
+        ]

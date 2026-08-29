@@ -29,7 +29,7 @@ import uuid
 from fastapi import UploadFile
 from sqlalchemy.orm import Session
 
-from backend.config import settings, to_bcp47
+from backend.config import get_prompt, settings, to_bcp47
 from backend.models import User
 from backend.repositories import ai_request_log_repository
 from backend.schemas.ask_janmitra import (
@@ -45,6 +45,8 @@ from backend.services.answer_generation_service import AnswerGenerationService
 from backend.services.complaint_agent import ComplaintAgent
 from backend.services.embedding_provider import SentenceTransformerEmbeddingProvider
 from backend.services.evidence_service import SavedFile, validate_and_write
+from backend.services import guardrails
+from backend.services.intent_classifier import QuestionIntent
 from backend.services.location_extractor import LocationExtractor, RagGazetteer
 from backend.services.location_resolver import LocationResolver
 from backend.services.observability import tracing
@@ -62,6 +64,19 @@ from backend.services.vision_service import VisionService, VisionServiceError
 logger = logging.getLogger(__name__)
 
 _LANGUAGE_NAMES = {code: info["name"] for code, info in settings.SUPPORTED_LANGUAGES.items()}
+
+# Loaded once at import time (a plain text file, cheap) -- passed to guardrails.check_output() so
+# it can detect verbatim leakage of this exact prompt in a generated answer. See
+# answer_generation_service.py's own use of the same file for what's actually sent to the LLM.
+_ASK_JANMITRA_SYSTEM_PROMPT = get_prompt("ask_janmitra_system_prompt.txt")
+
+# Shown to the citizen in place of either (a) a message the input guardrail blocked before it ever
+# reached an LLM, or (b) a generated answer the output guardrail flagged -- deliberately generic
+# and never echoes back *why* (see guardrails.py's own docstring: reasons are for logs/audit only).
+_SAFE_GUARDRAIL_MESSAGE_EN = (
+    "I'm not able to help with that request. I can answer civic-service questions, help you "
+    "report an issue, or check the status of a complaint you've already filed."
+)
 
 # Real Sarvam pricing for text-to-speech (confirmed against docs.sarvam.ai/api/getting-started/
 # pricing, checked 2026-08-27): Rs30/10K characters for bulbul:v3 (billed per character, same as
@@ -97,15 +112,18 @@ class AskJanMitraService:
         location_resolver: LocationResolver | None = None,
         vision_service: VisionService | None = None,
         sarvam_client: SarvamClient | None = None,
+        reranker: object | None = None,
     ) -> None:
         self._vector_store = vector_store or self._load_default_store()
         self._embedding_provider = embedding_provider or self._load_default_embedding_provider()
+        self._reranker = reranker if reranker is not None else self._load_default_reranker()
         self._retriever = RagRetriever(
             self._vector_store,
             self._embedding_provider,
             top_k=top_k if top_k is not None else settings.RAG_TOP_K,
             relevance_threshold=relevance_threshold if relevance_threshold is not None else settings.RAG_EMBEDDING_RELEVANCE_THRESHOLD,
             verified_relevance_threshold=verified_relevance_threshold if verified_relevance_threshold is not None else settings.RAG_VERIFIED_RELEVANCE_THRESHOLD,
+            reranker=self._reranker,
         )
         self._location_extractor = location_extractor or self._build_default_extractor()
         self._answer_service = answer_service or AnswerGenerationService()
@@ -156,6 +174,33 @@ class AskJanMitraService:
         # never fail just because the embedding model hasn't been downloaded/cached yet; the
         # first real query pays that cost once, not every app startup.
         return SentenceTransformerEmbeddingProvider()
+
+    def _safe_guardrail_message(self, language: str) -> str:
+        """Translates `_SAFE_GUARDRAIL_MESSAGE_EN` into `language` via the same
+        `TranslationService`/`SarvamClient` every other hardcoded response string in this pipeline
+        already uses (see orchestration/nodes.py's `_localize()`, which this mirrors) -- English is
+        a no-op, and a translation failure degrades to the English text rather than blocking the
+        response a second time over an unrelated, non-security failure."""
+        if language == "en":
+            return _SAFE_GUARDRAIL_MESSAGE_EN
+        try:
+            return self._translation_service.to_language(_SAFE_GUARDRAIL_MESSAGE_EN, language)
+        except AIServiceError as exc:
+            logger.warning("Ask Sarthi: localizing guardrail message to %s failed, keeping English: %s", language, exc)
+            return _SAFE_GUARDRAIL_MESSAGE_EN
+
+    @staticmethod
+    def _load_default_reranker() -> object | None:
+        # OFF unless settings.RAG_RERANKER_ENABLED is explicitly set -- see that setting's own
+        # docstring in config.py for why this doesn't default to on. Deliberately NOT eagerly
+        # loaded here even when enabled (CrossEncoderReranker's model load is itself lazy, see
+        # that class) -- same "never pay startup cost for an optional AI feature" reasoning as
+        # _load_default_embedding_provider above.
+        if not settings.RAG_RERANKER_ENABLED:
+            return None
+        from backend.services.reranker import CrossEncoderReranker
+
+        return CrossEncoderReranker(settings.RAG_RERANKER_MODEL_NAME)
 
     @staticmethod
     def _build_default_extractor() -> LocationExtractor:
@@ -536,6 +581,47 @@ class AskJanMitraService:
         request_id = request_id or trace_id.hex[:12]
         start = time.perf_counter()
 
+        # GUARDRAIL (input) -- see backend/services/guardrails.py's module docstring. Checked here,
+        # before the graph runs at all, so a flagged message never reaches the intent classifier,
+        # RAG answer generation, or the complaint agent -- none of those LLM calls ever sees it.
+        input_check = guardrails.check_input(initial_state.get("user_message") or "")
+        if input_check.flagged:
+            logger.warning(
+                "Ask Sarthi: blocked a request at input (request_id=%s): %s", request_id, input_check.reason,
+            )
+            latency_ms = (time.perf_counter() - start) * 1000
+            final_state: GraphState = {
+                "response_text": self._safe_guardrail_message(language),
+                "response_language": language,
+                "routed_to": "NONE_BLOCKED_GUARDRAIL",
+                "sources": [],
+                "conversation_id": initial_state.get("conversation_id"),
+            }
+            if root_run is not None and end_root_run:
+                tracing.end_run(root_run, outputs=root_run_outputs(final_state, latency_ms))
+            ai_request_log_repository.record_ai_request(
+                db,
+                request_id=request_id,
+                langsmith_trace_id=str(trace_id) if tracing.is_enabled() else None,
+                phoenix_trace_id=tracing.get_phoenix_trace_id(trace_id),
+                conversation_id=initial_state.get("conversation_id"),
+                intent=None,
+                service_category=None,
+                routed_to="NONE_BLOCKED_GUARDRAIL",
+                success=True,
+                error_type=None,
+                latency_ms=latency_ms,
+            )
+            ai_request_log_repository.check_and_fire_alerts(db)
+            response = AskJanMitraResponse(
+                answer=final_state["response_text"],
+                intent=QuestionIntent.UNCLEAR,
+                language=language,
+                sources=[],
+                routed_to="NONE_BLOCKED_GUARDRAIL",
+            )
+            return response, final_state, latency_ms
+
         try:
             final_state = run_graph(
                 self._graph, self._deps, ctx, initial_state, request_id=request_id, trace_id=trace_id, root_run=root_run,
@@ -566,6 +652,21 @@ class AskJanMitraService:
             # function's own docstring; never masks the exception being re-raised below.
             ai_request_log_repository.check_and_fire_alerts(db)
             raise
+
+        # GUARDRAIL (output) -- see backend/services/guardrails.py's module docstring. Checked on
+        # the LLM's own generated answer text, right after the graph completes and before it's
+        # ever returned to the citizen. `routed_to` is deliberately left as whatever the graph
+        # actually did (RAG/COMPLAINT_CREATED/etc.) -- unlike the input check above, real routing
+        # DID happen here; only the answer TEXT is replaced.
+        answer_text = final_state.get("response_text") or ""
+        output_check = guardrails.check_output(answer_text, system_prompt=_ASK_JANMITRA_SYSTEM_PROMPT)
+        if output_check.flagged:
+            logger.warning(
+                "Ask Sarthi: blocked a response at output (request_id=%s): %s", request_id, output_check.reason,
+            )
+            final_state["response_text"] = self._safe_guardrail_message(
+                final_state.get("response_language") or language
+            )
 
         latency_ms = (time.perf_counter() - start) * 1000
         if root_run is not None and end_root_run:

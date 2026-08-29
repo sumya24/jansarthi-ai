@@ -194,6 +194,21 @@ class Settings:
     # threshold, which stays exactly as measured/justified above for everything else.
     RAG_VERIFIED_RELEVANCE_THRESHOLD: float = float(os.getenv("RAG_VERIFIED_RELEVANCE_THRESHOLD", "0.74"))
 
+    # Cross-encoder reranker (see backend/services/reranker.py's module docstring for the full
+    # bi-encoder-vs-cross-encoder reasoning) -- applied only to the small, already
+    # threshold-filtered candidate set RagRetriever.retrieve() already narrowed down to, never the
+    # full corpus, so the per-query cost stays small regardless of KB size. OFF by default, same
+    # "off unless explicitly configured" pattern as every other optional AI component in this file
+    # (LANGSMITH_TRACING, PHOENIX_TRACING, GEMINI_API_KEY, SENTRY_DSN): this project's own
+    # extensive existing RAG test suite (tests/test_ask_janmitra.py and siblings) was written and
+    # measured against the pre-existing heuristic-only rerank -- enabling a genuinely different
+    # ranking model by default would silently change already-verified retrieval behavior across
+    # that whole suite rather than layering on top of it, exactly the risk this project's own
+    # hybrid-search design (see rag_retriever.py) was deliberately built to avoid. Turn on
+    # deliberately, then re-verify retrieval quality, rather than as a side effect of upgrading.
+    RAG_RERANKER_ENABLED: bool = os.getenv("RAG_RERANKER_ENABLED", "false").strip().lower() == "true"
+    RAG_RERANKER_MODEL_NAME: str = os.getenv("RAG_RERANKER_MODEL_NAME", "cross-encoder/ms-marco-MiniLM-L-6-v2")
+
     # Hardcoded identities (kept only for the legacy Streamlit frontends, which
     # predate real auth and are superseded by the React app + JWT login below)
     HARDCODED_CITIZEN_ID: str = "citizen_001"

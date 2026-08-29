@@ -12,7 +12,8 @@ reordering STREETLIGHTS before ROADS_POTHOLES in _CATEGORY_KEYWORDS, not by patc
 language's keyword list individually.
 """
 
-from backend.services.intent_classifier import classify, is_explicit_confirmation
+from backend.schemas.rag_knowledge import ServiceCategory
+from backend.services.intent_classifier import classify, detect_multiple_categories, is_explicit_confirmation
 
 
 def test_odia_road_light_compound_is_streetlights_not_roads():
@@ -105,3 +106,71 @@ def test_ambiguous_words_still_correctly_excluded_after_the_expansion():
     heard you", not necessarily "yes, submit this complaint"."""
     for text in ("okay", "ok", "fine", "continue", "tell me more", "yes what are the rules"):
         assert not is_explicit_confirmation(text), text
+
+
+# --- detect_multiple_categories() -- the multi-category supervisor gate (orchestration/
+# nodes.py's agent_flow_node, see docs/ask_janmitra_orchestration.md §17) --------------------
+
+
+def test_detects_two_genuinely_distinct_categories():
+    result = detect_multiple_categories(
+        "There is a pothole on my street and also the streetlight near my house is broken."
+    )
+    assert set(result) == {ServiceCategory.ROADS_POTHOLES, ServiceCategory.STREETLIGHTS}
+
+
+def test_detects_three_genuinely_distinct_categories():
+    """The concrete case from the roadmap itself: a flooded street, a blocked drain, and a
+    downed streetlight in one message."""
+    result = detect_multiple_categories(
+        "My street is flooded, the drain is completely blocked, and the streetlight is out too."
+    )
+    assert ServiceCategory.WATER_DRAINAGE in result
+    assert ServiceCategory.STREETLIGHTS in result
+    assert len(result) >= 2
+
+
+def test_a_single_category_message_is_never_flagged_as_multi_category():
+    result = detect_multiple_categories("The street light outside my house has stopped working.")
+    assert result == []
+
+
+def test_streetlight_on_a_road_is_not_falsely_flagged_as_roads_plus_streetlights():
+    """The exact false-positive this check is deliberately narrowed to avoid -- see this
+    function's own module-level comment. A streetlight complaint naming the road it's on (the
+    single most common way people phrase this, per _CATEGORY_KEYWORDS's own STREETLIGHTS-vs-
+    ROADS_POTHOLES collision comment) must NOT look like two categories."""
+    result = detect_multiple_categories("The street light on Main Road near my house is broken.")
+    assert result == []
+
+
+def test_genuinely_unrelated_single_word_overlap_is_not_enough():
+    """A message with only one REAL category signal (streetlights) plus an incidental word that
+    happens to also appear in another category's list must not multi-count -- "waste" doesn't
+    appear here at all, so only one category should ever match."""
+    result = detect_multiple_categories("My street light is broken.")
+    assert result == []
+
+
+def test_multilingual_two_category_detection_hindi():
+    result = detect_multiple_categories("मेरे घर के पास कचरा भी है और सड़क पर गड्ढा भी है।")
+    assert set(result) == {ServiceCategory.WASTE_SANITATION, ServiceCategory.ROADS_POTHOLES}
+
+
+def test_known_gap_odia_has_no_pothole_specific_multi_category_keyword():
+    """KNOWN, DOCUMENTED GAP (code review) -- not a desired behavior, a recorded limitation.
+    `_CATEGORY_KEYWORDS[ROADS_POTHOLES]["or"]` was only ever the bare "road" word (no
+    pothole-specific Odia word exists anywhere in this codebase's own verified data), and the
+    multi-category gate deliberately drops bare "road" words (see this module's own comment) --
+    so an Odia pothole mention alone can never contribute a ROADS_POTHOLES match here, even
+    alongside a second, unambiguous category. This test exists so a future incidental "fix" that
+    silently reintroduces the bare "road" word (undoing the STREETLIGHTS-collision narrowing) is
+    caught, and so this gap stays visible rather than silently forgotten -- see
+    intent_classifier.py's own comment for what a real fix requires (a live-verified Odia
+    pothole-specific phrase, not a guess)."""
+    # Deliberately uses ONLY already-verified Odia words from this file's own _CATEGORY_KEYWORDS
+    # (ଆବର୍ଜନା "garbage", ରାସ୍ତା "road") -- not a guessed pothole-specific word, since none is
+    # verified to exist (see the comment this test references). "ରାସ୍ତା" alone is exactly the
+    # bare "road" word the multi-category gate deliberately excludes for every language.
+    result = detect_multiple_categories("ମୋ ଘର ପାଖରେ ଆବର୍ଜନା ଅଛି ଏବଂ ରାସ୍ତା ମଧ୍ୟ ଖରାପ ଅଛି।")
+    assert ServiceCategory.ROADS_POTHOLES not in result
