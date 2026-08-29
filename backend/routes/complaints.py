@@ -12,12 +12,13 @@ see everything.
 """
 
 import logging
+from datetime import date, datetime, time, timedelta
 from typing import Literal
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import String, cast, or_
+from sqlalchemy import String, cast, func, or_
 from sqlalchemy.orm import Session
 
 from backend.config import settings
@@ -907,6 +908,8 @@ def list_complaints(
     status: str | None = None,
     category: str | None = None,
     search: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
     page: int | None = None,
     page_size: int | None = None,
     db: Session = Depends(get_db),
@@ -927,11 +930,13 @@ def list_complaints(
     security question to answer for a param that silently does nothing outside admin's own
     already-unrestricted "see everything" case.
 
-    `status`/`category`/`search`/`page`/`page_size`: real, server-side filtering and pagination --
-    see _parse_status_filter's/_parse_category_filter's, _apply_complaint_search's, and
-    _paginate's own docstrings (`status`/`category` each accept a comma-separated set, e.g.
-    "pending,assigned,accepted", not just one value). All five are optional and additive;
-    omitting page/page_size preserves the exact old "every matching row, no header" behavior.
+    `status`/`category`/`search`/`date_from`/`date_to`/`page`/`page_size`: real, server-side
+    filtering and pagination -- see _parse_status_filter's/_parse_category_filter's,
+    _apply_complaint_search's, and _paginate's own docstrings (`status`/`category` each accept a
+    comma-separated set, e.g. "pending,assigned,accepted", not just one value). `date_from`/
+    `date_to` are an inclusive calendar-day range over `created_at` (when the complaint was
+    filed). All are optional and additive; omitting page/page_size preserves the exact old
+    "every matching row, no header" behavior.
     """
     if lang is not None and lang not in settings.SUPPORTED_LANGUAGES:
         raise HTTPException(status_code=400, detail=f"Unsupported language: {lang}")
@@ -952,6 +957,10 @@ def list_complaints(
         query = query.filter(Complaint.status.in_(statuses))
     if categories:
         query = query.filter(Complaint.service_category.in_(categories))
+    if date_from is not None:
+        query = query.filter(Complaint.created_at >= datetime.combine(date_from, time.min))
+    if date_to is not None:
+        query = query.filter(Complaint.created_at < datetime.combine(date_to, time.min) + timedelta(days=1))
     query = _apply_complaint_search(query, search, db)
     query = query.order_by(Complaint.created_at.desc())
 
@@ -961,6 +970,52 @@ def list_complaints(
 
     complaints = query.all()
     return [_to_response(db, c, display_language=display_language) for c in complaints]
+
+
+class ServiceStatusCount(BaseModel):
+    """One row of the "complaints by service" breakdown (service category + status, each showing
+    a total) -- feeds the zoom-drilldown donut on the Worker/Admin dashboards. A service/status
+    combo with zero complaints is simply absent, not returned as a zero row, same convention
+    GET /complaints/by-location already uses."""
+
+    service_category: str
+    status: str
+    total: int
+
+
+@router.get("/by-service", response_model=list[ServiceStatusCount])
+def complaints_by_service(
+    worker_id: int | None = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> list[ServiceStatusCount]:
+    """Complaint counts grouped by service category AND status, scoped by role exactly like
+    list_complaints() above (citizens/workers see only their own; admins see everything, or one
+    worker's own complaints via `worker_id`). Registered before GET /{complaint_id} so "by-service"
+    is never captured as a complaint_id path param."""
+    query = db.query(Complaint.service_category, Complaint.status, func.count(Complaint.id))
+    if current_user.role == "citizen":
+        query = query.filter(Complaint.citizen_id == str(current_user.id))
+    elif current_user.role == "worker":
+        query = query.filter(Complaint.assigned_worker_id == current_user.id)
+    elif current_user.role == "admin" and worker_id is not None:
+        query = query.filter(Complaint.assigned_worker_id == worker_id)
+    # admins with no worker_id: everything, unchanged
+
+    rows = query.group_by(Complaint.service_category, Complaint.status).all()
+    # LIVE-REPORTED BUG: a complaint filed with no category set at all -- `category` is optional
+    # on POST /complaints (create_complaint), and older/incomplete submissions can genuinely have
+    # `service_category IS NULL` -- crashed this ENTIRE endpoint for every citizen/worker/admin
+    # with a 500, since ServiceStatusCount.service_category is a required string. The donut this
+    # feeds (ServiceDonutPanel.tsx) is built around SERVICE_CATEGORY_DEFS' fixed, known set of
+    # categories -- an uncategorized complaint doesn't belong in any of those slices, so it's
+    # correctly excluded here, not crashed on -- same "absent, not a zero row" convention this
+    # endpoint's own docstring already documents for a service/status combo with no complaints.
+    return [
+        ServiceStatusCount(service_category=service_category, status=status, total=total)
+        for service_category, status, total in rows
+        if service_category is not None
+    ]
 
 
 @router.get("/{complaint_id}", response_model=ComplaintDetailResponse)

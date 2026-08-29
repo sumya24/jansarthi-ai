@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import TopBar from "../components/TopBar";
 import StatusBadge from "../components/StatusBadge";
@@ -11,6 +11,7 @@ import { useUiLang } from "../lib/uiLang";
 import { useDebouncedValue } from "../lib/useDebouncedValue";
 import { t } from "../lib/i18n";
 import { api, ApiError, type Complaint, type ComplaintStatus, type WorkerSummary } from "../lib/api";
+import SearchWithDateFilter from "../components/SearchWithDateFilter";
 import "../styles/dashboard.css";
 
 // LIVE-REPORTED GAP: this page used to fetch and render EVERY complaint ever assigned to this
@@ -60,6 +61,8 @@ export default function AdminWorkerDetail() {
   const [summaryComplaint, setSummaryComplaint] = useState<Complaint | null>(null);
   const [filter, setFilter] = useState<WorkerComplaintFilter>("all");
   const [search, setSearch] = useState("");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   // Decoupled from `complaints` (the filtered+paged current-page list) on purpose -- these four
@@ -70,9 +73,18 @@ export default function AdminWorkerDetail() {
   });
   const debouncedSearch = useDebouncedValue(search);
 
+  // `loading` only gates the page's initial skeleton (before the FIRST fetch resolves) -- a later
+  // reload (paging, filter chip, search, or picking a date in SearchWithDateFilter) must not flip
+  // it back to true, since the whole complaints section (including the search bar) sits behind
+  // `!loading` further down. Without this split, entering a date immediately re-triggered
+  // `load()`, which unmounted that section -- including the open date popover the admin was still
+  // typing into -- for the fetch's duration. Same fix as AdminWorkers.tsx's/
+  // AdminAiMonitoring.tsx's own isFirstLoad ref.
+  const isFirstLoad = useRef(true);
+
   async function load() {
     if (!token || !Number.isFinite(workerId)) return;
-    setLoading(true);
+    if (isFirstLoad.current) setLoading(true);
     setLoadError(null);
     try {
       // No single-worker endpoint exists yet -- the worker list is small enough (this app's own
@@ -84,6 +96,8 @@ export default function AdminWorkerDetail() {
           workerId,
           status: filter === "all" ? undefined : filter,
           search: debouncedSearch || undefined,
+          dateFrom: dateFrom || undefined,
+          dateTo: dateTo || undefined,
           page,
           pageSize: WORKER_DETAIL_PAGE_SIZE,
         }),
@@ -94,7 +108,10 @@ export default function AdminWorkerDetail() {
     } catch (err) {
       setLoadError(err instanceof ApiError ? err.message : t(lang, "admin.errLoadFailed"));
     } finally {
-      setLoading(false);
+      if (isFirstLoad.current) {
+        setLoading(false);
+        isFirstLoad.current = false;
+      }
     }
   }
 
@@ -117,12 +134,12 @@ export default function AdminWorkerDetail() {
   // almost never still makes sense against a newly-narrowed result set.
   useEffect(() => {
     setPage(1);
-  }, [debouncedSearch, filter]);
+  }, [debouncedSearch, filter, dateFrom, dateTo]);
 
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token, workerId, filter, debouncedSearch, page]);
+  }, [token, workerId, filter, debouncedSearch, dateFrom, dateTo, page]);
 
   useEffect(() => {
     loadStats();
@@ -185,15 +202,17 @@ export default function AdminWorkerDetail() {
             <div className="section-label" style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 10 }}>
               <span>{t(lang, "admin.complaintsSection")}</span>
               {totalAll > 0 && (
-                <div className="field" style={{ margin: 0, width: "100%", maxWidth: 320 }}>
-                  <input
-                    type="text"
-                    aria-label={t(lang, "admin.searchComplaintsAndWorkers")}
-                    placeholder={t(lang, "admin.searchComplaintsAndWorkers")}
-                    value={search}
-                    onChange={(e) => setSearch(e.target.value)}
-                  />
-                </div>
+                <SearchWithDateFilter
+                  searchValue={search}
+                  onSearchChange={setSearch}
+                  searchPlaceholder={t(lang, "admin.searchComplaintsAndWorkers")}
+                  dateFrom={dateFrom}
+                  dateTo={dateTo}
+                  onDateFromChange={setDateFrom}
+                  onDateToChange={setDateTo}
+                  lang={lang}
+                  width={320}
+                />
               )}
             </div>
 

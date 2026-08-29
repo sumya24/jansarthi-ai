@@ -21,6 +21,7 @@ import { t, toLangCode } from "../lib/i18n";
 import { api, ApiError } from "../lib/api";
 import { useSpeechToText } from "../lib/useSpeechToText";
 import type { AskJanMitraResponse, AskJanMitraConversationTurn, PhotoEvidenceRef } from "../lib/ragTypes";
+import { filterWardsToOwnCity } from "../lib/wardFilter";
 
 const SUGGESTED_KEYS = ["waterLeak", "pothole", "garbage", "streetlight"] as const;
 
@@ -211,6 +212,34 @@ function saveChatHistory(userId: number | undefined, messages: ChatMessage[]) {
   }
 }
 
+/** A per-conversation id, purely for observability (see backend/services/observability/tracing.py
+ * -- lets Phoenix's Sessions view group every turn of one chat together instead of showing each
+ * request as an unrelated trace). Never read back by the app itself, never shown to the citizen --
+ * same "log field names/categorical values" spirit as the rest of this app's tracing. Persisted
+ * alongside `messages` (same key-per-user, same reload-survives lifecycle) so a page reload keeps
+ * being "the same conversation" for tracing purposes, exactly like the chat history itself already
+ * survives a reload. Regenerated only on an explicit "New chat" (see handleNewChat below). */
+function conversationIdKey(userId: number) {
+  return `janmitra.askConversationId.${CHAT_HISTORY_VERSION}.${userId}`;
+}
+
+function loadOrCreateConversationId(userId: number | undefined): string {
+  if (userId == null) return crypto.randomUUID();
+  try {
+    const existing = localStorage.getItem(conversationIdKey(userId));
+    if (existing) return existing;
+  } catch {
+    // Storage unavailable -- fall through to a fresh, unpersisted id below.
+  }
+  const created = crypto.randomUUID();
+  try {
+    localStorage.setItem(conversationIdKey(userId), created);
+  } catch {
+    // Same "still works for this tab, just won't survive a reload" tradeoff as saveChatHistory.
+  }
+  return created;
+}
+
 /** "2.3s" under a minute, "1m 12s" at/above one minute -- photo captioning on this deployment's
  * CPU-only vision model can genuinely take several minutes (see runQuery's own comment), so a
  * bare seconds count alone would read strangely for those replies. */
@@ -261,6 +290,9 @@ export const AskJanMitraContent = forwardRef<AskJanMitraHandle, AskJanMitraConte
   // which itself waits on `loading` and redirects if `!user`), so this reads the right citizen's
   // history immediately rather than starting empty and "popping in" a moment later.
   const [messages, setMessages] = useState<ChatMessage[]>(() => loadChatHistory(user?.id));
+  // See loadOrCreateConversationId's own docstring -- observability only, never read back by the
+  // app or shown to the citizen.
+  const [conversationId, setConversationId] = useState<string>(() => loadOrCreateConversationId(user?.id));
   const [loading, setLoading] = useState(false);
   // Real, worker-backed wards -- the SAME list/component ReportIssue.tsx's "Report an Issue"
   // wizard already uses (see LocationPicker.tsx's own docstring), reused here rather than a
@@ -268,7 +300,7 @@ export const AskJanMitraContent = forwardRef<AskJanMitraHandle, AskJanMitraConte
   // a generic "type something" box. Fetched once; this list changes rarely (only when an admin
   // adds/removes a worker), same assumption ReportIssue.tsx already makes.
   const [wards, setWards] = useState<string[]>([]);
-  const [locationPickerValue, setLocationPickerValue] = useState<LocationValue>({ ward: "", coords: null });
+  const [locationPickerValue, setLocationPickerValue] = useState<LocationValue>({ ward: "", coords: null, locality: "" });
   const speech = useSpeechToText(lang);
   const [showSuccess, setShowSuccess] = useState(false);
   const [attachedImage, setAttachedImage] = useState<File[]>([]);
@@ -322,6 +354,16 @@ export const AskJanMitraContent = forwardRef<AskJanMitraHandle, AskJanMitraConte
     setQuestion("");
     setAttachedImage([]);
     setShowAttach(false);
+    // Fresh conversation id for observability -- a genuinely new chat, not a continuation.
+    const fresh = crypto.randomUUID();
+    setConversationId(fresh);
+    if (user?.id != null) {
+      try {
+        localStorage.setItem(conversationIdKey(user.id), fresh);
+      } catch {
+        // Same tradeoff as loadOrCreateConversationId -- still works for this tab either way.
+      }
+    }
   }
 
   // The only thing AskJanMitraWidget.tsx needs to reach in from outside -- see
@@ -373,8 +415,11 @@ export const AskJanMitraContent = forwardRef<AskJanMitraHandle, AskJanMitraConte
 
   useEffect(() => {
     if (!token) return;
-    api.listWards(token).then(setWards).catch(() => setWards([]));
-  }, [token]);
+    // See lib/wardFilter.ts's own docstring -- scopes this fallback manual list to the citizen's
+    // own city, same as ReportIssue.tsx's identical fix, so Ask Sarthi's location-clarification
+    // step doesn't make a citizen scroll past every other city's wards either.
+    api.listWards(token).then((all) => setWards(filterWardsToOwnCity(all, user?.ward))).catch(() => setWards([]));
+  }, [token, user?.ward]);
 
   // One mascot, real state in -> real expression out. No invented "error" expression: an error
   // already has its own text bubble, so the mascot just stays idle rather than performing an
@@ -467,7 +512,7 @@ export const AskJanMitraContent = forwardRef<AskJanMitraHandle, AskJanMitraConte
       },
     ]);
     setQuestion("");
-    setLocationPickerValue({ ward: "", coords: null });
+    setLocationPickerValue({ ward: "", coords: null, locality: "" });
     // LIVE-REPORTED BUG: this used to only clear on a SUCCESSFUL response (see the try block
     // below), on purpose -- so a failed request left the photo attached for an easy retry. But
     // photo captioning can take several minutes (see backend/services/vision_service.py's own
@@ -499,6 +544,7 @@ export const AskJanMitraContent = forwardRef<AskJanMitraHandle, AskJanMitraConte
               longitude: opts.lng,
               location_text: opts.locationText,
               conversation_history: historyForRequest,
+              conversation_id: conversationId,
               image: imageToSend,
               was_voice_input: questionFromVoice,
             },
@@ -513,6 +559,7 @@ export const AskJanMitraContent = forwardRef<AskJanMitraHandle, AskJanMitraConte
               longitude: opts.lng,
               location_text: opts.locationText,
               conversation_history: historyForRequest,
+              conversation_id: conversationId,
               was_voice_input: questionFromVoice,
             },
             controller.signal
@@ -999,20 +1046,31 @@ export const AskJanMitraContent = forwardRef<AskJanMitraHandle, AskJanMitraConte
           exactly what `runQuery` itself would send as this turn's own history (same derivation,
           same source of truth); `onTurnComplete` appends the overlay's own turn back into
           `messages` the moment it finishes, so closing the overlay shows it here too, sources/
-          follow-up options included, exactly like a typed turn would. */}
+          follow-up options included, exactly like a typed turn would.
+
+          LIVE-REPORTED BUG, fixed alongside the above: a voice turn's attached photo never
+          appeared as a thumbnail in this transcript, and its response time never showed either,
+          unlike every typed/photo turn -- because this callback only ever built messages from
+          `question`/`response`. Now takes the overlay's own real `durationMs` and `imagePreview`
+          too (see VoiceAssistantOverlay's own onTurnComplete docstring) and applies them exactly
+          like the text/image submit path above does: `imagePreview` tracked in
+          `imagePreviewUrlsRef` for the same end-of-life cleanup (see that ref's own docstring),
+          `durationMs` on the assistant turn so `formatDuration()` renders it identically. */}
       {voiceOverlayOpen && (
         <VoiceAssistantOverlay
           onClose={() => setVoiceOverlayOpen(false)}
           initialHistory={messages.map((m) => ({ role: m.role, content: m.text }))}
-          onTurnComplete={(question, response) => {
+          conversationId={conversationId}
+          onTurnComplete={(question, response, durationMs, imagePreview) => {
             // Both stamped with "now" -- the overlay only reports the finished turn, not the
             // citizen's own original send time inside it, so this is the closest approximation
             // available (the two turns did happen within the same round-trip either way).
             const now = Date.now();
+            if (imagePreview) imagePreviewUrlsRef.current.push(imagePreview);
             setMessages((prev) => [
               ...prev,
-              { id: nextId(), role: "user", text: question, timestamp: now },
-              { id: nextId(), role: "assistant", text: response.answer, response, timestamp: now },
+              { id: nextId(), role: "user", text: question, timestamp: now, imagePreview, photoRef: response.photo_evidence ?? undefined },
+              { id: nextId(), role: "assistant", text: response.answer, response, timestamp: now, durationMs },
             ]);
           }}
         />

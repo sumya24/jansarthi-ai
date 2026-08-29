@@ -77,7 +77,19 @@ export default function EditWorkerModal({
 
   return (
     <div className="overlay" onClick={(e) => e.target === e.currentTarget && !saving && onClose()}>
-      <div ref={modalRef} className="modal" role="dialog" aria-modal="true" aria-labelledby="jm-modal-title" tabIndex={-1}>
+      <div
+        ref={modalRef}
+        className="modal"
+        // LIVE-REPORTED INCONSISTENCY: SettingsModal.tsx widens to 560px for this exact reason
+        // (a 4-level cascading location picker reads as cramped at the base .modal 420px) but
+        // this modal, which has the same WorkerLocationPicker, was never given the same
+        // treatment -- same fix, same width, for the same underlying component.
+        style={{ maxWidth: 560 }}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="jm-modal-title"
+        tabIndex={-1}
+      >
         <div className="modal-head">
           <h3 className="display" id="jm-modal-title">{t(lang, "admin.editWorkerTitle")}</h3>
           <button className="x" aria-label={t(lang, "common.close")} onClick={onClose} disabled={saving}>

@@ -14,37 +14,23 @@ export class ApiError extends Error {
   }
 }
 
-// --- Token storage + silent refresh ---------------------------------------------------------
-// api.ts (not auth.tsx) is the single source of truth for WHERE the two tokens live in
-// localStorage -- auth.tsx calls these same helpers rather than keeping its own separate
-// localStorage.setItem calls, since the 401-interceptor below needs to read/write them from a
-// plain module with no React state of its own. auth.tsx registers the two handlers below so it
-// can still keep its own `user`/`token` React state in sync with whatever this module does
-// silently in the background.
-const ACCESS_TOKEN_KEY = "janmitra.token";
-const REFRESH_TOKEN_KEY = "janmitra.refreshToken";
-
-export function getStoredAccessToken(): string | null {
-  return localStorage.getItem(ACCESS_TOKEN_KEY);
-}
-export function getStoredRefreshToken(): string | null {
-  return localStorage.getItem(REFRESH_TOKEN_KEY);
-}
-export function storeSession(accessToken: string, refreshToken: string): void {
-  localStorage.setItem(ACCESS_TOKEN_KEY, accessToken);
-  localStorage.setItem(REFRESH_TOKEN_KEY, refreshToken);
-}
-export function clearStoredSession(): void {
-  localStorage.removeItem(ACCESS_TOKEN_KEY);
-  localStorage.removeItem(REFRESH_TOKEN_KEY);
-}
-
+// --- Session state (cookie-backed) + silent refresh -----------------------------------------
+// The two auth tokens are no longer held anywhere this module can read them back from later --
+// they live only in the httpOnly access_token/refresh_token cookies a real browser session
+// carries automatically (see backend/deps.py's set_auth_cookies), which JS has no access to at
+// all. That's the actual security property this change is for: previously both tokens sat in
+// localStorage, readable by any successful XSS payload for as long as the browser kept them
+// around; now there is nothing there to read. React (auth.tsx) still keeps the CURRENT access
+// token in memory for the lifetime of the tab (needed to attach as an Authorization header,
+// still accepted alongside the cookie -- see get_current_user), but that memory copy is never
+// persisted anywhere and vanishes on a hard refresh, which is exactly why AuthProvider's own boot
+// sequence calls silentRefresh() unconditionally on mount to re-derive it from the cookie instead
+// of ever reading it back out of storage.
 let onSessionRefreshed: ((accessToken: string, refreshToken: string, user: UserProfile) => void) | null = null;
 let onSessionExpired: (() => void) | null = null;
 
 /** auth.tsx calls this once, on mount -- lets a silent refresh triggered by SOME OTHER page's API
- * call (not just the boot-time /auth/me check) still update the shared AuthContext's `token`/
- * `user`, instead of only ever touching localStorage underneath React's back. */
+ * call (not just the boot-time check) still update the shared AuthContext's `token`/`user`. */
 export function setSessionHandlers(handlers: {
   onSessionRefreshed: (accessToken: string, refreshToken: string, user: UserProfile) => void;
   onSessionExpired: () => void;
@@ -53,31 +39,37 @@ export function setSessionHandlers(handlers: {
   onSessionExpired = handlers.onSessionExpired;
 }
 
+/** Reads the one cookie that's deliberately NOT httpOnly -- see backend/deps.py's
+ * set_auth_cookies docstring for why the CSRF token specifically has to be JS-readable while the
+ * two auth tokens next to it never are. */
+function getCsrfToken(): string | null {
+  const match = document.cookie.match(/(?:^|; )csrf_token=([^;]+)/);
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
 // Exactly one refresh attempt in flight at a time, shared by every caller -- refresh tokens
 // rotate on use (see backend/services/auth_service.py's rotate_refresh_token), so two concurrent
-// 401s naively each calling POST /auth/refresh with the SAME stored refresh token would have the
-// second one legitimately fail as "already rotated" (indistinguishable from real reuse/theft to
-// the server). Coalescing into one shared promise means every concurrent 401 waits on the same
-// single refresh instead of racing each other.
+// 401s naively each calling POST /auth/refresh at the same moment would have the second one
+// legitimately fail as "already rotated" (indistinguishable from real reuse/theft to the server).
+// Coalescing into one shared promise means every concurrent 401 waits on the same single refresh
+// instead of racing each other.
 let refreshInFlight: Promise<{ access_token: string; refresh_token: string; user: UserProfile } | null> | null = null;
 
-function silentRefresh(): Promise<{ access_token: string; refresh_token: string; user: UserProfile } | null> {
+export function silentRefresh(): Promise<{ access_token: string; refresh_token: string; user: UserProfile } | null> {
   if (refreshInFlight) return refreshInFlight;
-  const refreshToken = getStoredRefreshToken();
-  if (!refreshToken) return Promise.resolve(null);
 
   refreshInFlight = (async () => {
     try {
-      // No `token` option passed -- POST /auth/refresh needs no Authorization header, only the
-      // refresh_token itself, which is also exactly why this call can never recursively trigger
-      // this same 401-retry path below (that path only ever fires when `options.token` was set).
-      const result = await request<AuthResponse>("/auth/refresh", { method: "POST", body: { refresh_token: refreshToken } });
-      storeSession(result.access_token, result.refresh_token);
+      // Empty body -- POST /auth/refresh reads the refresh token from the httpOnly cookie
+      // (credentials: "include", added in _fetchJson) since this module has no JS-level access
+      // to it to put in the body itself. No `token` option passed either, which is also exactly
+      // why this call can never recursively trigger the 401-retry path below (that path only
+      // ever fires when `options.token` was set).
+      const result = await request<AuthResponse>("/auth/refresh", { method: "POST", body: {} });
       onSessionRefreshed?.(result.access_token, result.refresh_token, result.user);
       return result;
     } catch {
-      // The refresh token itself is invalid/expired/reused -- there is no session left to save.
-      clearStoredSession();
+      // The refresh cookie itself is missing/invalid/expired/reused -- there is no session left.
       onSessionExpired?.();
       return null;
     } finally {
@@ -95,8 +87,16 @@ async function _fetchJson(
   path: string,
   options: { method?: string; body?: unknown; token?: string | null; formData?: FormData; signal?: AbortSignal } = {}
 ): Promise<{ response: Response; data: unknown }> {
+  const method = options.method || "GET";
   const headers: Record<string, string> = {};
   if (options.token) headers["Authorization"] = `Bearer ${options.token}`;
+  // The CSRF double-submit check (backend/middleware.py's CSRFMiddleware) only ever looks at
+  // this header for a mutating method, but reading it back on every request is cheap and one
+  // less thing to get wrong per call site than gating it here too.
+  if (method !== "GET" && method !== "HEAD") {
+    const csrfToken = getCsrfToken();
+    if (csrfToken) headers["X-CSRF-Token"] = csrfToken;
+  }
 
   let body: BodyInit | undefined;
   if (options.formData) {
@@ -108,7 +108,12 @@ async function _fetchJson(
 
   let response: Response;
   try {
-    response = await fetch(`${API_URL}${path}`, { method: options.method || "GET", headers, body, signal: options.signal });
+    // credentials: "include" -- required for the httpOnly auth cookies to actually travel with
+    // the request at all, cross-origin (local dev: :5173 -> :8000) or not; without it, `fetch`
+    // silently drops any cookie on a cross-origin request by default.
+    response = await fetch(`${API_URL}${path}`, {
+      method, headers, body, signal: options.signal, credentials: "include",
+    });
   } catch (err) {
     // A deliberate cancellation (see AskJanMitra.tsx's stop-generation button) rejects `fetch`
     // with a DOMException named "AbortError" -- re-thrown as-is, not wrapped in ApiError, so the
@@ -177,7 +182,7 @@ async function requestPaginated<T>(
 async function requestBlob(path: string, token: string): Promise<{ blob: Blob; filename: string }> {
   async function attempt(withToken: string): Promise<Response> {
     try {
-      return await fetch(`${API_URL}${path}`, { headers: { Authorization: `Bearer ${withToken}` } });
+      return await fetch(`${API_URL}${path}`, { headers: { Authorization: `Bearer ${withToken}` }, credentials: "include" });
     } catch {
       throw new ApiError(0, "Could not reach the server. Check your connection and try again.");
     }
@@ -433,6 +438,10 @@ export interface DeleteComplaintResult {
   deleted_complaint_id: number;
 }
 
+export interface DeleteAiRequestResult {
+  deleted_request_log_id: number;
+}
+
 export interface AssignComplaintResult {
   id: number;
   status: ComplaintStatus;
@@ -445,6 +454,34 @@ export interface AssignComplaintResult {
 // own database (AiRequestLog), never from LangSmith directly -- this keeps working even when
 // LangSmith isn't configured; `trace_url` is the only field that ever comes from LangSmith
 // config, and it's just a locally-built string, not a live LangSmith API call.
+export interface LocationStatusCount {
+  state: string;
+  district: string;
+  ward: string;
+  status: string;
+  total: number;
+}
+
+export interface ServiceStatusCount {
+  service_category: string;
+  status: string;
+  total: number;
+}
+
+export interface DailyAiStat {
+  date: string;
+  request_count: number;
+  average_latency_ms: number;
+}
+
+export interface ComplaintStatusCounts {
+  pending: number;
+  assigned: number;
+  accepted: number;
+  in_progress: number;
+  resolved: number;
+}
+
 export interface AiMonitoringSummary {
   total_requests: number;
   successful_requests: number;
@@ -456,6 +493,22 @@ export interface AiMonitoringSummary {
   status_requests: number;
   out_of_scope_requests: number;
   clarification_requests: number;
+  latency_alert_threshold_ms: number;
+}
+
+/** One row of the "Cost by model" panel -- see backend/routes/admin.py's ModelCostEntry and
+ * tracing.get_model_cost_summary()'s own docstring for why this is a separate endpoint from
+ * aiMonitoringSummary: Phoenix's own "Top models" dashboard widgets are hard-capped at showing
+ * only 4 models at a time, which would silently hide the smaller-volume Gemini/local vision
+ * models -- this always shows every real model Ask Sarthi calls. */
+export interface ModelCostEntry {
+  model_name: string;
+  label: string;
+  vendor: string;
+  is_free: boolean;
+  total_cost_inr: number;
+  total_tokens: number;
+  request_count: number;
 }
 
 export interface AiRequestLogEntry {
@@ -469,6 +522,10 @@ export interface AiRequestLogEntry {
   latency_ms: number;
   created_at: string;
   trace_url: string | null;
+  phoenix_trace_url: string | null;
+  ai_cost_inr: number | null;
+  ai_model_name: string | null;
+  ai_total_tokens: number | null;
 }
 
 export const api = {
@@ -530,15 +587,16 @@ export const api = {
     request<void>("/auth/reset-password", { method: "POST", body }),
 
   // No `token` option on either -- /auth/refresh and /auth/logout both authenticate via the
-  // refresh token in the body, not a Bearer access token (see backend/routes/auth.py's
-  // RefreshRequest/LogoutRequest docstrings for why). Exposed directly here mainly for tests/
-  // manual use; normal silent-refresh-on-401 goes through the internal silentRefresh() above,
-  // not this.
-  refresh: (refreshToken: string) =>
-    request<AuthResponse>("/auth/refresh", { method: "POST", body: { refresh_token: refreshToken } }),
+  // refresh token, which for a real browser session rides along as the httpOnly refresh_token
+  // cookie (see backend/routes/auth.py's RefreshRequest/LogoutRequest docstrings), never as a
+  // Bearer access token. `refreshToken` here is optional and only for tests/manual API use --
+  // the app itself never has one to pass, and normal silent-refresh-on-401 goes through the
+  // internal silentRefresh() above, not this.
+  refresh: (refreshToken?: string) =>
+    request<AuthResponse>("/auth/refresh", { method: "POST", body: refreshToken ? { refresh_token: refreshToken } : {} }),
 
-  logout: (refreshToken: string) =>
-    request<void>("/auth/logout", { method: "POST", body: { refresh_token: refreshToken } }),
+  logout: (refreshToken?: string) =>
+    request<void>("/auth/logout", { method: "POST", body: refreshToken ? { refresh_token: refreshToken } : {} }),
 
   changePassword: (token: string, body: { current_password: string; new_password: string }) =>
     request<void>("/auth/change-password", { method: "POST", token, body }),
@@ -552,6 +610,7 @@ export const api = {
     token: string,
     opts: {
       lang?: string; workerId?: number; status?: string; category?: string; search?: string; page?: number; pageSize?: number;
+      dateFrom?: string; dateTo?: string;
     } = {}
   ) => {
     const params = new URLSearchParams();
@@ -562,6 +621,8 @@ export const api = {
     if (opts.search) params.set("search", opts.search);
     if (opts.page !== undefined) params.set("page", String(opts.page));
     if (opts.pageSize !== undefined) params.set("page_size", String(opts.pageSize));
+    if (opts.dateFrom) params.set("date_from", opts.dateFrom);
+    if (opts.dateTo) params.set("date_to", opts.dateTo);
     const qs = params.toString();
     return requestPaginated<Complaint>(`/complaints${qs ? `?${qs}` : ""}`, { token });
   },
@@ -578,6 +639,16 @@ export const api = {
   listCitiesForState: (stateId: number) => request<LocationOption[]>(`/locations/states/${stateId}/cities`, {}),
   listWardsForCity: (districtId: number) => request<LocationOption[]>(`/locations/cities/${districtId}/wards`, {}),
   listLocalitiesForWard: (wardId: number) => request<LocationOption[]>(`/locations/wards/${wardId}/localities`, {}),
+
+  // Resolves a ward's own display string (e.g. "Ward 3 — Indiranagar, Bengaluru", exactly what
+  // listWards()'s entries look like) back to its structured Ward row, so a caller that only has
+  // that string -- Report an Issue's ward dropdown -- can still reach listLocalitiesForWard above
+  // it. Powers the Area/Address field's real-locality suggestions (see LocationPicker.tsx): once
+  // a citizen picks a ward, this + listLocalitiesForWard fetch any real, already-known localities
+  // for it, offered as autocomplete suggestions on that still-plain text field -- never a forced
+  // choice, never fabricated, since a ward with nothing seeded under it (most of them, today)
+  // resolves to `null` and the field stays exactly the free-text box it already was.
+  resolveWard: (text: string) => request<LocationOption | null>(`/locations/wards/resolve?${new URLSearchParams({ text })}`, {}),
 
   getAreaSummary: (
     token: string,
@@ -689,6 +760,13 @@ export const api = {
     token: string,
     body: {
       full_name: string; phone: string; password: string; ward: string; preferred_language: string;
+      // LIVE-REPORTED GAP: Add Worker was the one place still using a plain free-text ward box
+      // when Edit Worker (updateWorker below) had already moved to the structured State/City/
+      // Ward/Area picker. Additive, same as there -- `ward` stays required for the display
+      // string, `ward_id`/`locality_id` are optional extras the backend uses to derive the full
+      // state/district chain (see backend/routes/admin.py's CreateWorkerRequest docstring).
+      ward_id?: number;
+      locality_id?: number;
       email?: string;
       // Proof that verifyWorkerEmailCode above already succeeded for `email` -- required whenever
       // `email` is sent, same as signup() itself requires it (see backend/routes/admin.py's
@@ -706,12 +784,14 @@ export const api = {
   // search/page) -- back AdminWorkers.tsx's own two stat tiles.
   listWorkers: async (
     token: string,
-    opts: { search?: string; page?: number; pageSize?: number } = {}
+    opts: { search?: string; page?: number; pageSize?: number; dateFrom?: string; dateTo?: string } = {}
   ): Promise<{ items: WorkerSummary[]; total: number; totalOpenComplaints: number; totalResolvedComplaints: number }> => {
     const params = new URLSearchParams();
     if (opts.search) params.set("search", opts.search);
     if (opts.page !== undefined) params.set("page", String(opts.page));
     if (opts.pageSize !== undefined) params.set("page_size", String(opts.pageSize));
+    if (opts.dateFrom) params.set("date_from", opts.dateFrom);
+    if (opts.dateTo) params.set("date_to", opts.dateTo);
     const qs = params.toString();
     const { response, data } = await _fetchJson(`/admin/workers${qs ? `?${qs}` : ""}`, { token });
     const items = (data as WorkerSummary[] | undefined) ?? [];
@@ -747,6 +827,9 @@ export const api = {
   deleteComplaint: (token: string, id: number) =>
     request<DeleteComplaintResult>(`/admin/complaints/${id}`, { method: "DELETE", token }),
 
+  deleteAiRequestLog: (token: string, id: number) =>
+    request<DeleteAiRequestResult>(`/admin/ai-monitoring/requests/${id}`, { method: "DELETE", token }),
+
   assignComplaint: (token: string, complaintId: number, workerId: number) =>
     request<AssignComplaintResult>(`/admin/complaints/${complaintId}/assign`, {
       method: "POST",
@@ -754,10 +837,49 @@ export const api = {
       body: { worker_id: workerId },
     }),
 
+  // Flat state/district/ward/status rows -- the one view only an admin's all-ward access makes
+  // useful. The frontend builds the 3-level drill-down tree from these; a combo with zero
+  // complaints is simply absent, not returned as a zero row.
+  complaintsByLocation: (token: string) => request<LocationStatusCount[]>("/admin/complaints/by-location", { token }),
+
+  // Feeds the zoom-drilldown service donut on both Worker and Admin dashboards -- role-scoped
+  // server-side exactly like listComplaints (citizen/worker see only their own; admin sees
+  // everything, or one worker's own via `workerId`), so this is NOT under /admin.
+  complaintsByService: (token: string, workerId?: number) =>
+    request<ServiceStatusCount[]>(`/complaints/by-service${workerId !== undefined ? `?worker_id=${workerId}` : ""}`, { token }),
+
+  // One request for all five status counts (stat tiles + filter-chip badges) -- see
+  // backend/routes/admin.py's ComplaintStatusCounts docstring for why this replaced five
+  // separate per-status requests.
+  complaintStatusCounts: (token: string) => request<ComplaintStatusCounts>("/admin/complaints/status-counts", { token }),
+
   aiMonitoringSummary: (token: string) => request<AiMonitoringSummary>("/admin/ai-monitoring", { token }),
+  aiMonitoringModelCosts: (token: string) => request<ModelCostEntry[]>("/admin/ai-monitoring/model-costs", { token }),
+
+  // Per-day request volume + avg latency -- feeds the Admin dashboard's AI health trend chart
+  // (distinct from aiMonitoringSummary's single running total).
+  aiMonitoringDaily: (token: string) => request<DailyAiStat[]>("/admin/ai-monitoring/daily", { token }),
 
   aiMonitoringRequests: (token: string, limit = 20) =>
     request<AiRequestLogEntry[]>(`/admin/ai-monitoring/requests?limit=${limit}`, { token }),
+
+  // Real, server-side pagination (page/page_size) for the AI Monitoring page's "Recent Requests"
+  // table -- total (before slicing) rides in the X-Total-Count header, same convention as
+  // listComplaints() below.
+  aiMonitoringRequestsPage: (
+    token: string,
+    page: number,
+    pageSize: number,
+    search?: string,
+    dateFrom?: string,
+    dateTo?: string
+  ) => {
+    const qs = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
+    if (search) qs.set("search", search);
+    if (dateFrom) qs.set("date_from", dateFrom);
+    if (dateTo) qs.set("date_to", dateTo);
+    return requestPaginated<AiRequestLogEntry>(`/admin/ai-monitoring/requests?${qs}`, { token });
+  },
 
   askJanMitra: (
     token: string,
@@ -768,6 +890,10 @@ export const api = {
       longitude?: number | null;
       location_text?: string | null;
       conversation_history?: AskJanMitraConversationTurn[];
+      // Purely an observability signal (see backend/services/observability/tracing.py) -- groups
+      // every turn of one chat into the same Phoenix "session" instead of unrelated traces. Never
+      // read back by the app, never changes routing/behavior.
+      conversation_id?: string;
       // True when `question` came from Mic 1 rather than typing -- an observability signal only
       // (see backend/schemas/ask_janmitra.py's AskJanMitraRequest.was_voice_input); never changes
       // routing/behavior.
@@ -789,6 +915,7 @@ export const api = {
       longitude?: number | null;
       location_text?: string | null;
       conversation_history?: AskJanMitraConversationTurn[];
+      conversation_id?: string;
       image: File;
       was_voice_input?: boolean;
     },
@@ -801,6 +928,7 @@ export const api = {
     if (body.longitude != null) form.append("longitude", String(body.longitude));
     if (body.location_text) form.append("location_text", body.location_text);
     form.append("conversation_history", JSON.stringify(body.conversation_history ?? []));
+    if (body.conversation_id) form.append("conversation_id", body.conversation_id);
     if (body.was_voice_input) form.append("was_voice_input", "true");
     form.append("image", body.image);
     return request<AskJanMitraResponse>("/ask-janmitra/image", { method: "POST", token, formData: form, signal });
@@ -818,6 +946,7 @@ export const api = {
       longitude?: number | null;
       location_text?: string | null;
       conversation_history?: AskJanMitraConversationTurn[];
+      conversation_id?: string;
       audioSegments: Blob[];
       image?: File | null;
     }
@@ -828,6 +957,7 @@ export const api = {
     if (body.longitude != null) form.append("longitude", String(body.longitude));
     if (body.location_text) form.append("location_text", body.location_text);
     form.append("conversation_history", JSON.stringify(body.conversation_history ?? []));
+    if (body.conversation_id) form.append("conversation_id", body.conversation_id);
     body.audioSegments.forEach((segment, i) => form.append("audio", segment, `segment_${i}.webm`));
     if (body.image) form.append("image", body.image);
     return request<AskVoiceResponse>("/ask-janmitra/voice", { method: "POST", token, formData: form });

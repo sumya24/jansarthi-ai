@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { useAuth } from "../lib/auth";
 import { useUiLang } from "../lib/uiLang";
 import { t } from "../lib/i18n";
+import { localizeStateName } from "../lib/locationNames";
 import { api, ApiError, type Complaint, type LocationOption, type WorkerSummary } from "../lib/api";
 import { useToast } from "../lib/toast";
 import { useModalA11y } from "../lib/useModalA11y";
@@ -161,7 +162,7 @@ export default function AssignWorkerModal({
               >
                 <option value="">{t(lang, "admin.assignFilterAllStates")}</option>
                 {stateOptions.map((s) => (
-                  <option key={s.id} value={s.id}>{s.name}</option>
+                  <option key={s.id} value={s.id}>{localizeStateName(s.name, lang)}</option>
                 ))}
               </select>
             </div>

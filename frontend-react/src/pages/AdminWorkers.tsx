@@ -4,6 +4,7 @@ import TopBar from "../components/TopBar";
 import AddWorkerModal from "../components/AddWorkerModal";
 import EditWorkerModal from "../components/EditWorkerModal";
 import ConfirmModal from "../components/ConfirmModal";
+import SearchWithDateFilter from "../components/SearchWithDateFilter";
 import { useAuth } from "../lib/auth";
 import { useUiLang } from "../lib/uiLang";
 import { useDebouncedValue } from "../lib/useDebouncedValue";
@@ -92,6 +93,10 @@ export default function AdminWorkers() {
   const [deleting, setDeleting] = useState(false);
 
   const [search, setSearch] = useState("");
+  // Same "every search box gets a date filter" rollout as AdminAiMonitoring.tsx -- filters on
+  // this worker account's own created_at.
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   // Decoupled from `workers` (the filtered+paged current-page list) on purpose -- these two stat
@@ -108,15 +113,25 @@ export default function AdminWorkers() {
   const [bulkDeleteConfirm, setBulkDeleteConfirm] = useState(false);
   const [bulkDeleting, setBulkDeleting] = useState(false);
 
+  // `loading` only gates the page's initial skeleton (before the FIRST fetch resolves) -- every
+  // later reload (paging, search, or picking a date in SearchWithDateFilter) must NOT flip it back
+  // to true, since the whole search bar/filter row sits behind `!loading` further down. Without
+  // this split, entering a date immediately re-triggered `load()`, which unmounted that row --
+  // including the open date popover the admin was still typing into -- for the fetch's duration.
+  // Same fix already applied in AdminAiMonitoring.tsx (see its own isFirstRequestsLoad).
+  const isFirstLoad = useRef(true);
+
   async function load() {
     if (!token) return;
-    setLoading(true);
+    if (isFirstLoad.current) setLoading(true);
     setLoadError(null);
     try {
       const result = await api.listWorkers(token, {
         search: debouncedSearch || undefined,
         page,
         pageSize: WORKERS_PAGE_SIZE,
+        dateFrom: dateFrom || undefined,
+        dateTo: dateTo || undefined,
       });
       setWorkers(result.items);
       setTotal(result.total);
@@ -125,7 +140,10 @@ export default function AdminWorkers() {
     } catch (err) {
       setLoadError(err instanceof ApiError ? err.message : t(lang, "admin.errLoadFailed"));
     } finally {
-      setLoading(false);
+      if (isFirstLoad.current) {
+        setLoading(false);
+        isFirstLoad.current = false;
+      }
     }
   }
 
@@ -133,12 +151,12 @@ export default function AdminWorkers() {
   // makes sense against a newly-narrowed result set.
   useEffect(() => {
     setPage(1);
-  }, [debouncedSearch]);
+  }, [debouncedSearch, dateFrom, dateTo]);
 
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token, debouncedSearch, page]);
+  }, [token, debouncedSearch, page, dateFrom, dateTo]);
 
   async function confirmDelete() {
     if (!token || !deleteTarget) return;
@@ -258,18 +276,18 @@ export default function AdminWorkers() {
                   {t(lang, "admin.deleteSelected")} ({selectedIds.size})
                 </button>
               )}
-              <div className="field" style={{ margin: 0, width: 340, maxWidth: "100%", flexShrink: 0 }}>
-                <input
-                  type="text"
-                  aria-label={t(lang, "admin.searchWorkers")}
-                  placeholder={t(lang, "admin.searchWorkers")}
-                  value={search}
-                  onChange={(e) => {
-                    setSearch(e.target.value);
-                    setSelectedIds(new Set());
-                  }}
-                />
-              </div>
+              <SearchWithDateFilter
+                searchValue={search}
+                onSearchChange={setSearch}
+                searchPlaceholder={t(lang, "admin.searchWorkers")}
+                dateFrom={dateFrom}
+                dateTo={dateTo}
+                onDateFromChange={setDateFrom}
+                onDateToChange={setDateTo}
+                lang={lang}
+                width={340}
+                onAnyChange={() => setSelectedIds(new Set())}
+              />
             </div>
 
             {total === 0 ? (

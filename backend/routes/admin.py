@@ -7,18 +7,18 @@ worker or admin account — provisioning staff is exclusively a super admin acti
 
 import logging
 import re
-from datetime import datetime
+from datetime import date, datetime, time, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from backend.config import settings
 from backend.database import get_db
 from backend.deps import require_otp_rate_limit, require_role
-from backend.models import Complaint, ComplaintRejection, ComplaintStatusHistory, ComplaintTranslation, ComplaintUpdate, Locality, ULB, User, Ward
+from backend.models import Complaint, ComplaintRejection, ComplaintStatusHistory, ComplaintTranslation, ComplaintUpdate, District, Locality, State, ULB, User, Ward
 from backend.repositories import ai_request_log_repository, complaint_workflow_repository
 from backend.routes.auth import _dev_cache_otp, MIN_PASSWORD_LENGTH, UserResponse
 from backend.services.auth_service import (
@@ -62,13 +62,26 @@ class CreateWorkerRequest(BaseModel):
     an admin can assert a worker's phone number and temporary password on their behalf with no
     verification step, but an email inbox is something only whoever holds it can actually prove,
     so this endpoint holds itself to the same standard signup already does rather than a laxer one
-    just because an admin is the one submitting the form."""
+    just because an admin is the one submitting the form.
+
+    `ward_id`/`locality_id`: LIVE-REPORTED GAP -- Add Worker was the one place left still using a
+    plain free-text ward box (see AddWorkerModal.tsx) when Edit Worker (UpdateWorkerRequest, right
+    below) had already moved to this exact structured State/City/Ward/Area picker. Same optional,
+    additive contract as there: `ward` stays required and is always trusted for the *display*
+    string (unlike UpdateWorkerRequest, there's no existing worker to derive a fallback display
+    string FROM here, so there's nothing to make `ward` optional in favor of), while `ward_id` (and
+    `locality_id`, which requires it) are purely additive -- when given, create_worker() derives
+    the full state/district parent chain server-side via LocationResolver.location_chain_for_ward,
+    the same as update_worker() does, so the frontend cascade never needs to send more than the
+    deepest level it actually reached."""
 
     full_name: str
     phone: str
     password: str
     ward: str
     preferred_language: str
+    ward_id: int | None = None
+    locality_id: int | None = None
     email: str | None = None
     email_verification_token: str | None = None
 
@@ -236,6 +249,26 @@ def create_worker(
                 status_code=400, detail="Email is not verified. Please verify the email address first."
             )
 
+    # Same structured-location resolution update_worker() already does below -- see
+    # CreateWorkerRequest.ward_id's own docstring for why this was missing here.
+    location_chain: dict[str, int | None] = {}
+    if body.ward_id is not None:
+        ward_row = db.query(Ward).filter(Ward.id == body.ward_id).first()
+        if ward_row is None:
+            raise HTTPException(status_code=400, detail="Ward not found.")
+        location_chain = _location_resolver.location_chain_for_ward(db, ward_row)
+        if body.locality_id is not None:
+            locality_row = (
+                db.query(Locality)
+                .filter(Locality.id == body.locality_id, Locality.ward_id == ward_row.id)
+                .first()
+            )
+            if locality_row is None:
+                raise HTTPException(status_code=400, detail="Locality does not belong to the selected ward.")
+            location_chain["locality_id"] = locality_row.id
+    elif body.locality_id is not None:
+        raise HTTPException(status_code=400, detail="locality_id requires ward_id.")
+
     worker = User(
         full_name=full_name,
         phone=phone,
@@ -245,6 +278,7 @@ def create_worker(
         ward=ward,
         email=email,
         email_verified=email is not None,
+        **location_chain,
     )
     db.add(worker)
     db.commit()
@@ -257,6 +291,8 @@ def create_worker(
 def list_workers(
     response: Response,
     search: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
     page: int | None = None,
     page_size: int | None = None,
     db: Session = Depends(get_db),
@@ -271,6 +307,7 @@ def list_workers(
     (so AdminWorkerDetail.tsx's own unpaginated `api.listWorkers(token)` call keeps working), a
     caller that opts in gets a real slice plus `X-Total-Count`. `search` matches full_name/ward/
     phone, the same three fields AdminWorkers.tsx's own (removed) client-side filter used.
+    `date_from`/`date_to`: an inclusive calendar-day range over the worker account's `created_at`.
 
     `X-Total-Open-Complaints`/`X-Total-Resolved-Complaints` headers are aggregate sums across
     EVERY worker (never affected by search/page) -- back AdminWorkers.tsx's own two stat tiles,
@@ -281,6 +318,10 @@ def list_workers(
     if search and search.strip():
         like = f"%{search.strip()}%"
         query = query.filter(or_(User.full_name.ilike(like), User.ward.ilike(like), User.phone.ilike(like)))
+    if date_from is not None:
+        query = query.filter(User.created_at >= datetime.combine(date_from, time.min))
+    if date_to is not None:
+        query = query.filter(User.created_at < datetime.combine(date_to, time.min) + timedelta(days=1))
     query = query.order_by(User.created_at.desc())
 
     total = None
@@ -557,6 +598,84 @@ def delete_complaint(
     return DeleteComplaintResponse(deleted_complaint_id=complaint_id)
 
 
+class LocationStatusCount(BaseModel):
+    """One row of the Admin dashboard's "complaints by location" drill-down (state -> district ->
+    ward, each level showing a status breakdown). `state`/`district`/`ward` are "Unassigned" when
+    the complaint has no location recorded, rather than being dropped -- an admin should be able to
+    see that gap, not have it silently disappear from the count."""
+
+    state: str
+    district: str
+    ward: str
+    status: str
+    total: int
+
+
+@router.get("/complaints/by-location", response_model=list[LocationStatusCount])
+def complaints_by_location(
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_role("admin")),
+) -> list[LocationStatusCount]:
+    """Complaint counts grouped by state/district/ward AND status -- feeds the Admin dashboard's
+    location drill-down, the one view only an admin's all-ward access makes useful (a citizen/
+    worker only ever sees their own ward). A location/status combo with zero complaints is simply
+    absent here, not returned as a zero row, same convention this endpoint's predecessor
+    (GET /complaints/by-ward) used -- the frontend builds the 3-level tree from these flat rows."""
+    rows = (
+        db.query(State.name, District.name, Complaint.ward, Complaint.status, func.count(Complaint.id))
+        .outerjoin(State, Complaint.state_id == State.id)
+        .outerjoin(District, Complaint.district_id == District.id)
+        .group_by(State.name, District.name, Complaint.ward, Complaint.status)
+        .all()
+    )
+    return [
+        LocationStatusCount(
+            state=state_name or "Unassigned",
+            district=district_name or "Unassigned",
+            ward=ward or "Unassigned",
+            status=status,
+            total=total,
+        )
+        for state_name, district_name, ward, status, total in rows
+    ]
+
+
+class ComplaintStatusCounts(BaseModel):
+    """The Admin dashboard's stat tiles + filter-chip badge counts, all five in one response.
+
+    Replaces what used to be five separate GET /complaints?status=X&page_size=1 calls (one per
+    status, each just to read that response's own `total`) -- harmless in isolation, but combined
+    with this same dashboard's other widgets (Workers, the by-ward chart, AI Monitoring) it pushed
+    a single page load to 9 requests, which repeated reloads during real use (not just automated
+    testing) could tip over GeneralRateLimitMiddleware's per-user budget -- a real "Too many
+    requests" banner a working admin could hit just by refreshing the page a few times, confirmed
+    live. One GROUP BY query returns everything this page needs in a single round trip instead.
+    """
+
+    pending: int
+    assigned: int
+    accepted: int
+    in_progress: int
+    resolved: int
+
+
+@router.get("/complaints/status-counts", response_model=ComplaintStatusCounts)
+def complaint_status_counts(
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_role("admin")),
+) -> ComplaintStatusCounts:
+    """Total complaint count per status, across every ward -- see ComplaintStatusCounts' own
+    docstring for why this replaced five separate per-status requests."""
+    rows = dict(db.query(Complaint.status, func.count(Complaint.id)).group_by(Complaint.status).all())
+    return ComplaintStatusCounts(
+        pending=rows.get("pending", 0),
+        assigned=rows.get("assigned", 0),
+        accepted=rows.get("accepted", 0),
+        in_progress=rows.get("in_progress", 0),
+        resolved=rows.get("resolved", 0),
+    )
+
+
 @router.post("/complaints/{complaint_id}/assign", response_model=ComplaintAdminSummary)
 def assign_complaint(
     complaint_id: int,
@@ -622,6 +741,7 @@ class AiMonitoringSummary(BaseModel):
     status_requests: int
     out_of_scope_requests: int
     clarification_requests: int
+    latency_alert_threshold_ms: float
 
 
 class AiRequestLogEntry(BaseModel):
@@ -640,6 +760,15 @@ class AiRequestLogEntry(BaseModel):
     # request, or the request predates this feature -- the frontend shows the raw request id
     # without a link in that case (see tracing.get_trace_url()'s docstring).
     trace_url: str | None
+    # Same shape as trace_url above, for the second (Phoenix) tracing backend -- see
+    # tracing.get_phoenix_trace_url()'s docstring.
+    phoenix_trace_url: str | None
+    # Real Sarvam cost for this request's answer-generation LLM call, in Indian Rupees -- see
+    # models.py's AiRequestLog.ai_cost_inr docstring. All three None together whenever no LLM
+    # call happened this turn (cache hit, fallback, or a non-RAG flow).
+    ai_cost_inr: float | None
+    ai_model_name: str | None
+    ai_total_tokens: int | None
 
 
 @router.get("/ai-monitoring", response_model=AiMonitoringSummary)
@@ -651,14 +780,92 @@ def ai_monitoring_summary(
     return AiMonitoringSummary(**ai_request_log_repository.get_ai_monitoring_summary(db))
 
 
+class ModelCostEntry(BaseModel):
+    """One row of the Admin AI Monitoring page's "Cost by model" panel -- see
+    tracing.get_model_cost_summary()'s own docstring for why this reads Phoenix's spans directly
+    instead of Phoenix's own "Top models" widgets (hard-capped at 4, which would hide smaller-
+    volume real models like the vision providers)."""
+
+    model_name: str
+    label: str
+    vendor: str
+    is_free: bool
+    total_cost_inr: float
+    total_tokens: int
+    request_count: int
+
+
+@router.get("/ai-monitoring/model-costs", response_model=list[ModelCostEntry])
+def ai_monitoring_model_costs(
+    admin: User = Depends(require_role("admin")),
+) -> list[ModelCostEntry]:
+    """Real per-model cost/token totals for every model Ask Sarthi actually calls, over the last
+    30 days -- always all of them, never just the biggest few (see
+    tracing.get_model_cost_summary()'s own docstring). Reads Phoenix directly (not this app's own
+    `ai_request_logs` table, which only ever stored the answer-generation model's own cost) --
+    purely observability, so a Phoenix outage/misconfiguration degrades to an empty list here,
+    never a 500."""
+    return [ModelCostEntry(**entry) for entry in tracing.get_model_cost_summary()]
+
+
+class DailyAiStat(BaseModel):
+    """One day's worth of Ask Sarthi request volume + average latency -- feeds the Admin
+    dashboard's AI health trend chart (a line/area over time, not a single running total)."""
+
+    date: str
+    request_count: int
+    average_latency_ms: float
+
+
+@router.get("/ai-monitoring/daily", response_model=list[DailyAiStat])
+def ai_monitoring_daily(
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_role("admin")),
+) -> list[DailyAiStat]:
+    """Per-day request volume + average latency for the Admin dashboard's AI health trend chart --
+    see ai_request_log_repository.get_daily_ai_stats() for how each row is computed."""
+    return [DailyAiStat(**row) for row in ai_request_log_repository.get_daily_ai_stats(db)]
+
+
 @router.get("/ai-monitoring/requests", response_model=list[AiRequestLogEntry])
 def ai_monitoring_requests(
+    response: Response,
+    search: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    page: int | None = None,
+    page_size: int | None = None,
     limit: int = 50,
     db: Session = Depends(get_db),
     admin: User = Depends(require_role("admin")),
 ) -> list[AiRequestLogEntry]:
-    """Most recent Ask Sarthi requests, each with a "View Trace" link where configured."""
-    rows = ai_request_log_repository.get_recent_ai_requests(db, limit=min(max(limit, 1), 200))
+    """Most recent Ask Sarthi requests, each with a "View Trace" link where configured.
+
+    `page`/`page_size`: real, server-side pagination -- when given, the response also carries an
+    `X-Total-Count` header (same convention as routes/complaints.py's own _paginate()/
+    list_complaints(), including needing `X-Total-Count` in this app's CORS `expose_headers` --
+    see main.py) so the Admin AI Monitoring page can show real page numbers instead of only ever
+    the newest N with no way to see older requests. `limit` (the old single-shot "just give me N"
+    parameter) is used only when page/page_size are both omitted, for any other caller that
+    doesn't need real pagination.
+
+    `search`: matches request_id/intent/routed_to. `date_from`/`date_to`: an inclusive calendar-
+    day range (plain `YYYY-MM-DD`, FastAPI parses these as `date` directly from the query string)
+    over when the request happened. Both only apply alongside page/page_size (the plain
+    `limit`-only path has no filtering, same as it never did before).
+    """
+    if page is not None or page_size is not None:
+        rows, total = ai_request_log_repository.get_recent_ai_requests_page(
+            db,
+            page=page or 1,
+            page_size=page_size or 20,
+            search=search,
+            date_from=datetime.combine(date_from, time.min) if date_from else None,
+            date_to=datetime.combine(date_to, time.min) if date_to else None,
+        )
+        response.headers["X-Total-Count"] = str(total)
+    else:
+        rows = ai_request_log_repository.get_recent_ai_requests(db, limit=min(max(limit, 1), 200))
     return [
         AiRequestLogEntry(
             id=row.id,
@@ -671,6 +878,34 @@ def ai_monitoring_requests(
             latency_ms=row.latency_ms,
             created_at=row.created_at,
             trace_url=tracing.get_trace_url(row.langsmith_trace_id),
+            phoenix_trace_url=tracing.get_phoenix_trace_url(row.phoenix_trace_id),
+            ai_cost_inr=row.ai_cost_inr,
+            ai_model_name=row.ai_model_name,
+            ai_total_tokens=row.ai_total_tokens,
         )
         for row in rows
     ]
+
+
+class DeleteAiRequestResponse(BaseModel):
+    deleted_request_log_id: int
+
+
+@router.delete("/ai-monitoring/requests/{request_log_id}", response_model=DeleteAiRequestResponse)
+def delete_ai_monitoring_request(
+    request_log_id: int,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_role("admin")),
+) -> DeleteAiRequestResponse:
+    """Delete one row from the "Recent Requests" table. Super admin only, same delete-a-row
+    pattern as DELETE /admin/workers/{worker_id} and DELETE /admin/complaints/{complaint_id}.
+
+    Permanently removes that request from AiRequestLog -- it also disappears from the AI health
+    summary/daily-trend totals above, since those are both computed live from this same table.
+    There is no undo, same as deleting a worker or complaint elsewhere in this admin area.
+    """
+    deleted = ai_request_log_repository.delete_ai_request_log(db, request_log_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="AI request log not found.")
+    logger.info("AI request log deleted by admin (admin_id=%s, request_log_id=%s)", admin.id, request_log_id)
+    return DeleteAiRequestResponse(deleted_request_log_id=request_log_id)

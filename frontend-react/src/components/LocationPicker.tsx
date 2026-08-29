@@ -1,10 +1,19 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useUiLang } from "../lib/uiLang";
 import { t } from "../lib/i18n";
+import { api } from "../lib/api";
 
 export interface LocationValue {
   ward: string;
   coords: { lat: number; lng: number; accuracy: number } | null;
+  // LIVE-REPORTED: a ward alone (e.g. "Ward 3 — Indiranagar, Bengaluru") often isn't precise
+  // enough to actually find the issue -- a ward can span a large area. Always-present, always
+  // optional free-text field for a street name/landmark/building, separate from the structured
+  // ward pick above. Maps to the backend's own already-existing `address` field on
+  // POST /complaints (routes/complaints.py's create_complaint) -- that field already existed and
+  // already gets auto-filled from GPS reverse-geocoding when set, but nothing in this form ever
+  // let a citizen type it manually until now.
+  locality: string;
 }
 
 /**
@@ -31,6 +40,35 @@ export default function LocationPicker({
   const [mode, setMode] = useState<"choose" | "manual">("choose");
   const [locating, setLocating] = useState(false);
   const [geoError, setGeoError] = useState<string | null>(null);
+  // Real, already-known localities for whichever ward is currently picked (e.g. "Indiranagar",
+  // "Koramangala") -- offered as suggestions on the Area/Address field below, never a forced
+  // choice: it stays the same plain free-text input regardless, this only adds a browser-native
+  // autocomplete dropdown when real data happens to exist for that ward. Resolves the ward's own
+  // display string back to its structured row via GET /locations/wards/resolve (needed because
+  // this component only ever has that string, not a ward id), then fetches that ward's real
+  // localities -- both routes return an honest empty/null for a ward with nothing seeded, which
+  // just means no suggestions, not an error.
+  const [localitySuggestions, setLocalitySuggestions] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (!value.ward) {
+      setLocalitySuggestions([]);
+      return;
+    }
+    let cancelled = false;
+    api
+      .resolveWard(value.ward)
+      .then((ward) => (ward ? api.listLocalitiesForWard(ward.id) : Promise.resolve([])))
+      .then((localities) => {
+        if (!cancelled) setLocalitySuggestions(localities.map((l) => l.name));
+      })
+      .catch(() => {
+        if (!cancelled) setLocalitySuggestions([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [value.ward]);
 
   function useCurrentLocation() {
     if (!("geolocation" in navigator)) {
@@ -113,6 +151,24 @@ export default function LocationPicker({
           </select>
         ) : (
           <input id="wizard-ward" type="text" value={value.ward} onChange={(e) => onChange({ ...value, ward: e.target.value })} placeholder={t(lang, "citizen.wardPlaceholder")} />
+        )}
+      </div>
+      <div className="field">
+        <label htmlFor="wizard-locality">{t(lang, "citizen.locality")}</label>
+        <input
+          id="wizard-locality"
+          type="text"
+          value={value.locality}
+          onChange={(e) => onChange({ ...value, locality: e.target.value })}
+          placeholder={t(lang, "citizen.localityPlaceholder")}
+          list={localitySuggestions.length > 0 ? "wizard-locality-suggestions" : undefined}
+        />
+        {localitySuggestions.length > 0 && (
+          <datalist id="wizard-locality-suggestions">
+            {localitySuggestions.map((name) => (
+              <option key={name} value={name} />
+            ))}
+          </datalist>
         )}
       </div>
       <button type="button" className="btn btn-ghost btn-sm" onClick={() => setMode("choose")}>
