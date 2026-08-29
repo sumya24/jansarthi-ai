@@ -1082,7 +1082,14 @@ def classify(question: str) -> ClassificationResult:
 _MULTI_CATEGORY_KEYWORDS: dict[ServiceCategory, dict[str, list[str]]] = {
     **{cat: kws for cat, kws in _CATEGORY_KEYWORDS.items() if cat != ServiceCategory.ROADS_POTHOLES},
     ServiceCategory.ROADS_POTHOLES: {
-        "en": ["pothole", "civil work"],
+        # BUG FIX (code review): "civil work" dropped -- matched as a bare, unbounded substring
+        # (via _any_match's `kw.lower() in lowered`), it isn't actually pothole-specific and
+        # false-triggered the multi-category gate for ordinary single-issue messages that merely
+        # mention an unrelated "civil works department/office" alongside a real complaint (e.g.
+        # "The streetlight near the civil works department office is broken" -- one issue,
+        # wrongly detected as two). "pothole" alone is already unambiguous and sufficient for
+        # this deliberately conservative gate (see this section's own top comment).
+        "en": ["pothole"],
         "hi": ["गड्ढा", "गड्ढे"], "mr": ["खड्डा", "खड्ड्या"],
         "or": [],  # KNOWN GAP -- see this section's top comment; no verified Odia word yet
         "gu": ["ખાડો", "ખાડાની"], "bn": ["গর্ত"],

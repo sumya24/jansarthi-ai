@@ -430,6 +430,73 @@ def test_reranker_is_never_called_for_a_single_candidate():
     assert [c.metadata["source_id"] for c in outcome.results] == ["ONLY_ONE"]
 
 
+def test_reranker_failure_falls_back_to_the_heuristic_rerank_instead_of_crashing():
+    """BUG FIX (code review): CrossEncoderReranker.score() has no exception handling of its own,
+    and this call site previously had none either -- a reranker failure (model load failure,
+    OOM, a raised exception from predict()) used to propagate straight out of retrieve(),
+    contradicting RetrievalOutcome's own "always returned, never raises" contract and this
+    codebase's fail-open pattern for every other optional AI dependency. retrieve() must
+    degrade to the heuristic-only rerank for this request instead of crashing it."""
+    candidates = [
+        _chunk_with_content("A", 0.90, "content a", status="VERIFIED"),
+        _chunk_with_content("B", 0.85, "content b", status="SYNTHETIC"),
+    ]
+
+    class _RerankerThatAlwaysFails:
+        def score(self, query, passages):
+            raise RuntimeError("model failed to load")
+
+    store = _FakeVectorStore(candidates)
+    retriever = RagRetriever(
+        store, _FakeEmbeddingProvider(), relevance_threshold=0.79, verified_relevance_threshold=0.74,
+        reranker=_RerankerThatAlwaysFails(),
+    )
+
+    outcome = retriever.retrieve("query", ServiceCategory.STREETLIGHTS, "Nashik", "Maharashtra")
+
+    # Never raised -- and produced a real result via the heuristic fallback (highest raw cosine
+    # score, "A" at 0.90, wins -- "B" is separately, correctly dropped by the unrelated
+    # citation-honesty filter since a VERIFIED chunk exists for the same city+category).
+    assert not outcome.insufficient_knowledge
+    assert outcome.results[0].metadata["source_id"] == "A"
+
+
+def test_reranker_band_is_capped_so_one_outlier_cannot_stretch_it_arbitrarily():
+    """BUG FIX (code review): an uncapped `0.1 * spread` band is stretched by ANY single extreme
+    outlier in the candidate set -- here a very poorly-scored third candidate would otherwise
+    widen the band enough for VERIFIED_MEANINGFULLY_LOWER (6.0) to wrongly qualify as "near-top"
+    against a true top score of 10.0, letting it leapfrog SYNTHETIC_TRUE_TOP even though it's 4
+    points below on a scale where that's a meaningful gap -- exactly the "never promotes a chunk
+    that scored meaningfully lower" guarantee this mechanism exists to uphold.
+
+    VERIFIED_MEANINGFULLY_LOWER is deliberately given a DIFFERENT city than the two SYNTHETIC
+    chunks -- pure test isolation from the unrelated citation-honesty filter (which would
+    otherwise drop a SYNTHETIC chunk once a VERIFIED one exists for the exact same
+    city+category), not part of the bug this test targets."""
+    candidates = [
+        ScoredChunk(chunk_id="SYNTHETIC_TRUE_TOP", score=0.85, metadata={"source_id": "SYNTHETIC_TRUE_TOP", "city": "Nashik", "service_category": "STREETLIGHTS", "verification_status": "SYNTHETIC", "content": "top content"}),
+        ScoredChunk(chunk_id="VERIFIED_MEANINGFULLY_LOWER", score=0.80, metadata={"source_id": "VERIFIED_MEANINGFULLY_LOWER", "city": "OtherCity", "service_category": "STREETLIGHTS", "verification_status": "VERIFIED", "content": "verified content"}),
+        ScoredChunk(chunk_id="EXTREME_OUTLIER", score=0.80, metadata={"source_id": "EXTREME_OUTLIER", "city": "Nashik", "service_category": "STREETLIGHTS", "verification_status": "SYNTHETIC", "content": "outlier content"}),
+    ]
+    # Uncapped: spread = 10.0 - (-100.0) = 110, band = 11.0, so top_score - band = -1.0 --
+    # VERIFIED_MEANINGFULLY_LOWER (6.0) would wrongly qualify. Capped at 2.0: top_score - band =
+    # 8.0, so 6.0 correctly does NOT qualify.
+    reranker = _FakeReranker({"top content": 10.0, "verified content": 6.0, "outlier content": -100.0})
+    store = _FakeVectorStore(candidates)
+    retriever = RagRetriever(
+        store, _FakeEmbeddingProvider(), relevance_threshold=0.79, verified_relevance_threshold=0.74,
+        reranker=reranker,
+    )
+
+    outcome = retriever.retrieve("query", ServiceCategory.STREETLIGHTS, "Nashik", "Maharashtra")
+
+    result_ids = [c.metadata["source_id"] for c in outcome.results]
+    assert result_ids[0] == "SYNTHETIC_TRUE_TOP", (
+        "the true top-scoring chunk must still rank first -- if VERIFIED_MEANINGFULLY_LOWER "
+        "ranks first instead, the band is still uncapped and being stretched by the outlier"
+    )
+
+
 # --- BM25 index caching + bounded embedding fetch (code review, efficiency) -----------------
 #
 # See rag_retriever.py's _get_or_build_bm25_index()/_widen_with_bm25() docstrings: the BM25 index

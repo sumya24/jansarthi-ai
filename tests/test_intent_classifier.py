@@ -144,6 +144,14 @@ def test_streetlight_on_a_road_is_not_falsely_flagged_as_roads_plus_streetlights
     assert result == []
 
 
+def test_civil_work_department_mention_does_not_falsely_flag_roads_potholes():
+    """BUG FIX (code review): "civil work" used to be a ROADS_POTHOLES multi-category keyword,
+    matched as a bare substring -- "civil works department/office", mentioned only as WHERE an
+    unrelated single issue is located, wrongly looked like a second (pothole) category."""
+    result = detect_multiple_categories("The streetlight near the civil works department office is broken.")
+    assert result == []
+
+
 def test_genuinely_unrelated_single_word_overlap_is_not_enough():
     """A message with only one REAL category signal (streetlights) plus an incidental word that
     happens to also appear in another category's list must not multi-count -- "waste" doesn't

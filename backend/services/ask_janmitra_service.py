@@ -656,18 +656,31 @@ class AskJanMitraService:
 
         # GUARDRAIL (output) -- see backend/services/guardrails.py's module docstring. Checked on
         # the LLM's own generated answer text, right after the graph completes and before it's
-        # ever returned to the citizen. `routed_to` is deliberately left as whatever the graph
-        # actually did (RAG/COMPLAINT_CREATED/etc.) -- unlike the input check above, real routing
-        # DID happen here; only the answer TEXT is replaced.
+        # ever returned to the citizen.
         answer_text = final_state.get("response_text") or ""
         output_check = guardrails.check_output(answer_text, system_prompt=_ASK_JANMITRA_SYSTEM_PROMPT)
         if output_check.flagged:
             logger.warning(
                 "Ask Sarthi: blocked a response at output (request_id=%s): %s", request_id, output_check.reason,
             )
+            # BUG FIX (code review): this used to replace ONLY response_text, leaving `sources`,
+            # `verification_status`, and `answer_was_llm_generated` exactly as the (now-discarded)
+            # flagged generation produced them -- an internally inconsistent response where the
+            # citizen sees a refusal but the response body still carries real citations
+            # (source_title/source_organization/source_url) for whichever KB chunks were retrieved
+            # for the blocked query, and still claims `answer_was_llm_generated=True`/a real
+            # `verification_status` for an answer that was never actually shown. `routed_to` is
+            # now also normalized to the same "NONE_BLOCKED_GUARDRAIL" value the input-side check
+            # uses (see that branch above) -- a blocked response is a blocked response regardless
+            # of which side of the pipeline caught it, and a caller checking `routed_to` alone
+            # (e.g. the Admin AI Monitoring dashboard) must be able to tell either way.
             final_state["response_text"] = self._safe_guardrail_message(
                 final_state.get("response_language") or language
             )
+            final_state["sources"] = []
+            final_state["verification_status"] = None
+            final_state["answer_was_llm_generated"] = False
+            final_state["routed_to"] = "NONE_BLOCKED_GUARDRAIL"
 
         latency_ms = (time.perf_counter() - start) * 1000
         if root_run is not None and end_root_run:

@@ -81,8 +81,14 @@ def _build_pipeline():
     """Builds the real, current production RAG components -- same construction as
     AskJanMitraService's own defaults (see that class's _load_default_store()/
     _load_default_embedding_provider()), not a mock. Deliberately slow/one-time (embedding model
-    + Chroma collection load) -- built once, reused for every case in the dataset."""
+    + Chroma collection load) -- built once, reused for every case in the dataset.
+
+    BUG FIX (code review): this used to omit `reranker=`/`hybrid_search_enabled=`, so toggling
+    RAG_RERANKER_ENABLED/RAG_HYBRID_SEARCH_ENABLED in production silently stopped being reflected
+    here -- this script's own docstring claim of matching "AskJanMitraService's own defaults" is
+    only actually true once both are wired the same way."""
     from backend.services.answer_generation_service import AnswerGenerationService
+    from backend.services.ask_janmitra_service import AskJanMitraService
     from backend.services.embedding_provider import SentenceTransformerEmbeddingProvider
     from backend.services.rag_retriever import RagRetriever
     from backend.services.vector_store import ChromaVectorStore
@@ -91,7 +97,13 @@ def _build_pipeline():
     provider.load()
     store = ChromaVectorStore(settings.CHROMA_PERSIST_DIR, settings.CHROMA_COLLECTION_NAME)
     store.load()
-    retriever = RagRetriever(store, provider, top_k=settings.RAG_TOP_K, relevance_threshold=settings.RAG_EMBEDDING_RELEVANCE_THRESHOLD)
+    retriever = RagRetriever(
+        store, provider,
+        top_k=settings.RAG_TOP_K,
+        relevance_threshold=settings.RAG_EMBEDDING_RELEVANCE_THRESHOLD,
+        reranker=AskJanMitraService._load_default_reranker(),
+        hybrid_search_enabled=settings.RAG_HYBRID_SEARCH_ENABLED,
+    )
     answer_service = AnswerGenerationService()
     return retriever, answer_service
 

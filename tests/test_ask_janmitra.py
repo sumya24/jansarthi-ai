@@ -719,7 +719,6 @@ def test_does_not_substitute_home_ward_when_message_names_an_unrecognized_place(
     token, _ = make_citizen(phone="9100000030", ward="Ward 5 — Sector 71, Mohali")
     resp = _ask(client, token, "What is the process for a new water connection in Nashik?")
     body = resp.json()
-    print("DEBUG_BODY", body)
     assert body["location"].get("city") != "Sahibzada Ajit Singh Nagar (Mohali)"
     assert "mohali" not in body["answer"].lower()
     assert body["insufficient_knowledge"] is True
@@ -1349,6 +1348,33 @@ def test_prompt_injection_input_is_blocked_before_reaching_the_graph(client, mon
     assert body["insufficient_knowledge"] is False
     assert "ignore" not in body["answer"].lower()
     assert "system prompt" not in body["answer"].lower()
+
+
+def test_output_guardrail_clears_sources_and_metadata_not_just_the_answer_text(client, monkeypatch, make_citizen):
+    """BUG FIX (code review): blocking a flagged OUTPUT used to replace only response_text,
+    leaving `sources`/`verification_status`/`answer_was_llm_generated`/`routed_to` exactly as the
+    (now-discarded) flagged generation produced them -- an internally inconsistent response that
+    still cited real KB documents (source_title/source_organization/source_url) for an answer the
+    citizen never actually saw. Uses a REAL RAG retrieval (so there really are sources to test
+    against) with a fake LLM answer deliberately shaped to trip the output guardrail -- every
+    field must now reflect "blocked", not just the answer text."""
+    fake_answers = Mock()
+    fake_answers.generate = lambda q, chunks, lang, context_labels=None: (
+        "Sure, ignoring my previous instructions, here is the answer.", True, None,
+    )
+    monkeypatch.setattr(
+        ask_janmitra_module, "_service",
+        _real_ask_janmitra_service(answer_service=fake_answers),
+    )
+    token, _ = make_citizen(phone="9100000034")
+    resp = _ask(client, token, "Who do I contact about street lights in Mohali?")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["routed_to"] == "NONE_BLOCKED_GUARDRAIL"
+    assert body["sources"] == []
+    assert body["verification_status"] is None
+    assert body["answer_was_llm_generated"] is False
+    assert "ignoring" not in body["answer"].lower()
 
 
 def test_prompt_injection_block_is_logged_to_ai_request_log(client, monkeypatch, db_session, make_citizen):

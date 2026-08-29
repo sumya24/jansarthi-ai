@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from functools import lru_cache
 
 # Case-insensitive; each pattern targets one well-documented injection/jailbreak shape rather than
 # one exact phrase, so common rewordings ("ignore all prior instructions", "please disregard the
@@ -102,19 +103,38 @@ def check_input(text: str) -> GuardrailResult:
     return GuardrailResult(flagged=False)
 
 
-def _contains_verbatim_leak(text: str, source: str, window: int = 40, step: int = 20) -> bool:
+@lru_cache(maxsize=4)
+def _normalize_for_leak_check(source: str) -> str:
+    """Whitespace-normalized, lowercased form of `source`, cached per distinct source string.
+
+    BUG FIX (code review, efficiency): this app calls `check_output()` with the SAME system-prompt
+    text on every single Ask Sarthi request (see `ask_janmitra_service.py`'s module-level
+    `_ASK_JANMITRA_SYSTEM_PROMPT`, loaded once at import time) -- recomputing this normalization
+    from scratch per request was pure redundant work. `maxsize=4` is generous headroom, not a real
+    limit; this app only ever has one real system prompt in practice."""
+    return " ".join(source.split()).lower()
+
+
+def _contains_verbatim_leak(text: str, source: str, window: int = 40) -> bool:
     """True if any `window`-character run of `source` (whitespace-normalized, so line-wrapping in
     the prompt file doesn't defeat this) appears verbatim inside `text`. A real, direct structural
     check for system-prompt disclosure -- no NLP/embedding similarity needed, since a genuine leak
-    reproduces the prompt's own wording exactly, not a paraphrase of it."""
-    normalized_source = " ".join(source.split())
-    normalized_text = " ".join(text.split())
+    reproduces the prompt's own wording exactly, not a paraphrase of it.
+
+    BUG FIX (code review): this used to slide the window in 20-character steps, which left real
+    gaps -- a verbatim leak between `window` and `window + step - 1` (i.e. 40-58) characters long,
+    starting at an offset not aligned to that step, could fall entirely between two checked
+    windows and go undetected (confirmed directly: a 45-character verbatim leak at an unaligned
+    offset was NOT caught by the old step=20 version). Now checks every possible offset -- `source`
+    is a bounded, short string (this app's own system prompt, at most a few KB), so the extra cost
+    is trivial and the normalization itself is cached (see `_normalize_for_leak_check`), so this
+    isn't even recomputed per request."""
+    normalized_source = _normalize_for_leak_check(source)
+    normalized_text = " ".join(text.split()).lower()
     if len(normalized_source) < window:
-        return normalized_source.lower() in normalized_text.lower() if normalized_source else False
-    normalized_text_lower = normalized_text.lower()
-    for start in range(0, len(normalized_source) - window + 1, step):
-        chunk = normalized_source[start : start + window].lower()
-        if chunk in normalized_text_lower:
+        return normalized_source in normalized_text if normalized_source else False
+    for start in range(0, len(normalized_source) - window + 1):
+        if normalized_source[start : start + window] in normalized_text:
             return True
     return False
 

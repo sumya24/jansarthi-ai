@@ -145,6 +145,23 @@ def test_check_output_does_not_flag_coincidental_short_overlap_with_the_system_p
     assert not result.flagged
 
 
+def test_check_output_catches_a_mid_length_verbatim_leak_at_an_unaligned_offset():
+    """BUG FIX (code review): the old sliding window (40-char window, 20-char step) only checked
+    offsets 0, 20, 40, ... -- a verbatim leak of length L starting at an offset NOT aligned to
+    that grid could fall entirely between two checked windows and go undetected whenever
+    L < 59. Here a real 45-character verbatim run of the system prompt starts at offset 10 (not a
+    multiple of 20) -- under the old step=20 scan, no 40-char window is ever fully contained
+    within the leaked span [10, 55), so it slipped through; the fix (checking every offset) must
+    catch it."""
+    system_prompt = "X" * 10 + "You are Ask Sarthi, a civic assistant for citizens." + "Y" * 200
+    leaked_fragment = system_prompt[10:55]  # exactly 45 characters, offset 10
+    assert len(leaked_fragment) == 45
+    leaked_answer = f"Sure, here you go: {leaked_fragment} -- hope that helps!"
+    result = check_output(leaked_answer, system_prompt=system_prompt)
+    assert result.flagged
+    assert "leak" in result.reason
+
+
 def test_check_output_with_no_system_prompt_only_checks_injection_markers():
     result = check_output("A perfectly normal civic answer about drainage repair.", system_prompt=None)
     assert not result.flagged

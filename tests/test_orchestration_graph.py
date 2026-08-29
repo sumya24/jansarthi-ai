@@ -473,6 +473,49 @@ def test_agent_flow_node_combines_per_category_answers_and_merges_sources():
     source_ids = {s["source_id"] for s in result["sources"]}
     assert source_ids == {"WASTE_SRC", "ROADS_SRC"}
     assert result["verification_status"] == "MIXED"
+    # BUG FIX (code review): agent_flow_node was missing the same "Report Issue" in-app note
+    # rag_flow_node appends for a single-category answer -- a real, live quality gap between the
+    # two paths for what should be an equivalent citizen experience.
+    assert "Report Issue" in result["response_text"]
+
+
+def test_agent_flow_node_skips_the_report_issue_note_when_every_category_is_insufficient():
+    """Matches rag_flow_node's own gate -- nothing to "also report" if nothing was actually
+    answered at all."""
+    fake_retriever = Mock()
+    fake_retriever.retrieve = Mock(return_value=RetrievalOutcome(insufficient_knowledge=True, reason="none"))
+    deps = _minimal_graph_deps(retriever=fake_retriever)
+    config = {"configurable": {"deps": deps}}
+    state = {
+        "normalized_message": "There is garbage piling up and also a pothole on my street.",
+        "response_language": "en",
+    }
+
+    result = agent_flow_node(state, config)
+
+    assert "Report Issue" not in result["response_text"]
+
+
+def test_agent_flow_node_skips_the_report_issue_note_for_a_new_connection_question():
+    waste_chunk = ScoredChunk(
+        chunk_id="w1", score=0.9,
+        metadata={"content": "Garbage is collected every Tuesday.", "source_id": "WASTE_SRC", "verification_status": "VERIFIED"},
+    )
+    fake_retriever = Mock()
+    fake_retriever.retrieve = Mock(return_value=RetrievalOutcome(results=[waste_chunk]))
+    fake_answer_service = Mock()
+    fake_answer_service.generate = Mock(return_value=("Garbage is collected every Tuesday.", True, None))
+    deps = _minimal_graph_deps(retriever=fake_retriever, answer_service=fake_answer_service)
+    config = {"configurable": {"deps": deps}}
+    state = {
+        "normalized_message": "There is garbage piling up and also a pothole on my street.",
+        "response_language": "en",
+        "requests_new_connection": True,
+    }
+
+    result = agent_flow_node(state, config)
+
+    assert "Report Issue" not in result["response_text"]
 
 
 def test_agent_flow_node_is_only_insufficient_when_every_category_has_nothing():

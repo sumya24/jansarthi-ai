@@ -74,8 +74,10 @@ def _load_dataset_cases() -> list[dict]:
 
 def _build_pipeline():
     """Builds the real, current production RAG components -- see
-    scripts/langsmith_rag_evaluation.py's own `_build_pipeline()` docstring, identical here."""
+    scripts/langsmith_rag_evaluation.py's own `_build_pipeline()` docstring, identical here
+    (including its `reranker=`/`hybrid_search_enabled=` code-review fix)."""
     from backend.services.answer_generation_service import AnswerGenerationService
+    from backend.services.ask_janmitra_service import AskJanMitraService
     from backend.services.embedding_provider import SentenceTransformerEmbeddingProvider
     from backend.services.rag_retriever import RagRetriever
     from backend.services.vector_store import ChromaVectorStore
@@ -84,7 +86,13 @@ def _build_pipeline():
     provider.load()
     store = ChromaVectorStore(settings.CHROMA_PERSIST_DIR, settings.CHROMA_COLLECTION_NAME)
     store.load()
-    retriever = RagRetriever(store, provider, top_k=settings.RAG_TOP_K, relevance_threshold=settings.RAG_EMBEDDING_RELEVANCE_THRESHOLD)
+    retriever = RagRetriever(
+        store, provider,
+        top_k=settings.RAG_TOP_K,
+        relevance_threshold=settings.RAG_EMBEDDING_RELEVANCE_THRESHOLD,
+        reranker=AskJanMitraService._load_default_reranker(),
+        hybrid_search_enabled=settings.RAG_HYBRID_SEARCH_ENABLED,
+    )
     answer_service = AnswerGenerationService()
     return retriever, answer_service
 

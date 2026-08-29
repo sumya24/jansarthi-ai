@@ -1501,10 +1501,22 @@ def agent_flow_node(state: GraphState, config: RunnableConfig) -> dict[str, Any]
     statuses = {s["verification_status"] for s in all_sources}
     overall_status = "MIXED" if len(statuses) > 1 else next(iter(statuses), None)
 
+    response_text = "\n\n".join(sections)
+    # BUG FIX (code review): this node was missing the same "Report Issue" in-app note
+    # rag_flow_node appends (see that node's own "PRODUCT GAP FIX" comment) -- a real, live
+    # inconsistency where a multi-category question got a lower-quality answer than the
+    # identical sub-question asked alone. Same two gates rag_flow_node uses: skipped for a "new
+    # connection" question (not a "problem" this app's Report Issue flow handles), and skipped
+    # when every category came back insufficient (nothing to "also report" if nothing was
+    # actually answered) -- appended once for the whole combined answer, not per-section.
+    if not state.get("requests_new_connection") and not insufficient_knowledge:
+        in_app_note = "You can also report this directly through JanSarthi AI using the \"Report Issue\" option."
+        response_text = f"{response_text}\n\n{_localize(in_app_note, state, config)}"
+
     tracing.end_run(agent_span, outputs={"category_count": len(categories), "source_count": len(all_sources)})
 
     return {
-        "response_text": "\n\n".join(sections),
+        "response_text": response_text,
         "sources": all_sources,
         "verification_status": overall_status,
         "routed_to": "RAG_MULTI_CATEGORY",

@@ -46,6 +46,7 @@ keeps working exactly as before.
 from __future__ import annotations
 
 import logging
+import threading
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -127,6 +128,16 @@ class RagRetriever:
         # Capped (see _widen_with_bm25) so an unusual flood of distinct filters can't grow this
         # unboundedly over a very long-running process.
         self._bm25_cache: dict[Any, tuple[Any, list[tuple[str, str, dict[str, Any]]]] | None] = {}
+        # BUG FIX (code review): agent_flow_node now calls retrieve() concurrently across
+        # categories (see nodes.py's ThreadPoolExecutor) against this SAME shared RagRetriever
+        # instance -- without a lock, two threads could race to build the same filter's BM25
+        # index simultaneously (wasted duplicate work, not a correctness bug on its own), or one
+        # thread's overflow-triggered `self._bm25_cache.clear()` could wipe an entry another
+        # thread just inserted. A single lock around the whole check-build-write sequence in
+        # `_get_or_build_bm25_index()` closes both -- held only briefly (a dict lookup, or one
+        # BM25 build), never across a network call, so this doesn't reintroduce the serialization
+        # the ThreadPoolExecutor fix exists to avoid.
+        self._bm25_cache_lock = threading.Lock()
 
     def retrieve(
         self,
@@ -203,16 +214,47 @@ class RagRetriever:
         # results within a small band of the top score, prefer VERIFIED over SYNTHETIC -- never
         # lets a SYNTHETIC chunk outrank a near-equally-relevant VERIFIED one, without ever
         # promoting a SYNTHETIC chunk that scored meaningfully lower.
+        ce_scores = None
         if self._reranker is not None and len(above_threshold) > 1:
-            ce_scores = self._reranker.score(query, [c.metadata.get("content", "") for c in above_threshold])
+            try:
+                ce_scores = self._reranker.score(query, [c.metadata.get("content", "") for c in above_threshold])
+            except Exception as exc:
+                # BUG FIX (code review): CrossEncoderReranker.score() has no exception handling of
+                # its own (a lazy model load can fail -- no network egress to the HuggingFace hub,
+                # a transient download failure, OOM loading the model -- and `model.predict()`
+                # itself could raise), and this call site previously had none either, contradicting
+                # `RetrievalOutcome`'s own documented "always returned, never raises" contract and
+                # this codebase's established fail-open pattern for every other optional AI
+                # dependency (Phoenix tracing, translation fallback, TTS chunking,
+                # AnswerGenerationService's own fallback). A reranker failure now degrades to the
+                # heuristic-only rerank below for this one request, instead of turning an unrelated
+                # RAG-retrieval success into an unhandled 500.
+                logger.warning(
+                    "RAG retrieval: reranker failed (%s: %s) -- falling back to the heuristic-only "
+                    "rerank for this request",
+                    type(exc).__name__, exc,
+                )
+                ce_scores = None
+
+        if ce_scores is not None:
             rank_scores = dict(zip((c.chunk_id for c in above_threshold), ce_scores))
             top_score = max(ce_scores)
             # The cross-encoder's raw output isn't bounded to a fixed range the way cosine
             # similarity is, so a fixed absolute band (0.03) has no meaning here -- use a fraction
             # of THIS result set's own score spread instead, same intent (near-top, not
             # meaningfully lower) in whatever scale this model happens to produce.
+            #
+            # BUG FIX (code review): capped at 2.0 -- an uncapped `0.1 * spread` is stretched by
+            # ANY single extreme outlier anywhere in `above_threshold` (e.g. one candidate the
+            # cross-encoder rates very poorly), which could make the "near-top" band wide enough
+            # for a VERIFIED chunk scoring meaningfully lower than the true top to still qualify
+            # for the tie-breaker bonus -- breaking the exact "never promotes a chunk that scored
+            # meaningfully lower" guarantee this mechanism exists for. 2.0 is a generous fraction
+            # of this cross-encoder's typical real output range (roughly -11 to +11 for
+            # ms-marco-MiniLM-L-6-v2) -- comfortably wider than genuine near-top clustering, but
+            # narrow enough to still mean "near-top", not "anywhere in this result set".
             spread = top_score - min(ce_scores)
-            band = 0.1 * spread if spread > 0 else 0.0
+            band = min(0.1 * spread, 2.0) if spread > 0 else 0.0
         else:
             rank_scores = {c.chunk_id: c.score for c in above_threshold}
             # BUG FIX (code review): `above_threshold[0]` was the top score back when this list
@@ -272,26 +314,27 @@ class RagRetriever:
         to widen with, ever, for this filter). See `self._bm25_cache`'s own docstring (in
         `__init__`) for why caching this is safe and worthwhile."""
         cache_key = tuple(sorted(metadata_filter.items())) if metadata_filter else None
-        cached = self._bm25_cache.get(cache_key)
-        if cached is not None:
-            return cached
+        with self._bm25_cache_lock:
+            cached = self._bm25_cache.get(cache_key)
+            if cached is not None:
+                return cached
 
-        if len(self._bm25_cache) >= self._BM25_CACHE_MAX_ENTRIES:
-            logger.warning(
-                "RAG retrieval: BM25 index cache hit its %d-entry cap -- clearing (see "
-                "_widen_with_bm25's own comment; this is not expected in normal operation)",
-                self._BM25_CACHE_MAX_ENTRIES,
-            )
-            self._bm25_cache.clear()
+            if len(self._bm25_cache) >= self._BM25_CACHE_MAX_ENTRIES:
+                logger.warning(
+                    "RAG retrieval: BM25 index cache hit its %d-entry cap -- clearing (see "
+                    "_widen_with_bm25's own comment; this is not expected in normal operation)",
+                    self._BM25_CACHE_MAX_ENTRIES,
+                )
+                self._bm25_cache.clear()
 
-        pool_texts = self._store.get_candidate_texts(metadata_filter)
-        if not pool_texts:
-            result = (None, [])
-        else:
-            corpus_tokens = [tokenize(content) for _, content, _ in pool_texts]
-            result = (BM25Okapi(corpus_tokens), pool_texts)
-        self._bm25_cache[cache_key] = result
-        return result
+            pool_texts = self._store.get_candidate_texts(metadata_filter)
+            if not pool_texts:
+                result = (None, [])
+            else:
+                corpus_tokens = [tokenize(content) for _, content, _ in pool_texts]
+                result = (BM25Okapi(corpus_tokens), pool_texts)
+            self._bm25_cache[cache_key] = result
+            return result
 
     def _widen_with_bm25(
         self,
