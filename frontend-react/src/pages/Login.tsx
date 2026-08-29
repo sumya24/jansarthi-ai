@@ -41,7 +41,11 @@ export default function Login() {
     try {
       const { access_token, refresh_token, user } = await api.login({ identifier: identifier.trim(), password });
       setSession(access_token, refresh_token, user);
-      navigate(from || (user.role === "citizen" ? "/citizen" : user.role === "worker" ? "/worker" : "/admin"));
+      // replace: true -- without it, "/login" itself stayed in browser history underneath the
+      // page we just landed on, so pressing Back right after signing in went to the login form
+      // instead of wherever it should logically go (previous page, or nothing at all if this was
+      // a fresh tab). Applies to every role via the ternary above, not just citizens.
+      navigate(from || (user.role === "citizen" ? "/citizen" : user.role === "worker" ? "/worker" : "/admin"), { replace: true });
     } catch (err) {
       setFormError(err instanceof ApiError ? err.message : t(lang, "common.somethingWrong"));
     } finally {

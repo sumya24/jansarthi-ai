@@ -61,7 +61,9 @@ export default function ForgotPassword() {
     setSubmitting(true);
     try {
       await api.resetPassword({ email: email.trim(), code: code.trim(), new_password: newPassword });
-      navigate("/login", { state: { passwordReset: true } });
+      // replace: true -- same reasoning as Login.tsx's post-login navigate: without it, Back from
+      // the login page re-opened the (already-used) reset-code form instead of leaving the flow.
+      navigate("/login", { state: { passwordReset: true }, replace: true });
     } catch (err) {
       setFormError(err instanceof ApiError ? err.message : t(lang, "common.somethingWrong"));
     } finally {

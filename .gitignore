@@ -2,6 +2,9 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+# Isolated venv for the local Arize Phoenix SERVER only -- never installed into the main project
+# env, see PHOENIX_TRACING_PLAN.md for why.
+.phoenix-venv/
 .env
 *.db
 *.db.bak-*

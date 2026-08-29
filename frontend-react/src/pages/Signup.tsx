@@ -89,7 +89,10 @@ export default function Signup() {
         ward: homeLocation.ward.trim(),
       });
       setSession(access_token, refresh_token, user);
-      navigate("/citizen");
+      // replace: true -- same reasoning as Login.tsx's own post-login navigate: without it,
+      // the signup form stayed in history underneath the new account's Home, so Back re-opened
+      // an already-submitted signup form instead of leaving the app.
+      navigate("/citizen", { replace: true });
     } catch (err) {
       setFormError(err instanceof ApiError ? err.message : t(lang, "common.somethingWrong"));
     } finally {

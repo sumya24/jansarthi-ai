@@ -19,7 +19,7 @@ import logging
 import re
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -27,10 +27,13 @@ from sqlalchemy.orm import Session
 from backend.config import settings
 from backend.database import get_db
 from backend.deps import (
+    clear_auth_cookies,
+    extract_refresh_token,
     get_current_user,
     require_login_rate_limit,
     require_otp_rate_limit,
     require_signup_rate_limit,
+    set_auth_cookies,
 )
 from backend.models import District, Locality, State, ULB, User, Ward
 from backend.services.auth_service import (
@@ -180,18 +183,22 @@ class LoginRequest(BaseModel):
 
 
 class RefreshRequest(BaseModel):
-    """Request body for POST /auth/refresh."""
+    """Request body for POST /auth/refresh. refresh_token is optional -- a real browser session
+    never has JS-level access to it at all (it lives only in the httpOnly refresh_token cookie,
+    see deps.set_auth_cookies) and calls this with an empty body, relying on that cookie instead;
+    an explicit value here is for tests/manual API use (see deps.extract_refresh_token)."""
 
-    refresh_token: str
+    refresh_token: str | None = None
 
 
 class LogoutRequest(BaseModel):
     """Request body for POST /auth/logout. No auth dependency on that route -- the refresh
     token itself is already sufficient proof of ownership to revoke just itself, and requiring a
     still-valid access token too would make logout needlessly fail for the realistic case of a
-    citizen returning to a stale tab whose access token already expired."""
+    citizen returning to a stale tab whose access token already expired. refresh_token is optional
+    for the same reason as RefreshRequest above -- a browser session relies on the cookie."""
 
-    refresh_token: str
+    refresh_token: str | None = None
 
 
 class ChangePasswordRequest(BaseModel):
@@ -443,7 +450,7 @@ def signup_verify_email_code(
 
 
 @router.post("/signup", response_model=AuthResponse)
-def signup(body: SignupRequest, db: Session = Depends(get_db)) -> AuthResponse:
+def signup(body: SignupRequest, response: Response, db: Session = Depends(get_db)) -> AuthResponse:
     """Create a citizen account, in one call -- but only if body.email_verification_token proves
     (see consume_signup_email_verification) that POST /auth/signup/email/send-code and
     POST /auth/signup/email/verify-code were already completed for body.email.
@@ -509,11 +516,12 @@ def signup(body: SignupRequest, db: Session = Depends(get_db)) -> AuthResponse:
 
     access_token = create_access_token(user)
     refresh_token = create_refresh_token(user, db)
+    set_auth_cookies(response, access_token, refresh_token)
     return AuthResponse(access_token=access_token, refresh_token=refresh_token, user=UserResponse.model_validate(user))
 
 
 @router.post("/login", response_model=AuthResponse, dependencies=[Depends(require_login_rate_limit)])
-def login(body: LoginRequest, db: Session = Depends(get_db)) -> AuthResponse:
+def login(body: LoginRequest, response: Response, db: Session = Depends(get_db)) -> AuthResponse:
     """Log in with a phone number OR a verified email, plus password, for any role.
 
     Rate-limited per client IP (see backend/deps.py's require_login_rate_limit) -- counts every
@@ -535,11 +543,12 @@ def login(body: LoginRequest, db: Session = Depends(get_db)) -> AuthResponse:
     logger.info("User logged in (user_id=%s, role=%s)", user.id, user.role)
     access_token = create_access_token(user)
     refresh_token = create_refresh_token(user, db)
+    set_auth_cookies(response, access_token, refresh_token)
     return AuthResponse(access_token=access_token, refresh_token=refresh_token, user=UserResponse.model_validate(user))
 
 
 @router.post("/refresh", response_model=AuthResponse)
-def refresh(body: RefreshRequest, db: Session = Depends(get_db)) -> AuthResponse:
+def refresh(body: RefreshRequest, request: Request, response: Response, db: Session = Depends(get_db)) -> AuthResponse:
     """Redeem a refresh token for a new short-lived access token, rotating the refresh token in
     the process (see services/auth_service.py's rotate_refresh_token for the rotation/reuse-
     detection design). Deliberately not rate-limited the way /login is -- a legitimate client
@@ -547,20 +556,29 @@ def refresh(body: RefreshRequest, db: Session = Depends(get_db)) -> AuthResponse
     401-triggered silent-refresh), which is a fundamentally different traffic shape from a
     human/script guessing credentials.
     """
-    result = rotate_refresh_token(db, body.refresh_token)
+    token = extract_refresh_token(request, body.refresh_token)
+    if token is None:
+        raise HTTPException(status_code=401, detail="Invalid or expired refresh token. Please log in again.")
+    result = rotate_refresh_token(db, token)
     if result is None:
         raise HTTPException(status_code=401, detail="Invalid or expired refresh token. Please log in again.")
     user, access_token, refresh_token = result
+    set_auth_cookies(response, access_token, refresh_token)
     return AuthResponse(access_token=access_token, refresh_token=refresh_token, user=UserResponse.model_validate(user))
 
 
 @router.post("/logout", status_code=204)
-def logout(body: LogoutRequest, db: Session = Depends(get_db)) -> None:
+def logout(body: LogoutRequest, request: Request, response: Response, db: Session = Depends(get_db)) -> None:
     """Real, server-side logout -- revokes the refresh token so it can never be redeemed again,
     unlike the old client-side-only "clear localStorage" logout (under which a captured token
     stayed valid until its natural expiry regardless). See LogoutRequest's own docstring for why
-    this route has no auth dependency of its own."""
-    revoke_refresh_token(db, body.refresh_token)
+    this route has no auth dependency of its own. Always clears the auth cookies regardless of
+    whether a token was found to revoke -- the citizen's intent (leave, don't stay logged in on
+    this browser) is the same either way."""
+    token = extract_refresh_token(request, body.refresh_token)
+    if token is not None:
+        revoke_refresh_token(db, token)
+    clear_auth_cookies(response)
 
 
 @router.post("/change-password", status_code=204)
