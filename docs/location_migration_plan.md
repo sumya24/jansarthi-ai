@@ -439,3 +439,52 @@ migration machinery are solid and well-tested; the *data* backing them (6 cities
 geocoding provider (a free, rate-limited, non-official service) are both explicitly
 prototype-grade, and are reported as such everywhere in this document rather than implied to be
 more complete than they are.
+
+---
+
+# Follow-Up Update (2026-08-29)
+
+Several items the finalization pass above marked `FUTURE WORK` or "6 cities" have since shipped,
+in later sessions. Appended rather than rewriting the table above, so the finalization pass stays
+an accurate record of what was true *at that time* — this section is the current state.
+
+**What changed:**
+
+- **City coverage: 6 → 18 cities, still all real data.** Gujarat, Karnataka, Maharashtra, Tamil
+  Nadu, Uttar Pradesh, and West Bengal each now have 3 real cities seeded (originally 1 each),
+  every ward and worker backed by the same real district/ULB/ward data this migration's provenance
+  discipline already required — nothing fabricated, city-by-city expansion exactly as
+  [§15](#15-recommended-next-phase) recommended.
+- **"Admin UI for structured worker ward assignment" is now IMPLEMENTED, not future work.**
+  `AddWorkerModal.tsx` uses the real `WorkerLocationPicker` cascading picker (state → city → ward),
+  not free text, when creating a worker.
+- **"Citizen home-location profile UI" is now IMPLEMENTED, not future work.** `HomeLocationPicker`
+  is used both at signup (`Signup.tsx`) and later in Settings (`SettingsModal.tsx`) — a citizen can
+  set and change a real, structured home ward, not just free text.
+- **Every location picker across the app (Signup, Settings, Add/Edit Worker) is now scoped to only
+  states/cities/wards that have a real assigned worker** — previously these cascaded over the
+  *entire* imported master dataset (India-wide, 90,000+ rows), which was honest but overwhelming
+  (e.g. a single district with several municipalities could show 400+ wards, almost none of them
+  actually routable). `backend/routes/locations.py`'s `_worker_backed_ward_ids()` now filters every
+  step of the cascade to only what's actually serviceable — this is a UX narrowing, not a data
+  change; the full master dataset is untouched and still backs `GET /locations/wards/{id}/localities`.
+- **Report an Issue's manual ward dropdown is now scoped to the citizen's own city**
+  (`frontend-react/src/lib/wardFilter.ts`), instead of one flat list of every serviceable ward
+  nationwide — city-aware matching (handles a real Karnataka case: "Bengaluru Urban", the district
+  name from the structured picker, vs. plain "Bengaluru", the ULB name every ward string ends in),
+  with a verified (not exact-string) pre-fill so a citizen's own ward is safely pre-selected when
+  it's genuinely present in the scoped list.
+- **A new, separate, always-optional Area/Address free-text field** was added to Report an Issue,
+  distinct from the Ward field, mapping to `Complaint.address` (which already existed but had no
+  citizen-facing input for it before). Once a real ward is picked, it also offers real-locality
+  autocomplete suggestions (via `GET /locations/wards/resolve` + `GET /locations/wards/{id}/localities`)
+  where that data exists — never a forced choice, the field stays plain free text either way.
+- **`/complaints/by-service`, which 500'd on any complaint with a null `service_category`,** is
+  fixed to skip such rows instead of crashing — unrelated to this migration's own scope, but found
+  and fixed while working in this area.
+
+**Still true, unchanged from the finalization pass above:** distance-based/AI worker assignment
+and worker GPS tracking remain not implemented; the RAG knowledge base stays denormalized text,
+not linked to the structured hierarchy tables; the geocoding provider is still the same free,
+non-official Nominatim instance. This system is still not "production ready" by the same standard
+stated above — it now just covers 18 cities honestly instead of 6.

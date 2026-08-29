@@ -23,7 +23,13 @@ The honest trade-off, worth being able to state in an interview: an ORM adds a l
 
 ## 2. The schema, table by table
 
-All four tables live in [`backend/models.py`](../backend/models.py), each as a Python class inheriting from `Base` (SQLAlchemy's declarative base — the thing that turns a plain class into something that maps to a real database table).
+**This started as four tables** (`users`, `complaints`, `complaint_rejections`, `complaint_translations`) and has since grown to **22**, as [`backend/models.py`](../backend/models.py) grew with the app — location hierarchy tables, a fuller complaint lifecycle, notifications, AI observability, and auth all arrived later. Each is a Python class inheriting from `Base` (SQLAlchemy's declarative base — the thing that turns a plain class into something that maps to a real database table). The original four below are still the ones most worth understanding deeply for an interview — the reasoning behind them (single-table-inheritance, caching, no `relationship()`) applies just as much to everything added since. The newer groups are summarized after them rather than given the same essay-length treatment each, since most of them are straightforward extensions of the same patterns already explained here.
+
+**Newer table groups, briefly:**
+- **Location hierarchy** — `states`, `districts`, `sub_districts`, `ulbs`, `zones`, `wards`, `localities`: a real, ID-based `state → district → sub_district → ulb → zone → ward → locality` chain (see [`docs/location_migration_plan.md`](location_migration_plan.md)), added so a ward/city could be referenced by a stable ID instead of only ever a free-text string. `users.ward` and `complaints.ward` (the original free-text columns) are kept alongside the new `*_id` columns for backward compatibility — nothing about §2's original two tables was removed, only added to.
+- **Fuller complaint lifecycle** — `complaint_status_history` (an audit trail of every status transition), `complaint_updates` + `complaint_update_translations` (a worker's initial assessment/progress notes/completion note, and their cached translations — same caching pattern as [§4](#4-the-translation-cache--a-real-caching-pattern)), `complaint_evidence` (one row per attached photo, replacing the original single `photo_path` column with support for multiple photos per complaint or update).
+- **Notifications & AI observability** — `notifications` (in-app alerts for workers/citizens), `rag_answer_cache` (the same "compute once, cache, serve from cache" pattern as [§4](#4-the-translation-cache--a-real-caching-pattern), applied to Ask Sarthi's AI-generated answers), `ai_request_logs` + `ai_alert_states` (per-request cost/latency/error logging and alerting for the AI monitoring dashboard).
+- **Auth** — `refresh_tokens` (backs the rotation/reuse-detection scheme described in [`docs/AUTHENTICATION.md`](AUTHENTICATION.md#5b-refresh-token-rotation-and-reuse-detection)), `email_otps` + `signup_email_verifications` (one-time codes for email verification, separate from the phone+password login itself).
 
 ### `users`
 
@@ -36,7 +42,7 @@ Every account — citizen, worker, or admin — is one row here, distinguished b
 The core record. Two important design choices baked into its columns:
 
 - **Both `original_text` and `translated_text` are stored, permanently, side by side.** `original_text` is exactly what the citizen wrote or said, in their own language, and it is *never* modified after creation — it's the source-of-truth record of what was actually reported. `translated_text` is the canonical English version everything downstream (summaries, further translations) is built from. Keeping both, rather than translating-and-discarding the original, matters for trust: if a translation is ever wrong, there's still an unaltered record of what the citizen actually said.
-- **`status` is a plain string column** (`"pending"` / `"assigned"` / `"accepted"` / `"resolved"`), not a foreign key to a separate `statuses` table. For a small, fixed set of states known at build time, a string (or in a stricter setup, a database `ENUM`) is the standard, simple choice — a separate table would only pay off if statuses needed to be added/configured at runtime, which they don't here.
+- **`status` is a plain string column** (`"pending"` / `"assigned"` / `"accepted"` / `"in_progress"` / `"resolved"`), not a foreign key to a separate `statuses` table. For a small, fixed set of states known at build time, a string (or in a stricter setup, a database `ENUM`) is the standard, simple choice — a separate table would only pay off if statuses needed to be added/configured at runtime, which they don't here.
 
 ### `complaint_rejections`
 
