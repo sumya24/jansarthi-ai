@@ -59,6 +59,7 @@ test("worker notification bell, detail-page card rules per status, report visibi
     await page.getByLabel("Full name").fill(name);
     await page.getByLabel("Phone number").fill(phone);
     await page.getByLabel("Temporary password").fill("workerpass123");
+    await page.getByLabel("Confirm password").fill("workerpass123");
     await page.getByLabel("Assign to ward").fill(ward);
     await page.getByRole("button", { name: "English", exact: true }).click();
     await page.getByRole("button", { name: "Add worker", exact: true }).click();
@@ -88,7 +89,10 @@ test("worker notification bell, detail-page card rules per status, report visibi
   await page.getByPlaceholder(/Garbage not collected/).fill("Overflowing garbage bin near the bus stop.");
   await page.getByRole("button", { name: "Next" }).click();
   await page.getByRole("button", { name: "Next" }).click();
-  await expect(page.getByText(/Development preview/)).toBeVisible({ timeout: 3000 });
+  // AI Understanding step's badge text depends on which classification layer succeeded (real
+  // model vs. keyword fallback, see ReportIssue.tsx) -- assert on the stable .dev-badge class
+  // instead of either layer's specific wording.
+  await expect(page.locator(".dev-badge")).toBeVisible({ timeout: 3000 });
   await page.getByRole("button", { name: "Next" }).click();
   await page.getByRole("button", { name: "Submit complaint" }).click();
   await expect(page.getByText("Complaint submitted successfully.")).toBeVisible({ timeout: 60000 });
@@ -159,7 +163,9 @@ test("worker notification bell, detail-page card rules per status, report visibi
   await expect(page.getByText("Please provide the completion status before resolving the complaint.")).toBeVisible();
   await page.getByLabel("Completion status").fill("Bin emptied and area cleaned up.");
   await page.getByRole("button", { name: "Mark Resolved", exact: true }).click();
-  await expect(page.locator(".status-badge.resolved")).toBeVisible();
+  // .first(): the status badge legitimately appears twice on this detail page (header + timeline),
+  // same reasoning as the .first() on the completion text below.
+  await expect(page.locator(".status-badge.resolved").first()).toBeVisible();
 
   // Now, and only now, the report is available -- with the real data from this run. The detail
   // page renders it inline (no separate "View Report" click needed -- it's "the central place",
@@ -199,6 +205,7 @@ test("worker rejects a complaint: admin is notified and sees the reason, citizen
   await page.getByLabel("Full name").fill("Rejecting Worker");
   await page.getByLabel("Phone number").fill(workerPhone);
   await page.getByLabel("Temporary password").fill("workerpass123");
+  await page.getByLabel("Confirm password").fill("workerpass123");
   await page.getByLabel("Assign to ward").fill(WARD);
   await page.getByRole("button", { name: "English", exact: true }).click();
   await page.getByRole("button", { name: "Add worker", exact: true }).click();
@@ -224,7 +231,10 @@ test("worker rejects a complaint: admin is notified and sees the reason, citizen
   await page.getByPlaceholder(/Garbage not collected/).fill("Streetlight has been out for a week.");
   await page.getByRole("button", { name: "Next" }).click();
   await page.getByRole("button", { name: "Next" }).click();
-  await expect(page.getByText(/Development preview/)).toBeVisible({ timeout: 3000 });
+  // AI Understanding step's badge text depends on which classification layer succeeded (real
+  // model vs. keyword fallback, see ReportIssue.tsx) -- assert on the stable .dev-badge class
+  // instead of either layer's specific wording.
+  await expect(page.locator(".dev-badge")).toBeVisible({ timeout: 3000 });
   await page.getByRole("button", { name: "Next" }).click();
   await page.getByRole("button", { name: "Submit complaint" }).click();
   await expect(page.getByText("Complaint submitted successfully.")).toBeVisible({ timeout: 60000 });

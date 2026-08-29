@@ -2,7 +2,7 @@
 
 import logging
 
-from backend.config import to_bcp47
+from backend.config import from_bcp47, to_bcp47
 from backend.services.sarvam_client import SarvamClient
 
 logger = logging.getLogger(__name__)
@@ -14,6 +14,22 @@ class TranslationService:
     def __init__(self, sarvam_client: SarvamClient | None = None) -> None:
         """Initialize the service with a SarvamClient instance (creates one if not given)."""
         self._sarvam = sarvam_client or SarvamClient()
+
+    def detect_language(self, text: str) -> str | None:
+        """Detects the actual language of `text` and maps it back to this app's short
+        SUPPORTED_LANGUAGES code -- see orchestration/nodes.py's `language_node` for the caller
+        that uses this to decide what language to answer a citizen's question in.
+
+        Returns None (never raises) whenever there's nothing usable to act on: the underlying
+        detection call failed/is unavailable (see SarvamClient.identify_language's own
+        docstring), or it correctly detected a real language this app just doesn't have
+        SUPPORTED_LANGUAGES/TTS-voice coverage for. Either way, the caller's own fallback (the
+        citizen's originally-selected language) is exactly as correct a choice as before this
+        method existed -- this is a best-effort upgrade, never a hard dependency."""
+        bcp47_code = self._sarvam.identify_language(text)
+        if bcp47_code is None:
+            return None
+        return from_bcp47(bcp47_code)
 
     def to_english(self, text: str, source_language_code: str) -> str:
         """Translate complaint text into English, the canonical storage language.

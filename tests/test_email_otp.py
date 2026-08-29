@@ -60,6 +60,51 @@ def test_send_verification_succeeds_and_sends_a_code(client, make_citizen, monke
     assert sent[0][2] == "verify_email"
 
 
+def test_email_dev_mode_skips_the_real_send_and_still_caches_the_code(client, make_citizen, monkeypatch):
+    """LIVE-REPORTED GAP: every OTP-sending route always called the real send_otp_email -- the one
+    Gmail account this app sends through hit Gmail's own daily sending-limit quota TWICE during
+    heavy local/E2E testing (see PLAYWRIGHT_TEST_REPORT.md), blocking every signup-dependent test
+    each time with no way to route around it. `EMAIL_DEV_MODE=true` must skip the real send
+    entirely (mocked here as a call-counter, same as `_fake_send_otp_email`, but this time
+    asserting it's NEVER called) while still caching the code via the existing
+    GET /auth/_dev/otp-code mechanism, so a local/E2E run never depends on Gmail's quota at all."""
+    sent = _fake_send_otp_email(monkeypatch)
+    # make_citizen's own signup flow sends its own (separately-mocked, in conftest.py) real
+    # verification email -- EMAIL_DEV_MODE must be switched on only AFTER that, or the fixture's
+    # own "a code was actually sent" assertion would fail for the same reason this test exists.
+    token, _user = make_citizen(phone="9300000099")
+    monkeypatch.setattr(settings, "EMAIL_DEV_MODE", True)
+
+    response = client.post(
+        "/auth/email/send-verification",
+        json={"email": "devmode1@example.com"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 204, response.text
+    assert sent == []  # the real send was never even attempted
+
+    dev_code = client.get("/auth/_dev/otp-code", params={"email": "devmode1@example.com"})
+    assert dev_code.status_code == 200
+    assert len(dev_code.json()["code"]) == 6
+
+
+def test_email_dev_mode_is_ignored_in_production_and_still_sends_for_real(client, make_citizen, monkeypatch):
+    """The belt-and-suspenders half of the same fix -- EMAIL_DEV_MODE=true must never suppress a
+    real send once ENVIRONMENT is production, matching _dev_cache_otp's own existing posture."""
+    sent = _fake_send_otp_email(monkeypatch)
+    token, _user = make_citizen(phone="9300000098")
+    monkeypatch.setattr(settings, "EMAIL_DEV_MODE", True)
+    monkeypatch.setattr(settings, "ENVIRONMENT", "production")
+
+    response = client.post(
+        "/auth/email/send-verification",
+        json={"email": "devmode2@example.com"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 204, response.text
+    assert len(sent) == 1  # the real send path still ran despite EMAIL_DEV_MODE being true
+
+
 def test_send_verification_requires_authentication(client, monkeypatch):
     _fake_send_otp_email(monkeypatch)
     response = client.post("/auth/email/send-verification", json={"email": "nobody@example.com"})

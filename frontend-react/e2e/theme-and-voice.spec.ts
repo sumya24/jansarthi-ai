@@ -60,15 +60,14 @@ test("citizen can switch to voice input, record a complaint, and submit it", asy
   }
   await page.getByRole("button", { name: "Next" }).click();
 
-  // Description step: text mode is the default; switching to Speak hides the textarea and
-  // shows the recorder.
+  // Description step: a single always-editable textarea -- voice and typing both write into the
+  // same field (see ReportIssue.tsx's own comment on this), no separate text/voice "mode" to
+  // switch between any more.
   await expect(page.locator("#complaint-text")).toBeVisible();
-  await page.getByRole("button", { name: "🎙️ Speak" }).click();
-  await expect(page.locator("#complaint-text")).not.toBeVisible();
 
-  // Trying to move on without recording anything shows an inline error, not a crash.
+  // Trying to move on with neither typed text nor a recording shows an inline error, not a crash.
   await page.getByRole("button", { name: "Next" }).click();
-  await expect(page.locator(".banner-error")).toContainText("Please record your complaint");
+  await expect(page.locator(".banner-error")).toContainText("Please describe the problem before submitting.");
 
   // Record a short voice note using the fake mic device configured in playwright.config.ts.
   await page.getByRole("button", { name: "🎙️ Start recording" }).click();
@@ -76,15 +75,23 @@ test("citizen can switch to voice input, record a complaint, and submit it", asy
   await page.waitForTimeout(1200);
   await page.getByRole("button", { name: "⏹ Stop" }).click();
 
-  // A playable recording and a "record again" option replace the record button.
-  await expect(page.locator("audio")).toBeVisible();
+  // Back to idle -- no separate "playable recording" UI in the current unified composer (see
+  // ReportIssue.tsx: the mic button itself just reverts once a segment is captured).
+  await expect(page.getByRole("button", { name: "🎙️ Start recording" })).toBeVisible();
   await expect(page.getByRole("button", { name: "🔁 Record again" })).toBeVisible();
+
+  // Advancing past this step at all (rather than hitting the "please describe" error again)
+  // proves a real audio segment was captured, even if the fake/silent mic device produced no
+  // live speech-to-text transcript text.
+  await page.getByRole("button", { name: "Next" }).click();
+  await expect(page.locator(".banner-error")).not.toBeVisible();
 
   // Photo step (optional, skip) -> AI Understanding (brief client-side mock, wait for it to
   // finish) -> Preview -> submit.
   await page.getByRole("button", { name: "Next" }).click();
-  await page.getByRole("button", { name: "Next" }).click();
-  await expect(page.getByText(/Development preview/)).toBeVisible({ timeout: 3000 });
+  // No .dev-badge assertion here: with a silent fake mic device, the live transcript is likely
+  // empty, so (same reasoning as evidence-upload.spec.ts's invalid-image test) the keyword
+  // fallback may legitimately find no category to badge. A category isn't required to proceed.
   await page.getByRole("button", { name: "Next" }).click();
   await page.getByRole("button", { name: "Submit complaint" }).click();
 

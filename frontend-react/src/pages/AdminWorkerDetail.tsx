@@ -1,15 +1,25 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import TopBar from "../components/TopBar";
 import StatusBadge from "../components/StatusBadge";
+import CategoryBadge from "../components/CategoryBadge";
 import ReportModal from "../components/ReportModal";
 import SummaryModal from "../components/SummaryModal";
 import DownloadReportButton from "../components/DownloadReportButton";
 import { useAuth } from "../lib/auth";
 import { useUiLang } from "../lib/uiLang";
+import { useDebouncedValue } from "../lib/useDebouncedValue";
 import { t } from "../lib/i18n";
 import { api, ApiError, type Complaint, type ComplaintStatus, type WorkerSummary } from "../lib/api";
+import SearchWithDateFilter from "../components/SearchWithDateFilter";
 import "../styles/dashboard.css";
+
+// LIVE-REPORTED GAP: this page used to fetch and render EVERY complaint ever assigned to this
+// worker in one response, then filter/paginate all of it client-side -- same gap the other
+// dashboards had (see CitizenDashboard.tsx's identical note). Status filter, search, and
+// pagination are now real backend queries (GET /complaints' own `status`/`search`/`page`/
+// `page_size` params, scoped by `worker_id`).
+const WORKER_DETAIL_PAGE_SIZE = 15;
 
 // Same reuse-existing-labels approach as AdminDashboard.tsx's own copy of this map -- see that
 // file for why (avoids a near-duplicate string for "In progress" under a new key name).
@@ -50,10 +60,31 @@ export default function AdminWorkerDetail() {
   const [reportTargetId, setReportTargetId] = useState<number | null>(null);
   const [summaryComplaint, setSummaryComplaint] = useState<Complaint | null>(null);
   const [filter, setFilter] = useState<WorkerComplaintFilter>("all");
+  const [search, setSearch] = useState("");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
+  // Decoupled from `complaints` (the filtered+paged current-page list) on purpose -- these four
+  // chip counts are meant to read as "this worker's whole history," not "whatever's on the
+  // current page" -- same reasoning as every other dashboard's stat cards/chip counts.
+  const [statusCounts, setStatusCounts] = useState<Record<Exclude<WorkerComplaintFilter, "all">, number>>({
+    assigned: 0, accepted: 0, in_progress: 0, resolved: 0,
+  });
+  const debouncedSearch = useDebouncedValue(search);
+
+  // `loading` only gates the page's initial skeleton (before the FIRST fetch resolves) -- a later
+  // reload (paging, filter chip, search, or picking a date in SearchWithDateFilter) must not flip
+  // it back to true, since the whole complaints section (including the search bar) sits behind
+  // `!loading` further down. Without this split, entering a date immediately re-triggered
+  // `load()`, which unmounted that section -- including the open date popover the admin was still
+  // typing into -- for the fetch's duration. Same fix as AdminWorkers.tsx's/
+  // AdminAiMonitoring.tsx's own isFirstLoad ref.
+  const isFirstLoad = useRef(true);
 
   async function load() {
     if (!token || !Number.isFinite(workerId)) return;
-    setLoading(true);
+    if (isFirstLoad.current) setLoading(true);
     setLoadError(null);
     try {
       // No single-worker endpoint exists yet -- the worker list is small enough (this app's own
@@ -61,28 +92,62 @@ export default function AdminWorkerDetail() {
       // it and finding the one row is simpler than adding a new endpoint for one lookup.
       const [workers, workerComplaints] = await Promise.all([
         api.listWorkers(token),
-        api.listComplaints(token, undefined, workerId),
+        api.listComplaints(token, {
+          workerId,
+          status: filter === "all" ? undefined : filter,
+          search: debouncedSearch || undefined,
+          dateFrom: dateFrom || undefined,
+          dateTo: dateTo || undefined,
+          page,
+          pageSize: WORKER_DETAIL_PAGE_SIZE,
+        }),
       ]);
-      setWorker(workers.find((w) => w.id === workerId) ?? null);
-      setComplaints(workerComplaints);
+      setWorker(workers.items.find((w) => w.id === workerId) ?? null);
+      setComplaints(workerComplaints.items);
+      setTotal(workerComplaints.total);
     } catch (err) {
       setLoadError(err instanceof ApiError ? err.message : t(lang, "admin.errLoadFailed"));
     } finally {
-      setLoading(false);
+      if (isFirstLoad.current) {
+        setLoading(false);
+        isFirstLoad.current = false;
+      }
     }
   }
+
+  async function loadStats() {
+    if (!token || !Number.isFinite(workerId)) return;
+    try {
+      const statuses = ["assigned", "accepted", "in_progress", "resolved"] as const;
+      const results = await Promise.all(
+        statuses.map((s) => api.listComplaints(token, { workerId, status: s, page: 1, pageSize: 1 }))
+      );
+      const counts = {} as Record<(typeof statuses)[number], number>;
+      statuses.forEach((s, i) => { counts[s] = results[i].total; });
+      setStatusCounts(counts);
+    } catch {
+      // Non-critical -- the chip counts just keep their last known values on a transient failure.
+    }
+  }
+
+  // A search edit or filter-chip click always jumps back to page 1 -- the previous page number
+  // almost never still makes sense against a newly-narrowed result set.
+  useEffect(() => {
+    setPage(1);
+  }, [debouncedSearch, filter, dateFrom, dateTo]);
 
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token, workerId, filter, debouncedSearch, dateFrom, dateTo, page]);
+
+  useEffect(() => {
+    loadStats();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token, workerId]);
 
-  const assignedCount = complaints.filter((c) => c.status === "assigned").length;
-  const acceptedCount = complaints.filter((c) => c.status === "accepted").length;
-  const inProgressCount = complaints.filter((c) => c.status === "in_progress").length;
-  const resolvedCount = complaints.filter((c) => c.status === "resolved").length;
-
-  const filteredComplaints = filter === "all" ? complaints : complaints.filter((c) => c.status === filter);
+  const pageCount = Math.max(1, Math.ceil(total / WORKER_DETAIL_PAGE_SIZE));
+  const totalAll = statusCounts.assigned + statusCounts.accepted + statusCounts.in_progress + statusCounts.resolved;
 
   return (
     <div>
@@ -118,30 +183,43 @@ export default function AdminWorkerDetail() {
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12, marginBottom: 30 }}>
               <div className="surface-card hoverable stat-card">
                 <div className="stat-label">{t(lang, "admin.filterAssigned")}</div>
-                <div className="display stat-value" style={{ color: "var(--status-open)" }}>{assignedCount}</div>
+                <div className="display stat-value" style={{ color: "var(--status-open)" }}>{statusCounts.assigned}</div>
               </div>
               <div className="surface-card hoverable stat-card">
                 <div className="stat-label">{t(lang, "admin.filterAccepted")}</div>
-                <div className="display stat-value" style={{ color: "var(--status-open)" }}>{acceptedCount}</div>
+                <div className="display stat-value" style={{ color: "var(--status-open)" }}>{statusCounts.accepted}</div>
               </div>
               <div className="surface-card hoverable stat-card">
                 <div className="stat-label">{t(lang, "citizen.trackInProgress")}</div>
-                <div className="display stat-value" style={{ color: "var(--status-open)" }}>{inProgressCount}</div>
+                <div className="display stat-value" style={{ color: "var(--status-open)" }}>{statusCounts.in_progress}</div>
               </div>
               <div className="surface-card hoverable stat-card">
                 <div className="stat-label">{t(lang, "admin.resolvedStat")}</div>
-                <div className="display stat-value" style={{ color: "var(--status-resolved)" }}>{resolvedCount}</div>
+                <div className="display stat-value" style={{ color: "var(--status-resolved)" }}>{statusCounts.resolved}</div>
               </div>
             </div>
 
-            <div className="section-label">
+            <div className="section-label" style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 10 }}>
               <span>{t(lang, "admin.complaintsSection")}</span>
+              {totalAll > 0 && (
+                <SearchWithDateFilter
+                  searchValue={search}
+                  onSearchChange={setSearch}
+                  searchPlaceholder={t(lang, "admin.searchComplaintsAndWorkers")}
+                  dateFrom={dateFrom}
+                  dateTo={dateTo}
+                  onDateFromChange={setDateFrom}
+                  onDateToChange={setDateTo}
+                  lang={lang}
+                  width={320}
+                />
+              )}
             </div>
 
-            {complaints.length > 0 && (
+            {totalAll > 0 && (
               <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 14 }}>
                 {WORKER_COMPLAINT_FILTERS.map((f) => {
-                  const count = f === "all" ? complaints.length : complaints.filter((c) => c.status === f).length;
+                  const count = f === "all" ? totalAll : statusCounts[f];
                   const labelKey = f === "all" ? "admin.filterAll" : COMPLAINT_STATUS_LABEL_KEY[f];
                   const active = filter === f;
                   return (
@@ -160,18 +238,19 @@ export default function AdminWorkerDetail() {
               </div>
             )}
 
-            {complaints.length === 0 ? (
+            {totalAll === 0 ? (
               <p style={{ color: "var(--ink-2)" }}>{t(lang, "admin.noWorkerComplaints")}</p>
-            ) : filteredComplaints.length === 0 ? (
+            ) : total === 0 ? (
               <p style={{ color: "var(--ink-2)" }}>{t(lang, "admin.noComplaintsFiltered")}</p>
             ) : (
               <div className="surface-card table-scroll" style={{ overflowX: "auto" }}>
-                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: 680 }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: 760 }}>
                   <thead>
                     <tr>
                       {[
                         t(lang, "admin.colId"),
                         t(lang, "admin.colSummary"),
+                        t(lang, "admin.colCategory"),
                         t(lang, "admin.colStatus"),
                         t(lang, "admin.colCreated"),
                         "",
@@ -183,13 +262,16 @@ export default function AdminWorkerDetail() {
                     </tr>
                   </thead>
                   <tbody>
-                    {filteredComplaints.map((c, i) => (
+                    {complaints.map((c, i) => (
                       <tr key={c.id} className="table-row-hover enter" style={{ "--stagger": Math.min(i, 6) } as React.CSSProperties}>
                         <td className="mono" style={{ padding: "12px 16px", borderBottom: "1px solid var(--line)" }}>
                           <Link to={`/admin/complaints/${c.id}`} style={{ color: "var(--accent-fg)" }}>#{c.id}</Link>
                         </td>
                         <td style={{ padding: "12px 16px", borderBottom: "1px solid var(--line)", maxWidth: 340, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                           <Link to={`/admin/complaints/${c.id}`} style={{ color: "inherit" }}>{c.display_summary || c.summary}</Link>
+                        </td>
+                        <td style={{ padding: "12px 16px", borderBottom: "1px solid var(--line)" }}>
+                          <CategoryBadge category={c.service_category} lang={lang} />
                         </td>
                         <td style={{ padding: "12px 16px", borderBottom: "1px solid var(--line)" }}>
                           <StatusBadge status={c.status} label={t(lang, COMPLAINT_STATUS_LABEL_KEY[c.status])} />
@@ -214,6 +296,27 @@ export default function AdminWorkerDetail() {
                     ))}
                   </tbody>
                 </table>
+                {pageCount > 1 && (
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 16px", borderTop: "1px solid var(--line)" }}>
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      disabled={page <= 1}
+                      onClick={() => setPage((p) => Math.max(1, p - 1))}
+                    >
+                      {t(lang, "admin.paginationPrev")}
+                    </button>
+                    <span style={{ fontSize: 12, color: "var(--ink-2)" }}>
+                      {page} / {pageCount}
+                    </span>
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      disabled={page >= pageCount}
+                      onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
+                    >
+                      {t(lang, "admin.paginationNext")}
+                    </button>
+                  </div>
+                )}
               </div>
             )}
           </>

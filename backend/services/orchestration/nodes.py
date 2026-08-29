@@ -30,6 +30,7 @@ from typing import Any
 from langchain_core.runnables import RunnableConfig
 from sqlalchemy.orm import Session
 
+from backend.config import settings
 from backend.models import User
 from backend.repositories import complaint_repository, evidence_repository
 from backend.schemas.rag_knowledge import ServiceCategory
@@ -43,8 +44,14 @@ from backend.services.intent_classifier import (
     classify,
     is_explicit_cancellation,
     is_explicit_confirmation,
+    looks_like_an_attempted_yes_or_no,
 )
-from backend.services.location_extractor import LocationExtractor, LocationResolution, known_aliases_for_city
+from backend.services.location_extractor import (
+    LocationExtractor,
+    LocationResolution,
+    known_aliases_for_city,
+    looks_like_it_names_an_unrecognized_place,
+)
 from backend.services.location_resolver import LocationResolver, ResolvedLocation
 from backend.services.observability import tracing
 from backend.services.orchestration.state import GraphState
@@ -56,6 +63,18 @@ from backend.services.translation_service import TranslationService
 logger = logging.getLogger(__name__)
 
 _COMPLAINT_NUMBER_PATTERN = re.compile(r"(?:complaint|complain)\s*#?\s*(\d+)|#(\d+)|\b(\d{2,6})\b", re.IGNORECASE)
+
+# Real Sarvam pricing for its translation models (confirmed against docs.sarvam.ai/api/
+# getting-started/pricing, checked 2026-08-26): Rs20/10K characters, billed per character, same
+# rate for both sarvam-translate:v1 and mayura:v1 (`_localize` below only ever uses the former --
+# it always translates FROM English, never auto-detects a source). Reported in real Indian Rupees,
+# not converted to USD -- same reasoning as answer_generation_service.py's per-token rate (see that
+# module's `_SARVAM_INPUT_COST_PER_TOKEN_INR` comment): this app's real Sarvam bill is in Rupees,
+# and Phoenix's own dashboard hardcodes a "$" prefix regardless of what currency the number
+# actually represents, so a USD conversion would only add a second, needless approximation. Billed
+# character count isn't spelled out beyond "per character" on that page, so this uses the input
+# text length (the one number known before the call is made) -- the one real approximation left.
+_SARVAM_TRANSLATE_COST_PER_CHAR_INR = 20 / 10_000
 
 _OUT_OF_SCOPE_TOPIC_NAMES = {
     "ELECTRICITY": "electricity connection/meter",
@@ -72,6 +91,26 @@ _OUT_OF_SCOPE_TOPIC_NAMES = {
 # pass-through of the picked label continues to classify correctly with zero new code.
 _CATEGORY_CLARIFICATION_OPTIONS = ["Garbage", "Water", "Road", "Streetlight", "Other"]
 _LOCATION_CLARIFICATION_OPTIONS = ["Use current location", "Enter location", "Select location"]
+_IMAGE_NO_TEXT_OPTIONS = ["Report an issue", "What is this?"]
+_INTENT_AMBIGUOUS_OPTIONS = ["Report a problem", "What is the procedure?"]
+_CONFIRMATION_OPTIONS = ["Yes, submit it", "No, cancel"]
+
+# LIVE-REPORTED BUG: every quick-reply button's clicked VALUE is always one of these fixed,
+# hardcoded English strings (see `_localize_options`'s own docstring for why) -- never organic
+# typed text, regardless of its length or whether it happens to be phrased as a question. A
+# citizen clicking a Hindi-labeled "प्रक्रिया क्या है?" button sends back "What is the procedure?"
+# -- a real, complete English QUESTION, so `language_node`'s existing short-reply skip (scoped to
+# short, non-question replies) never applied to it at all: real detection ran on that literal
+# English text, correctly identified it as English on its own narrow terms, and silently flipped
+# an entire Hindi conversation back to English on this one button click. `language_node` treats an
+# EXACT match against any of these as the same "known, not organic" signal regardless of shape.
+_ALL_QUICK_REPLY_OPTIONS = frozenset(
+    _CATEGORY_CLARIFICATION_OPTIONS
+    + _LOCATION_CLARIFICATION_OPTIONS
+    + _IMAGE_NO_TEXT_OPTIONS
+    + _INTENT_AMBIGUOUS_OPTIONS
+    + _CONFIRMATION_OPTIONS
+)
 
 
 @dataclass
@@ -133,18 +172,74 @@ def _localize(text: str, state: GraphState, config: RunnableConfig) -> str:
 
     English is a no-op (skips a needless network call on the common case). A translation failure
     degrades to the original English text -- same honest fallback `AnswerGenerationService` and
-    the voice flow's own TTS step already use -- never blocks the response."""
+    the voice flow's own TTS step already use -- never blocks the response.
+
+    LIVE-REPORTED GAP, closed here: this is a real Sarvam API call (`sarvam-translate:v1`), just
+    on a completely different endpoint from `AnswerGenerationService.generate()`'s chat-completion
+    call -- it used to run with no span at all, so real, billable translation usage was invisible
+    in both LangSmith and Phoenix (a citizen conversing in Marathi/Hindi/etc. triggers this on
+    every single non-RAG reply -- greetings, clarifications, out-of-scope notices -- yet none of
+    that spend ever showed up anywhere). Traced the same way `answer_generation`'s span is: a
+    `model_name` + `total_cost_inr` pair in `outputs`, which `tracing._phoenix_end_span()` already
+    knows how to promote to Phoenix's dedicated LLM attributes -- no changes needed there. No
+    token-count attributes are set (translation is billed per character, not per token; setting
+    them would misrepresent this span's cost basis on Phoenix's Metrics view)."""
     language = state.get("response_language") or "en"
     if language == "en":
         return text
     deps = _deps(config)
     if deps.translation_service is None:
         return text
+    root = _trace_root(config)
+    span = tracing.start_child_run(root, "response_translation", "llm", inputs={"target_language": language, "input_char_count": len(text)})
     try:
-        return deps.translation_service.to_language(text, language)
+        translated = deps.translation_service.to_language(text, language)
     except AIServiceError as exc:
         logger.warning("Ask Sarthi: localizing response text to %s failed, keeping English: %s", language, exc)
+        tracing.end_run(span, error=str(exc))
         return text
+    tracing.end_run(
+        span,
+        outputs={
+            "model_name": "sarvam-translate:v1",
+            "output_char_count": len(translated),
+            "total_cost_inr": len(text) * _SARVAM_TRANSLATE_COST_PER_CHAR_INR,
+            # LIVE-REPORTED GAP: Phoenix's own "Top models by cost/tokens" dashboard widgets only
+            # ever read a registered model's per-token price times a token-count attribute -- they
+            # never read `total_cost_inr` above directly (that only feeds each trace's OWN
+            # Attributes tab, already correct on its own). Translation is billed per CHARACTER, not
+            # per token, so there is no real "token count" to give it -- this reuses Phoenix's
+            # token-count slot to carry the real character count instead (the same quantity
+            # `total_cost_inr` above was computed from), with a matching per-"million-characters"
+            # price registered for this model name in Phoenix's own Settings/Models (see
+            # PHOENIX_TRACING_PLAN.md). The real cost is unaffected either way; only Phoenix's own
+            # axis label says "tokens" when it means characters here -- a cosmetic mismatch, same
+            # spirit as the "$" prefix meaning Rupees everywhere else in this app's Phoenix setup.
+            "prompt_tokens": len(text),
+            "total_tokens": len(text),
+        },
+    )
+    return translated
+
+
+def _localize_options(options: list[str], state: GraphState, config: RunnableConfig) -> list[str]:
+    """LIVE-REPORTED GAP: `_localize` (above) already translates every clarification/confirmation
+    question's own free-text sentence into `response_language`, but the CLICKABLE quick-reply
+    buttons underneath it (`follow_up_options` -- "Yes, submit it"/"No, cancel", the category
+    words, "Use current location", ...) stayed hardcoded English regardless -- a citizen
+    conversing entirely in Marathi still saw the surrounding sentence translated but had to read
+    an English button to answer it.
+
+    Deliberately does NOT touch what actually gets SENT when a button is clicked (see
+    AskJanMitraResponse.follow_up_options_labels's own docstring for the display-vs-value split
+    this requires) -- `is_explicit_confirmation`/`is_explicit_cancellation` and every category/
+    location keyword match in this file are tested against the exact, canonical English strings in
+    `follow_up_options` itself; only ever-so-slightly-different translator output for the SAME
+    button could otherwise silently fail to register as a real "yes" and leave a citizen stuck
+    re-confirming forever. This only produces the parallel, display-only label list -- one
+    `_localize` call per option, same graceful English-on-failure fallback as every other call to
+    it."""
+    return [_localize(option, state, config) for option in options]
 
 
 def _trace_root(config: RunnableConfig):
@@ -173,16 +268,40 @@ def input_processing_node(state: GraphState, config: RunnableConfig) -> dict[str
     folded into the text every downstream node already consumes -- unless there's no text at all,
     in which case this sets `clarification_reason="image_no_text"` so the graph routes straight to
     a real clarification question instead of guessing intent from an image alone (see
-    `_route_after_language` in graph.py and `clarification_flow_node` below)."""
+    `_route_after_language` in graph.py and `clarification_flow_node` below).
+
+    Also where `photo_evidence` gets set (see state.py's own field docstring and schemas/
+    ask_janmitra.py's PhotoEvidenceRef) -- ctx.image_saved is already validated-and-written-to-disk
+    by the time this node runs (ask_janmitra_service.py's `_process_image()`), regardless of
+    whether this turn ever becomes a complaint; recording the reference here, in the ONE place
+    every image-carrying request already passes through, means every later node (and the eventual
+    AskJanMitraResponse) sees it without each caller needing its own copy of this logic."""
     message = state.get("user_message", "").strip()
     has_image = bool(state.get("has_image"))
     image_description = state.get("image_description")
+    # `config.get(...)`, not `_ctx(config)` -- unlike every other node in this file, this one is
+    # exercised directly with a bare `config={}` by unit tests that predate `photo_evidence`
+    # (no `configurable`/`ctx` at all), so `ctx.image_saved` must degrade to "no photo" rather
+    # than raising.
+    ctx = config.get("configurable", {}).get("ctx")
+    image_saved = getattr(ctx, "image_saved", None)
+    photo_evidence = (
+        {
+            "filename": image_saved.filename,
+            "original_name": image_saved.original_name,
+            "content_type": image_saved.content_type,
+            "size": image_saved.size,
+        }
+        if image_saved is not None
+        else None
+    )
 
     if not message and has_image:
         return {
             "normalized_message": "",
             "input_type": state.get("input_type") or "text",
             "clarification_reason": "image_no_text",
+            "photo_evidence": photo_evidence,
         }
 
     if image_description:
@@ -191,18 +310,132 @@ def input_processing_node(state: GraphState, config: RunnableConfig) -> dict[str
     return {
         "normalized_message": message,
         "input_type": state.get("input_type") or "text",
+        "photo_evidence": photo_evidence,
     }
 
 
 def language_node(state: GraphState, config: RunnableConfig) -> dict[str, Any]:
-    """Identity node: `original_language` already arrives validated (`AskJanMitraRequest.language`
-    is checked against `settings.SUPPORTED_LANGUAGES` by the route before the graph ever runs) --
-    re-detecting it would just re-derive a value the caller already gave us authoritatively. Real
-    translation/normalization already happens inside the flow nodes that need it (e.g.
-    `AnswerGenerationService` receives the target language name directly) -- this node's only job
-    is to seed `response_language` from the request so every downstream node can read one
-    consistent field name."""
-    return {"response_language": state.get("original_language") or "en"}
+    """Auto-detects the citizen's ACTUAL input language from this turn's own text and uses that
+    for `response_language`, rather than blindly trusting `original_language` (the client-supplied
+    `AskJanMitraRequest.language` -- in practice, the UI's language-toggle setting).
+
+    Live-reported gap this fixes: a citizen's UI language toggle reflects whatever they picked
+    once, in general -- it does NOT reliably track what language any ONE message actually is,
+    since real bilingual citizens routinely type/speak in a different language than their toggle
+    without changing it first. Before this fix, the app would answer in the TOGGLE's language
+    regardless of what was actually asked -- unlike ChatGPT/Claude, which answer in whatever
+    language the message itself is in. Applies uniformly to text AND voice turns (a voice turn's
+    `normalized_message` is its STT transcript by the time this node runs) and to typed AND
+    spoken input alike -- one detection mechanism, not a per-input-mode special case.
+
+    Falls back to `original_language` whenever there's nothing to detect from (no text at all --
+    an image-only turn) or detection itself doesn't yield a usable answer (service
+    unavailable/failed, or it correctly detected a real language this app has no
+    SUPPORTED_LANGUAGES/TTS coverage for -- see `TranslationService.detect_language`'s own
+    docstring) -- a best-effort upgrade, never a hard dependency that can block or fail a turn.
+
+    ALSO falls back (deliberately skips detection entirely) for a short, non-question, PLAIN-ASCII
+    reply -- same `_MAX_CONTINUATION_REPLY_WORDS`/`_looks_like_question` heuristic
+    intent_classifier.py's own continuation-detection already uses, and for the identical
+    underlying reason: a bare "yes"/"ok"/a single ward name typed in English is not a reliable
+    statement of what language the citizen is communicating in, and mid-conversation is exactly
+    the wrong moment to silently flip response_language on such a low-signal turn -- e.g. a
+    citizen who has been asking entirely in Marathi replying with the plain English confirmation
+    word "yes" (see intent_classifier.py's `_CONFIRMATION_EXACT_WORDS["en"]`) must not suddenly
+    get the rest of that turn's response back in English.
+
+    LIVE-REPORTED BUG: the plain-ASCII condition (`text.isascii()`) was added after this skip
+    fired on a citizen's very FIRST message of a brand-new conversation -- "माझ्या घराजवळ कचरा
+    साचला आहे, कोलकातामध्ये." ("Garbage has piled up near my house, in Kolkata.", a genuine,
+    complete complaint, not a reply to anything) happens to be exactly 6 words and isn't phrased
+    as a question, so detection was skipped entirely and every reply for the rest of that
+    complaint (clarification AND confirmation prompts) came back in English instead of Marathi.
+    Unlike "yes"/"ok", real Devanagari/Bengali/Gujarati/Oriya script is NEVER ambiguous about not
+    being English, regardless of word count -- the short-reply ambiguity this heuristic guards
+    against is specifically an English-vs-something-else guess on plain Latin script text, so
+    non-ASCII text should always go through real detection instead of being skipped.
+
+    SECOND LIVE-REPORTED BUG, found immediately after the multilingual quick-reply buttons shipped
+    (see `_localize_options`'s own docstring): a button's clicked VALUE always stays canonical
+    English regardless of what language its LABEL was shown in (a safety requirement -- see that
+    docstring), which means this skip condition fires on essentially EVERY quick-reply click, not
+    a rare edge case. Falling back straight to `original_language` (the client-supplied UI toggle)
+    here is exactly the unreliable signal this whole node exists to bypass -- a citizen conversing
+    entirely in Hindi who clicks a Hindi-labeled "Report a problem" button had every following
+    reply silently flip back to English. Fixed by preferring the conversation's own ESTABLISHED
+    language instead: `_established_conversation_language` detects it from the last ASSISTANT
+    turn's own text (a real, full sentence -- far more reliable to detect from than this turn's
+    short reply), falling back to `original_language` only when there's no assistant turn yet (a
+    genuinely first message).
+
+    THIRD LIVE-REPORTED BUG, found immediately after the second fix above shipped: the short/non-
+    question/ASCII skip above still didn't cover "What is the procedure?" -- one of the exact same
+    fixed quick-reply VALUES the second bug is about, just one that happens to be phrased as a real
+    English question. Clicking its Hindi-labeled counterpart ("प्रक्रिया क्या है?") sent back that
+    literal English text, which real `_looks_like_question` correctly identifies as a question, so
+    THIS skip never applied to it -- real detection ran on the literal English sentence, correctly
+    identified it as English on its own narrow terms, and flipped an established Hindi conversation
+    back to English on this one button click. Every quick-reply value is equally "not organic typed
+    text" regardless of its own shape (see `_ALL_QUICK_REPLY_OPTIONS`'s own docstring) -- checked
+    as its own, unconditional first branch, before the length/question-shape heuristic even runs."""
+    fallback = state.get("original_language") or "en"
+    text = (state.get("normalized_message") or "").strip()
+    if not text:
+        return {"response_language": fallback}
+    if text in _ALL_QUICK_REPLY_OPTIONS:
+        established = _established_conversation_language(state, config)
+        return {"response_language": established or fallback}
+    if (
+        text.isascii()
+        and len(text.split()) <= _MAX_CONTINUATION_REPLY_WORDS
+        and not _looks_like_question(text)
+    ):
+        established = _established_conversation_language(state, config)
+        return {"response_language": established or fallback}
+    try:
+        deps = _deps(config)
+    except (KeyError, TypeError):
+        return {"response_language": fallback}
+    if deps.translation_service is None:
+        return {"response_language": fallback}
+    detected = deps.translation_service.detect_language(text)
+    if detected:
+        return {"response_language": detected}
+    # LIVE-REPORTED BUG (voice input): real detection was genuinely ATTEMPTED here, not skipped --
+    # Sarvam's own text-lid returned language_code=null (confirmed directly against the live API)
+    # for a real case: "हो दासल तर.", a short, slightly garbled voice-transcribed reply -- not
+    # enough signal for Sarvam's own model to identify ANY language at all, not even a wrong one.
+    # Falling straight to the stale client-supplied `original_language` here is the exact same
+    # unreliable-signal problem `_established_conversation_language` already exists to avoid for
+    # the skipped-detection cases above -- this unifies all THREE "no real per-message detection
+    # result" cases (skipped for a known quick-reply value, skipped for a short plain-ASCII reply,
+    # or genuinely failed/unavailable) behind the same fallback preference, instead of only the
+    # first two.
+    return {"response_language": _established_conversation_language(state, config) or fallback}
+
+
+def _established_conversation_language(state: GraphState, config: RunnableConfig) -> str | None:
+    """The fallback `language_node` uses for a short, low-signal reply instead of trusting the
+    stale client-supplied `original_language` (see that node's own SECOND live-reported bug) --
+    detects the language of the most recent ASSISTANT turn's own text, a real, full sentence that
+    is far more reliable to detect language from than the short reply itself. None (the caller
+    then falls back further, to `original_language`) when there's no assistant turn yet, detection
+    is unavailable, or it fails -- never raises, matching every other best-effort call to
+    `detect_language` in this file."""
+    history = state.get("conversation_history") or []
+    last_assistant_text = next(
+        (turn.get("content") for turn in reversed(history) if turn.get("role") == "assistant" and turn.get("content")),
+        None,
+    )
+    if not last_assistant_text:
+        return None
+    try:
+        deps = _deps(config)
+    except (KeyError, TypeError):
+        return None
+    if deps.translation_service is None:
+        return None
+    return deps.translation_service.detect_language(last_assistant_text)
 
 
 # ------------------------------------------------------------------
@@ -372,8 +605,35 @@ def intent_node(state: GraphState, config: RunnableConfig) -> dict[str, Any]:
     # complaint-flow question (category/location/confirmation/intent-ambiguous clarification --
     # see `_last_turn_invites_complaint_reply`), not merely that some history existed.
     last_turn_invites_reply = _last_turn_invites_complaint_reply(history)
+    # LIVE-REPORTED BUG (voice input): a citizen's own perfectly clear "Yes, can you submit
+    # please?" -- a natural, SPOKEN way to confirm, unlike the terser typed/button "yes, submit
+    # it" -- ends in "?", so `is_explicit_confirmation` correctly declines to auto-confirm it
+    # (see that function's own docstring: a "yes" that's part of a further QUESTION is
+    # deliberately never auto-confirmed, e.g. "yes, what are the rules?" must not silently file
+    # anything). That safety boundary is right and untouched here -- the actual gap is
+    # downstream: `is_continuation_reply` being False meant this whole message fell through to
+    # UNCLEAR -> unclear_flow_node's generic "I'm not sure I understood that... what would you
+    # like help with?" -- which doesn't even acknowledge a complaint confirmation was pending,
+    # reading as if the whole draft had been silently abandoned (it hadn't -- nothing here risks
+    # actually losing it, see below). `complaint_flow_node` ALREADY handles exactly this shape
+    # correctly (see its own `elif awaiting_confirmation:` branch below in this file): neither
+    # confirms nor cancels, safely re-recovers the draft from history, and re-asks the SAME
+    # confirmation question again -- the honest, correct behavior.
+    #
+    # FIRST VERSION of this fix routed on `_awaiting_confirmation(history)` ALONE, regardless of
+    # this message's own content -- live-caught as too broad by this project's own regression
+    # suite: "What is the current time?", asked mid an unrelated pending confirmation, ALSO got
+    # routed to complaint_flow_node and re-shown the stale confirmation, reading as a bizarre
+    # non-answer to a real, unrelated question instead of the honest "I don't understand"
+    # unclear_flow_node correctly gave it before. `looks_like_an_attempted_yes_or_no` (see its own
+    # docstring) narrows this to only fire when the reply's own FIRST WORD is a recognized yes/no
+    # word -- "Yes, can you submit please?" qualifies (fixing the original bug); "What is the
+    # current time?" does not (fixing the regression this second pass caught), so it correctly
+    # falls through to UNCLEAR exactly as before either fix.
+    awaiting_confirmation = _awaiting_confirmation(history)
     if intent == QuestionIntent.UNCLEAR and (
         (last_turn_invites_reply and is_continuation_reply) or state.get("has_image") or has_gps
+        or (awaiting_confirmation and looks_like_an_attempted_yes_or_no(text))
     ):
         # classify() is deliberately a pure, single-turn, text-only function (see its own
         # docstring) -- it has no way to see that a short reply like "Streetlight." or "Use my
@@ -423,6 +683,28 @@ def intent_node(state: GraphState, config: RunnableConfig) -> dict[str, Any]:
 # ------------------------------------------------------------------
 
 
+def _should_skip_home_ward_fallback(ctx: RequestContext, text: str) -> bool:
+    """True whenever the citizen already gave SOME location signal this turn that a fallback to
+    their own registered ward (or a real worker match recovered from conversation history) must
+    never silently override.
+
+    LIVE-REPORTED BUG ("Pune fallback"), a FIFTH instance: the original version of this gate only
+    checked `looks_like_it_names_an_unrecognized_place` -- a heuristic that only recognizes text
+    SHAPED like a real place name (a preposition + a capitalized word). That correctly covers a
+    message like "...in Pune?", but not an EXPLICIT `ctx.location_text` reply that's pure
+    gibberish (e.g. typing "asdkjhaskjdh" in answer to "what is the location?") -- gibberish
+    doesn't look like a place name at all, so the heuristic alone let the gate pass, and the
+    citizen's home ward got silently substituted for an answer they never gave. But by the time
+    any caller of this function is even reached, `ctx.location_text` -- if set -- has ALREADY been
+    tried and failed to resolve by an earlier tier (see `_resolve_location`'s own first check): its
+    mere presence here already means "the citizen gave a signal AND it didn't resolve", the exact
+    situation `location_explicit_signal_unresolved` was built to recognize and never paper over
+    with a substitution. Checking it directly, before ever falling back to the heuristic, closes
+    that gap without touching the heuristic itself (still needed for the plain-message-text case,
+    where there is no separate explicit field to check)."""
+    return bool(ctx.location_text) or looks_like_it_names_an_unrecognized_place(text)
+
+
 def _resolve_location(state: GraphState, config: RunnableConfig) -> LocationResolution:
     """Same priority order as the pre-graph `AskJanMitraService._resolve_location()` this
     replaces, plus one addition: explicit `location_text` > location named in the message text >
@@ -458,15 +740,76 @@ def _resolve_location(state: GraphState, config: RunnableConfig) -> LocationReso
         if resolved.city or resolved.state:
             return resolved
 
-    for turn in reversed(state.get("conversation_history", [])):
-        if turn.get("role") != "user":
-            continue
-        resolved = extractor.resolve_from_text(turn.get("content", ""))
-        if resolved.city or resolved.state or resolved.is_ambiguous:
-            resolved.source = "conversation_history"
-            return resolved
+    # LIVE-REPORTED BUG: this scan used to have no stopping point at all -- it kept looking
+    # backward through the ENTIRE conversation history for anything resolvable, with no check for
+    # whether the conversation had already moved on to something else. Live-reproduced: several
+    # turns about Kolkata (streetlights, road repairs), fully answered, then a citizen asked "What
+    # is the process for a new water connection in Pune?" -- Pune isn't in this app's knowledge
+    # base at all, so the CURRENT text correctly resolves to nothing, but this scan then reached
+    # straight past the unrelated, already-closed Kolkata exchanges and answered as if the
+    # question had been about Kolkata -- "I don't currently have reliable information for this in
+    # Kolkata," silently substituting a city the citizen never named for this question. Exactly
+    # the failure mode this app's own test script explicitly calls out as unacceptable ("NOT an
+    # answer borrowed from another city"). Fixed the same way as the identical gap in
+    # `_recover_category_from_history` -- stop the instant the scan crosses a USER turn whose OWN
+    # classification is a confident, complete, standalone, different-topic intent (see
+    # `_TOPIC_BOUNDARY_INTENTS`'s own docstring for why this is keyed off the user's message, not
+    # the assistant's reply -- an early version of this fix, keyed off the assistant's turn
+    # instead, broke a real passing test: "I'm in Mohali." -> "Got it, Mohali." -> "Street light
+    # not working." must still recover Mohali, but "Got it, Mohali." is a plain acknowledgment
+    # that matches no clarification marker, so that version stopped too early). A genuinely
+    # continuing conversation ("I'm in Mohali." -> ... -> "Street light not working.") is
+    # unaffected, since "I'm in Mohali." classifies as UNCLEAR, not a boundary intent.
+    #
+    # SECOND boundary, found live after the above shipped: also stop at an assistant turn that is
+    # itself the success confirmation for an already-FILED complaint (see
+    # `_turn_closes_a_filed_complaint`'s own docstring) -- a citizen who successfully files a
+    # streetlight complaint in Ahmedabad, then starts a brand-new, different complaint elsewhere,
+    # must never have the NEW one silently resolve to the OLD complaint's city.
+    #
+    # THIRD boundary, found live after THAT shipped, and the most insidious: this scan matches an
+    # EARLIER user turn's resolvable city just as readily as it matches a genuine one -- including
+    # when THIS turn's own text already names a place, just one the gazetteer doesn't cover. A
+    # citizen asked about "Zzz Nonexistent Place" (got the honest "I don't have information for
+    # this area yet" -- the fix below this loop working correctly), then typed "MUMBAI" as an
+    # explicit follow-up (a genuinely different, real question, resolved to Mumbai correctly) --
+    # then asked about "Zzz Nonexistent Place" a SECOND time, and got Mumbai's answer again, because
+    # this scan reached straight past the current turn's own (unrecognized) place name to the
+    # PRIOR turn's real one. Gated the same way as the citizen_home_ward tier just below (see
+    # location_extractor.py's `looks_like_it_names_an_unrecognized_place`), and further broadened
+    # by `_should_skip_home_ward_fallback`'s own docstring (a FIFTH instance of this same bug
+    # class): skip this scan entirely whenever the citizen already gave ANY location signal this
+    # turn -- an explicit one that failed to resolve, or a place-shaped phrase in the message text
+    # -- so a turn that already carries its own (unresolved) signal can't go fishing through
+    # history for a different, real one instead.
+    if not _should_skip_home_ward_fallback(ctx, text):
+        for turn in reversed(state.get("conversation_history", [])):
+            if turn.get("role") == "assistant":
+                if _turn_closes_a_filed_complaint(turn):
+                    break
+                continue
+            if turn.get("role") != "user":
+                continue
+            content = turn.get("content", "")
+            if classify(content).intent in _TOPIC_BOUNDARY_INTENTS:
+                break
+            resolved = extractor.resolve_from_text(content)
+            if resolved.city or resolved.state or resolved.is_ambiguous:
+                resolved.source = "conversation_history"
+                return resolved
 
-    if ctx.user.ward:
+    # LIVE-REPORTED BUG ("Pune fallback"): this tier used to fire unconditionally whenever nothing
+    # else resolved -- including when the citizen's OWN text named a real, specific place ("...in
+    # Pune?") that just isn't in this app's gazetteer, not only when they named no place at all.
+    # Silently substituting the citizen's home city there answers a question about one city as if
+    # it had been about another, with no indication anything was substituted -- see
+    # `looks_like_it_names_an_unrecognized_place`'s own module-level comment in
+    # location_extractor.py for the heuristic's own reasoning -- broadened by
+    # `_should_skip_home_ward_fallback`'s own docstring (a FIFTH instance of this bug: gibberish
+    # typed directly into the explicit location field doesn't "look like a place name" either, so
+    # the heuristic alone let it through) to also skip whenever `ctx.location_text` was used at all
+    # this turn, resolved or not.
+    if ctx.user.ward and not _should_skip_home_ward_fallback(ctx, text):
         resolved = extractor.resolve_from_text(ctx.user.ward)
         if resolved.city or resolved.state or resolved.is_ambiguous:
             resolved.source = "citizen_home_ward"
@@ -477,12 +820,35 @@ def _resolve_location(state: GraphState, config: RunnableConfig) -> LocationReso
 
 def location_node(state: GraphState, config: RunnableConfig) -> dict[str, Any]:
     resolution = _resolve_location(state, config)
+    ctx = _ctx(config)
+    nothing_resolved = not (resolution.city or resolution.state or resolution.is_ambiguous)
+    # True only when the citizen gave an EXPLICIT location signal (the "Use current location"/
+    # "Select location" UI, or typed free text passed as ctx.location_text) that still didn't
+    # resolve to anywhere recognizable -- distinct from never having given one at all. See
+    # clarification_flow_node's default branch for why this distinction has its own message.
+    explicit_signal_unresolved = nothing_resolved and bool(ctx.location_text)
+    # DISTINCT from the above: the citizen never used the explicit location field at all, but
+    # their MESSAGE TEXT names a real-sounding place this app simply doesn't cover (the "Pune
+    # fallback" bug -- see location_extractor.py's own `looks_like_it_names_an_unrecognized_place`
+    # comment). Live-reported confusion this closes: reusing the SAME "I couldn't recognize that as
+    # a location" wording for this case too technically isn't wrong (the gazetteer genuinely has no
+    # entry for it), but reads oddly for a real, well-known place (a citizen asking about Pune
+    # doesn't want to be told Pune "wasn't recognized as a location") -- kept as its OWN flag so
+    # clarification_flow_node can give it separate, more accurate wording, while row 7-11-style
+    # explicit gibberish location replies (see the manual test script's Section 8) keep their
+    # existing, already-correct "couldn't recognize" wording untouched.
+    text = state.get("normalized_message") or state.get("user_message", "")
+    message_names_unresolved_place = (
+        nothing_resolved and not ctx.location_text and looks_like_it_names_an_unrecognized_place(text)
+    )
     return {
         "location_city": resolution.city,
         "location_state": resolution.state,
         "location_source": resolution.source,
         "location_is_ambiguous": resolution.is_ambiguous,
         "location_ambiguous_candidates": resolution.ambiguous_candidates,
+        "location_explicit_signal_unresolved": explicit_signal_unresolved,
+        "location_message_names_unresolved_place": message_names_unresolved_place,
     }
 
 
@@ -623,11 +989,13 @@ def clarification_flow_node(state: GraphState, config: RunnableConfig) -> dict[s
             else "I can see you've attached a photo. "
         )
         question = prompt + "Would you like to report an issue, or would you like information about what's shown?"
+        options = _IMAGE_NO_TEXT_OPTIONS
         return {
             "response_text": _localize(question, state, config),
             "follow_up_required": True,
             "follow_up_question": question,
-            "follow_up_options": ["Report an issue", "What is this?"],
+            "follow_up_options": options,
+            "follow_up_options_labels": _localize_options(options, state, config),
             "routed_to": "NONE_CLARIFICATION_NEEDED",
             "sources": [],
         }
@@ -644,11 +1012,13 @@ def clarification_flow_node(state: GraphState, config: RunnableConfig) -> dict[s
         category = state.get("service_category")
         category_label = category.replace("_", " ").title() if category else "this"
         question = f"Are you reporting a problem with {category_label}, or would you like information about it?"
+        options = _INTENT_AMBIGUOUS_OPTIONS
         return {
             "response_text": _localize(_image_context_prefix(state) + question, state, config),
             "follow_up_required": True,
             "follow_up_question": question,
-            "follow_up_options": ["Report a problem", "What is the procedure?"],
+            "follow_up_options": options,
+            "follow_up_options_labels": _localize_options(options, state, config),
             "routed_to": "NONE_CLARIFICATION_NEEDED",
             "sources": [],
         }
@@ -660,11 +1030,22 @@ def clarification_flow_node(state: GraphState, config: RunnableConfig) -> dict[s
             "follow_up_required": True,
             "follow_up_question": question,
             "follow_up_options": _CATEGORY_CLARIFICATION_OPTIONS,
+            "follow_up_options_labels": _localize_options(_CATEGORY_CLARIFICATION_OPTIONS, state, config),
             "routed_to": "NONE_CLARIFICATION_NEEDED",
             "sources": [],
         }
 
-    if reason == "location_ambiguous":
+    # PRE-EXISTING BUG FIX (found via a broader location-clarification test matrix): checking
+    # `state.get("location_is_ambiguous")` directly, not just `reason == "location_ambiguous"`.
+    # complaint_flow_node sets that reason itself before routing here (see its own
+    # "location_ambiguous" branch), but graph.py's `_route_after_location` routes the civic-info
+    # (TYPE_B) path straight here on an ambiguous match WITHOUT ever setting `clarification_reason`
+    # first -- a conditional-edge function in LangGraph only picks the next node, it can't also
+    # update state. Without this, a civic-info question with a genuinely ambiguous location (e.g.
+    # "Maharashtra" -- both Mumbai and Nagpur have real data) silently fell through to the generic
+    # "What is the location?" question below, discarding the candidate list `location_node` had
+    # already resolved, instead of asking "Which city -- Mumbai, Nagpur?" as intended.
+    if reason == "location_ambiguous" or state.get("location_is_ambiguous"):
         candidates = state.get("location_ambiguous_candidates", [])
         question = f"Which city are you asking about — {', '.join(candidates)}?"
         return {
@@ -676,13 +1057,28 @@ def clarification_flow_node(state: GraphState, config: RunnableConfig) -> dict[s
             "sources": [],
         }
 
-    # Default: location missing entirely.
-    question = "What is the location? This helps me give you the correct local information."
+    # Location missing entirely -- THREE different situations collapsed into one branch:
+    # (a) the citizen never gave a location signal of any kind, (b) they explicitly picked one
+    # (via "Use current location"/"Select location", or typed free text) and it simply didn't
+    # resolve to anywhere recognizable, or (c) their message itself named a real-sounding place
+    # (e.g. "...in Pune?") that this app just doesn't cover (see location_node's own comment on
+    # `location_message_names_unresolved_place` for why this needs separate wording from (b) --
+    # "couldn't recognize" reads oddly for a real, well-known place). Without distinguishing (a)
+    # from (b)/(c), a citizen who just gave SOME location signal sees the EXACT SAME "What is the
+    # location?" question again with no acknowledgment anything happened -- indistinguishable from
+    # the assistant ignoring their answer, live-reported as feeling like a stuck loop.
+    if state.get("location_explicit_signal_unresolved"):
+        question = "I couldn't recognize that as a location. Please try typing a city or area name, or use \"Use current location\"."
+    elif state.get("location_message_names_unresolved_place"):
+        question = "I don't have information for this area yet. Please try a nearby city, or a different area name."
+    else:
+        question = "What is the location? This helps me give you the correct local information."
     return {
         "response_text": _localize(_image_context_prefix(state) + question, state, config),
         "follow_up_required": True,
         "follow_up_question": "What is the location?",
         "follow_up_options": _LOCATION_CLARIFICATION_OPTIONS,
+        "follow_up_options_labels": _localize_options(_LOCATION_CLARIFICATION_OPTIONS, state, config),
         "routed_to": "NONE_CLARIFICATION_NEEDED",
         "sources": [],
     }
@@ -746,8 +1142,30 @@ def rag_flow_node(state: GraphState, config: RunnableConfig) -> dict[str, Any]:
     root = _trace_root(config)
     text = state.get("normalized_message") or state.get("user_message", "")
     category = state.get("service_category")
+    # LIVE-REPORTED BUG: a citizen's own complaint-shaped message ("...garbage has piled up...")
+    # got asked "Are you reporting a problem with Waste Sanitation, or would you like information
+    # about it?" -- clicking the INFO option ("What is the procedure?") carries no category of
+    # its own (that bare phrase names no service), and unlike the "Report a problem" side of this
+    # exact same fork (see `_recover_text_before_intent_ambiguous_turn`'s own docstring), this RAG/
+    # info path had NO equivalent recovery at all -- the retrieval ran with category=None, matched
+    # whatever chunk best fit the generic phrase "What is the procedure?" plus the resolved
+    # location, and answered about a COMPLETELY DIFFERENT service (water supply, when the citizen
+    # asked about garbage). Reuses the SAME `_recover_category_from_history` the complaint flow
+    # already relies on (already scoped to TYPE_A_COMPLAINT/TYPE_A_MAYBE turns only, and already
+    # stops at a topic/complaint boundary -- see that function's own docstring) -- just extended to
+    # this second call site, since the citizen's original message satisfies its exact contract
+    # either way.
+    if category is None:
+        recovered_category = _recover_category_from_history(state)
+        category = recovered_category.value if recovered_category else None
     category_enum = ServiceCategory(category) if category else None
-    language_name = _LANGUAGE_NAMES.get(state.get("original_language") or "en", "English")
+    # `response_language` (auto-detected by language_node, see its own docstring), NOT
+    # `original_language` (the raw, possibly-stale client-supplied value) -- this is the exact
+    # bug the auto-detection fix would otherwise be silently undone by: rag_flow_node is the RAG
+    # answer path every TYPE_B civic-info question takes, so reading the un-detected field here
+    # would mean the LLM keeps answering in the UI toggle's language regardless of what the
+    # citizen actually asked in, no matter how correct language_node's own detection is upstream.
+    language_name = _LANGUAGE_NAMES.get(state.get("response_language") or "en", "English")
 
     retrieval_span = tracing.start_child_run(
         root, "rag_retrieval", "retriever",
@@ -820,24 +1238,49 @@ def rag_flow_node(state: GraphState, config: RunnableConfig) -> dict[str, Any]:
     # out (see this fix's own live-reproduced case): a previously-cached question still answers
     # normally, needing no LLM call at all.
     ctx = _ctx(config)
-    language_code = state.get("original_language") or "en"
+    # Same fix as `language_name` above: the cache key must be keyed on the language actually
+    # answered in (response_language), not the raw client-supplied one -- otherwise two turns
+    # detected into the SAME real language, but with different stale `original_language` values,
+    # would wrongly miss each other's cache entry (or worse, a cache HIT could serve an answer
+    # generated for a different language than this turn was just detected into).
+    language_code = state.get("response_language") or "en"
     location_city = state.get("location_city")
     location_state = state.get("location_state")
     cached_answer = get_cached_answer(ctx.db, text, language_code, category, location_city, location_state)
     if cached_answer is not None:
         answer_text, was_llm_generated = cached_answer, True
+        token_usage = None
         tracing.end_run(answer_span, outputs={"answer_was_llm_generated": True, "cache_hit": True})
     else:
-        answer_text, was_llm_generated = deps.answer_service.generate(text, context_chunks, language_name, context_labels)
-        tracing.end_run(
-            answer_span,
-            outputs={"answer_was_llm_generated": was_llm_generated, "cache_hit": False, "answer": tracing.redact_text(answer_text)},
-        )
+        answer_text, was_llm_generated, token_usage = deps.answer_service.generate(text, context_chunks, language_name, context_labels)
+        answer_outputs = {"answer_was_llm_generated": was_llm_generated, "cache_hit": False, "answer": tracing.redact_text(answer_text)}
+        if token_usage:
+            # Only tagged when a real LLM call actually happened this turn (token_usage is only
+            # non-None on that path, see AnswerGenerationService.generate()'s own docstring) --
+            # a fallback/cache-hit answer wasn't produced by any model just now, so it gets no
+            # model tag, same reasoning as why it gets no token counts either. Lets Phoenix's
+            # Metrics view group "top model by cost/tokens" -- otherwise those charts have
+            # nothing to group by, even though the raw token counts are present.
+            answer_outputs.update(token_usage)
+            answer_outputs["model_name"] = settings.LLM_MODEL
+        tracing.end_run(answer_span, outputs=answer_outputs)
         # Never cache the no-LLM-available fallback (raw chunk echo) -- only a genuinely
         # LLM-generated answer, so a temporary credits/network outage can never freeze a
         # degraded answer into the cache for everyone else who asks the same thing later.
         if was_llm_generated:
             store_answer(ctx.db, text, language_code, category, location_city, location_state, answer_text)
+        else:
+            # LIVE-REPORTED BUG: the raw chunk echoed above is the knowledge base's own stored
+            # text, always English -- unlike `answer_service.generate()`'s own LLM path (prompted
+            # to answer `in {language_name}`), this fallback was never translated at all. A
+            # Hindi/Marathi asker who hit this path (confirmed live: a genuine 45s Sarvam
+            # reasoning-model timeout on answer_generation_service.generate()) saw an English
+            # excerpt glued to the one Hindi sentence `in_app_note` below adds separately --
+            # reading as broken, not just "degraded". `_localize` is the same fast
+            # translate-only call already used for every other hardcoded/fallback string in this
+            # module (never the slow reasoning model), so this doesn't reintroduce the timeout
+            # risk that caused the fallback in the first place.
+            answer_text = _localize(answer_text, state, config)
 
     sources = []
     seen: set[str] = set()
@@ -859,12 +1302,32 @@ def rag_flow_node(state: GraphState, config: RunnableConfig) -> dict[str, Any]:
     statuses = {s["verification_status"] for s in sources}
     overall_status = "MIXED" if len(statuses) > 1 else next(iter(statuses), None)
 
+    # PRODUCT GAP FIX (live-reported): `answer_text` is grounded ONLY in the retrieved civic-info
+    # documents (see this function's own system-prompt rule), so it only ever describes the
+    # traditional municipal channel -- it never mentions this app's OWN in-app complaint-filing
+    # feature, since that's not something any retrieved document could ever say. The "Report
+    # Issue"/"Track Complaint" buttons are added separately by the frontend (AskJanMitra.tsx), but
+    # a citizen who only hears the spoken/TTS answer (no buttons at all, see ask_voice()) or who
+    # doesn't notice the buttons never learns the option exists. Appended here, deterministically
+    # (never left to the LLM to phrase/decide whether to mention) and localized like every other
+    # hardcoded string in this module. Skipped for a "new connection" question -- applying for a
+    # new connection isn't a "problem" this app's Report Issue flow (built for existing-service
+    # complaints) handles, so suggesting it there would be actively wrong, not just unhelpful.
+    if not state.get("requests_new_connection"):
+        in_app_note = "You can also report this directly through JanSarthi AI using the \"Report Issue\" option."
+        answer_text = f"{answer_text}\n\n{_localize(in_app_note, state, config)}"
+
     return {
         "response_text": answer_text,
         "sources": sources,
         "verification_status": overall_status,
         "routed_to": "RAG",
         "answer_was_llm_generated": was_llm_generated,
+        # See GraphState's own docstring for these three -- only non-None when a real LLM call
+        # happened THIS turn (never on a cache hit or the no-LLM-available fallback).
+        "ai_cost_inr": token_usage.get("total_cost_inr") if token_usage else None,
+        "ai_model_name": settings.LLM_MODEL if token_usage else None,
+        "ai_total_tokens": token_usage.get("total_tokens") if token_usage else None,
     }
 
 
@@ -876,6 +1339,206 @@ def rag_flow_node(state: GraphState, config: RunnableConfig) -> dict[str, Any]:
 
 
 _RECOVERABLE_INTENTS = (QuestionIntent.TYPE_A_COMPLAINT, QuestionIntent.TYPE_A_MAYBE)
+
+# Stopping boundary for the category/location history-recovery scans below -- a USER turn whose
+# OWN classification is one of these represents a confident, complete, standalone exchange on a
+# topic separate from any ongoing complaint (a civic-info question that got its own full RAG
+# answer, a status lookup, a capabilities question). Once a backward scan crosses one of these, it
+# must stop -- everything before it belongs to an earlier, disconnected conversation.
+#
+# FIRST ATTEMPT AT THIS BOUNDARY (kept here as a documented dead end, not silently deleted):
+# checking whether the LAST ASSISTANT turn was itself a clarification-question/DRAFT state. That
+# broke a real, existing, passing test the moment it shipped
+# (test_conversation_follow_up_uses_prior_location) -- "I'm in Mohali." -> "Got it, Mohali." ->
+# "Street light not working." must still recover Mohali, but "Got it, Mohali." is a plain
+# acknowledgment that matches NONE of this file's own clarification markers and carries no
+# `complaint_workflow_state` either, so that version stopped the scan immediately and lost a
+# genuinely still-open conversation. Keying off the USER's own message instead fixes both cases at
+# once: "I'm in Mohali." classifies as UNCLEAR (compatible with "still building the same
+# complaint", scan continues), while "How do I report a broken streetlight in Kolkata?" (the
+# live-reported bug's actual boundary) classifies as TYPE_B_SERVICE_INFO (a real stop).
+_TOPIC_BOUNDARY_INTENTS = (QuestionIntent.TYPE_B_SERVICE_INFO, QuestionIntent.TYPE_C_STATUS, QuestionIntent.CAPABILITIES)
+
+# SECOND, INDEPENDENT boundary, found live AFTER the fix above shipped: a citizen filed a real
+# streetlight complaint (category+location resolved, confirmed, complaint #19 actually created),
+# then started a completely NEW, unrelated complaint with "I want to file a complaint." (no
+# category named at all) -- and the scan still answered "Streetlights, in the same ward" again,
+# because "I want to file a complaint." is itself TYPE_A_MAYBE, not one of the TYPE_B/TYPE_C/
+# CAPABILITIES intents above, so the USER-message boundary never fired. A complaint attempt
+# reaching ANY terminal outcome is its own, separate kind of "the conversation moved on" -- even
+# though every turn in it (the description, "yes") is complaint-shaped start to finish, once that
+# attempt is DONE (whichever way), anything after it is unambiguously a fresh start, never a
+# continuation of the same one.
+#
+# THIRD, INDEPENDENT boundary, found live AFTER *that* fix shipped too, this time in a completely
+# different scan (`_resolve_worker_ward_text`'s own "last resort" tier below, not the
+# category/location ones above): a citizen filed a real streetlight complaint in Ahmedabad,
+# started and then CANCELLED a second one, then asked about garbage in Mohali (a real place, but
+# with no staffed worker there). The honest answer should have been "Sarthi has no workers in
+# Mohali yet" -- instead, the ward-recovery scan reached past the CANCELLED attempt's own
+# confirmation prompt (which still names Ahmedabad, from the FIRST, already-filed complaint) and
+# silently reused that ward. A cancelled/rejected/failed attempt is JUST as terminal as a
+# successful one -- "has been filed" alone missed this because a cancellation was never a
+# completion claim in the first place, so it was never in that marker set.
+#
+# All FOUR outcomes below are the complete set of terminal `complaint_workflow_state` values this
+# file's own complaint_flow_node ever returns (CONFIRMED success, and three different CANCELLED
+# paths: explicit "no", no-workers-available, and a create_complaint() failure) -- see each
+# marker's own originating `response_text` a few hundred lines above this file. Reused here for the
+# same reason `_UNSAFE_COMPLETION_CLAIM_PHRASES` already treats "has been filed" as a hard signal
+# elsewhere in this file: these are the deterministic text markers a caller that (like today's
+# actual frontend) never echoes back `complaint_workflow_state` can still recognize reliably.
+_COMPLAINT_TERMINAL_MARKERS = (
+    "has been filed", "has been registered", "has been created",  # CONFIRMED (success)
+    "i won't submit that complaint",  # CANCELLED (explicit "no")
+    "doesn't currently have workers set up",  # CANCELLED (honest no-coverage rejection)
+    "i couldn't file that complaint",  # CANCELLED (create_complaint() failure)
+)
+
+
+def _turn_closes_a_filed_complaint(turn: dict) -> bool:
+    """True when this ASSISTANT turn is complaint_flow_node's own response for a complaint attempt
+    that just reached ANY terminal outcome -- filed successfully, explicitly cancelled, honestly
+    rejected for having no coverage, or failed to create -- a definitive boundary for the
+    category/location/ward history-recovery scans in this file. Checked ALONGSIDE
+    `_TOPIC_BOUNDARY_INTENTS` (which is keyed off user turns), not instead of it -- the two catch
+    different shapes of "the conversation moved on"."""
+    if turn.get("role") != "assistant":
+        return False
+    explicit_state = turn.get("complaint_workflow_state")
+    if explicit_state is not None:
+        return explicit_state in ("CONFIRMED", "CANCELLED")
+    content = (turn.get("content") or "").lower()
+    return any(marker in content for marker in _COMPLAINT_TERMINAL_MARKERS)
+
+
+def _recover_photo_evidence_from_history(state: GraphState) -> dict[str, Any] | None:
+    """LIVE-REPORTED REQUEST: a citizen who attaches a photo, then answers a follow-up
+    clarification, then confirms with plain text -- three separate requests -- expects the SAME
+    photo on the eventual complaint, matching how the dedicated "Report an Issue" form behaves
+    (one request, so it never has this problem). The file is already validated and saved to disk
+    the moment it's first uploaded (see PhotoEvidenceRef's own docstring); what's missing on a
+    LATER, photo-less turn is just a way to re-find that reference. Scans conversation_history,
+    most recent first, for the last assistant turn's own echoed `photo_evidence` (see
+    ConversationTurn.photo_evidence) -- same two stopping points as every other history-recovery
+    scan in this file (`_TOPIC_BOUNDARY_INTENTS` on a user turn, `_turn_closes_a_filed_complaint`
+    on an assistant turn), so a photo from an unrelated, already-closed exchange is never reused
+    for a brand-new complaint."""
+    for turn in reversed(state.get("conversation_history") or []):
+        if turn.get("role") == "assistant":
+            if _turn_closes_a_filed_complaint(turn):
+                break
+            photo_evidence = turn.get("photo_evidence")
+            if photo_evidence:
+                return photo_evidence
+            continue
+        if turn.get("role") != "user":
+            continue
+        if classify(turn.get("content", "")).intent in _TOPIC_BOUNDARY_INTENTS:
+            break
+    return None
+
+
+# Reverses the exact `category.value.replace("_", " ").title()` formatting the `intent_ambiguous`
+# branch of clarification_flow_node uses to build its own question text (see
+# `_recover_photo_context_from_intent_ambiguous_turn` below) -- e.g. ServiceCategory.ROADS_POTHOLES
+# ("ROADS_POTHOLES") -> "Roads Potholes".
+_CATEGORY_LABEL_TO_ENUM = {cat.value.replace("_", " ").title(): cat for cat in ServiceCategory}
+
+# Matches the internal "[Attached photo shows: ...]" marker wherever it appears in
+# `complaint_text` (see input_processing_node's own docstring for where it's first added, and
+# `_recover_photo_context_from_intent_ambiguous_turn`/`_recover_from_confirmation_prompt_text` for
+# where it's reconstructed on a later turn).
+_PHOTO_CAPTION_MARKER_PATTERN = re.compile(r"\[Attached photo shows:\s*(?P<caption>.+?)\]", re.IGNORECASE | re.DOTALL)
+
+
+def _humanize_complaint_text_for_storage(text: str) -> str:
+    """LIVE-REPORTED BUG: a complaint filed from a photo (with no separate typed description, or
+    recovered across turns via the "Report a problem" shortcut) stored its bracketed, code-shaped
+    "[Attached photo shows: ...]" marker VERBATIM as the complaint's title/summary -- shown as-is
+    on CitizenDashboard/CitizenComplaintDetail, right next to the actual photo the persistence fix
+    now also attaches, so the citizen saw the same sentence twice: once in brackets as a
+    heading, once again as the "summary" line below it. That marker is load-bearing everywhere
+    UPSTREAM of complaint creation (`_awaiting_confirmation`'s prompt-matching, the cancellation
+    note, the "wasn't attached" note just above this function's call site all key off its exact
+    text) -- so it's left untouched everywhere else, and only unwrapped into plain prose here,
+    right at the point `complaint_text` is about to become permanent, citizen-facing storage."""
+    return _PHOTO_CAPTION_MARKER_PATTERN.sub(lambda m: m.group("caption").strip(), text).strip()
+
+# Matches the EXACT combined text `_image_context_prefix` + clarification_flow_node's own
+# `intent_ambiguous` branch produce together -- see both of those for where each half comes from.
+_INTENT_AMBIGUOUS_PHOTO_TURN_PATTERN = re.compile(
+    r"I can see the photo you attached \(it looks like: (?P<caption>.+?)\)\.\s*"
+    r"Are you reporting a problem with (?P<category_label>.+?), or would you like information about it\?",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _recover_photo_context_from_intent_ambiguous_turn(state: GraphState) -> tuple[ServiceCategory | None, str | None]:
+    """LIVE-REPORTED REQUEST ("more ChatGPT/Claude-like reasoning"): a citizen who attached a photo
+    with ambiguous text got asked "Are you reporting a problem with Roads Potholes, or would you
+    like information about it?" (see clarification_flow_node's `intent_ambiguous` branch) --
+    clicking "Report a problem" used to start category resolution completely fresh, because the
+    photo's own caption only ever lived in THAT assistant turn's text, never anywhere
+    `_recover_category_from_history` re-checks (it only scans USER turns). The citizen had to
+    re-answer a category the system had, in effect, already worked out from the photo, and even
+    after picking one, the stored complaint description was a bare button-click word ("Road")
+    instead of anything describing the actual photo.
+
+    Looks at the LAST assistant turn specifically for that exact combined message and, if found,
+    recovers BOTH the category (reversing `_CATEGORY_LABEL_TO_ENUM`'s own formatting) and the
+    photo's caption -- reformatted with the SAME "[Attached photo shows: ...]" marker
+    `input_processing_node` uses, so every later consumer of `complaint_text` (RAG grounding,
+    ComplaintAgent, ...) sees the identical shape it already expects, not a one-off variant.
+    Deliberately narrow: only the immediately preceding turn, and only this one, precise, known
+    message shape -- never a general "guess a caption from anywhere in history" heuristic."""
+    history = state.get("conversation_history") or []
+    if not history:
+        return None, None
+    last = history[-1]
+    if last.get("role") != "assistant":
+        return None, None
+    match = _INTENT_AMBIGUOUS_PHOTO_TURN_PATTERN.search(last.get("content") or "")
+    if not match:
+        return None, None
+    category = _CATEGORY_LABEL_TO_ENUM.get(match.group("category_label").strip())
+    caption = match.group("caption").strip()
+    return category, (f"[Attached photo shows: {caption}]" if caption else None)
+
+
+def _recover_text_before_intent_ambiguous_turn(state: GraphState) -> str | None:
+    """LIVE-REPORTED BUG, found live in Hindi: `_recover_photo_context_from_intent_ambiguous_turn`
+    above only ever recovers a complaint's description when the intent_ambiguous turn was PHOTO-
+    driven (its regex requires the "I can see the photo you attached..." prefix, English only) --
+    the far more common TEXT-ONLY case (a citizen's own complaint-shaped message, e.g. "...कचरा
+    जमा हो गया है, कोलकाता में", got asked "Are you reporting a problem with Waste Sanitation, or
+    would you like information about it?") had NO recovery at all. Clicking "Report a problem"
+    correctly routed into the complaint flow and correctly recovered the CATEGORY (both
+    `_last_turn_invites_complaint_reply` and `_recover_category_from_history` already work
+    correctly here, language-independent by construction) -- but the stored complaint DESCRIPTION
+    was left as the bare button label itself ("Report a problem"), overwriting the citizen's own
+    words entirely.
+
+    Unlike the photo-caption recovery above, this needs no per-language regex/capture group at
+    all: it reuses the SAME multi-language `_INTENT_AMBIGUOUS_CLARIFICATION_MARKERS` list every
+    other language-aware check in this file already relies on just to CONFIRM the last assistant
+    turn was this clarification (in any of the 6 supported languages), then simply takes the USER
+    turn immediately before it -- whatever language that happens to be in, verbatim, exactly like
+    a citizen who'd re-typed their own original message instead of clicking the button."""
+    history = state.get("conversation_history") or []
+    if len(history) < 2:
+        return None
+    last = history[-1]
+    if last.get("role") != "assistant":
+        return None
+    content = (last.get("content") or "").lower()
+    if not any(marker in content for marker in _INTENT_AMBIGUOUS_CLARIFICATION_MARKERS):
+        return None
+    prior = history[-2]
+    if prior.get("role") != "user":
+        return None
+    text = (prior.get("content") or "").strip()
+    return text or None
 
 
 def _recover_category_from_history(state: GraphState) -> ServiceCategory | None:
@@ -893,11 +1556,40 @@ def _recover_category_from_history(state: GraphState) -> ServiceCategory | None:
     is the procedure for garbage collection?") mentions a category word too, and without this
     check its category got "recovered" many turns later and used to file a real complaint whose
     stored description was that same informational question -- not anything resembling a
-    complaint."""
+    complaint.
+
+    LIVE-REPORTED FOLLOW-UP: the scan above ALSO had no stopping point at all -- it kept scanning
+    backward through the ENTIRE history, with no check for whether the conversation had already
+    moved on to something else in between. Live-reproduced: a citizen's complaint draft ("Garbage"
+    -> Waste Sanitation) was left dangling (never confirmed or cancelled); a completely unrelated
+    exchange happened afterward (a Nagpur streetlight question, fully answered); the citizen then
+    asked a vague, unrelated message again ("is this report is true") -- and this scan reached
+    RIGHT PAST the unrelated streetlight exchange to reattach the old, abandoned "Garbage"
+    category to the brand-new message. Fixed by stopping the scan the moment it crosses a USER
+    turn whose OWN classification is a confident, complete, standalone, different-topic intent
+    (see `_TOPIC_BOUNDARY_INTENTS`'s own docstring for why this is keyed off the user's message,
+    not the assistant's reply) -- anything before that turn belongs to an earlier, now-closed
+    topic and must never be reached. A genuinely continuing complaint (category asked in turn 1,
+    "I'm in Mohali."/"Use my current location." in a later turn) is unaffected: neither classifies
+    as one of the boundary intents, so the scan never stops early for that case.
+
+    THIRD boundary, live-reported after both fixes above: a citizen filed a real streetlight
+    complaint (confirmed, complaint #19 created), then started a brand-new, different complaint
+    with "I want to file a complaint." (no category at all) -- and this scan STILL answered
+    "Streetlights" again, because "I want to file a complaint." is TYPE_A_MAYBE, not one of
+    `_TOPIC_BOUNDARY_INTENTS`, so that boundary never fired for it. A successfully filed complaint
+    is its own kind of "moved on", even when every turn in it was complaint-shaped start to
+    finish -- see `_turn_closes_a_filed_complaint`, now also checked here."""
     for turn in reversed(state.get("conversation_history", [])):
+        if turn.get("role") == "assistant":
+            if _turn_closes_a_filed_complaint(turn):
+                break
+            continue
         if turn.get("role") != "user":
             continue
         result = classify(turn.get("content", ""))
+        if result.intent in _TOPIC_BOUNDARY_INTENTS:
+            break
         if result.service_category is not None and result.intent in _RECOVERABLE_INTENTS:
             return result.service_category
     return None
@@ -924,6 +1616,45 @@ def _awaiting_confirmation(conversation_history: list[dict]) -> bool:
     return _last_assistant_turn_matches(conversation_history, _CONFIRMATION_PROMPT_MARKERS)
 
 
+# Matches `_build_confirmation_prompt`'s own EXACT summary text (see that function) -- DOTALL
+# because `complaint_text` can itself contain a literal newline (the "[Attached photo shows: ...]"
+# suffix `input_processing_node` appends is on its own blank-line-separated line).
+_CONFIRMATION_PROMPT_TEXT_PATTERN = re.compile(
+    r'Your complaint would be about (?P<category_label>.+?) in ".*?":\s*"(?P<text>.+?)"\.\s*'
+    r"Would you like me to submit this complaint\?",
+    re.DOTALL,
+)
+
+
+def _recover_from_confirmation_prompt_text(state: GraphState) -> tuple[ServiceCategory | None, str | None]:
+    """LIVE-REPORTED BUG, found right after `_recover_photo_context_from_intent_ambiguous_turn`
+    shipped: that fix lets "Report a problem" recover a category straight from the photo
+    clarification, skipping the "What issue would you like to report?" round-trip entirely -- but
+    `_recover_complaint_draft_from_history` below (used on the VERY NEXT turn, the actual "yes,
+    submit it" reply) only ever re-classifies EARLIER USER turns' own raw text, never anything an
+    assistant turn established -- so it found nothing, and confirming silently fell back to asking
+    for a category all over again. The category/description recovered via the photo shortcut
+    never existed as a classify()-able USER turn to re-find.
+
+    Cuts out the middleman: the confirmation prompt about to be replied to is ALREADY the most
+    authoritative record of "what complaint is this," in Sarthi's own words -- parses it directly
+    (reversing the same category-label formatting `_CATEGORY_LABEL_TO_ENUM` reverses) instead of
+    re-deriving it from history a second, less reliable way. Checked as a FALLBACK only, after the
+    existing user-turn scan below finds nothing -- adds coverage for this gap without touching
+    the already-working, already-tested path every other confirmation reply still uses."""
+    history = state.get("conversation_history") or []
+    if not history:
+        return None, None
+    last = history[-1]
+    if last.get("role") != "assistant":
+        return None, None
+    match = _CONFIRMATION_PROMPT_TEXT_PATTERN.search(last.get("content") or "")
+    if not match:
+        return None, None
+    category = _CATEGORY_LABEL_TO_ENUM.get(match.group("category_label").strip())
+    return category, match.group("text").strip()
+
+
 def _recover_complaint_draft_from_history(state: GraphState) -> tuple[ServiceCategory | None, str]:
     """Like `_recover_category_from_history`, but also returns the ORIGINAL text of the turn that
     established the category -- needed when the CURRENT message is just a short confirmation
@@ -934,16 +1665,31 @@ def _recover_complaint_draft_from_history(state: GraphState) -> tuple[ServiceCat
     "yes". RED-TEAM SAFETY FIX: also skips any turn whose own bare classification was NOT
     complaint-shaped -- see `_recover_category_from_history`'s own docstring for the
     live-reproduced bug this closes (an informational question's category/text being "recovered"
-    as if it were a real complaint)."""
+    as if it were a real complaint). Same stopping-point fixes as that function too (see
+    `_TOPIC_BOUNDARY_INTENTS` and `_turn_closes_a_filed_complaint`) -- this scan must not reach
+    past an unrelated, already-closed exchange -- or past an already-successfully-filed complaint
+    -- into an even older, disconnected complaint attempt either."""
     for turn in reversed(state.get("conversation_history", [])):
+        if turn.get("role") == "assistant":
+            if _turn_closes_a_filed_complaint(turn):
+                break
+            continue
         if turn.get("role") != "user":
             continue
         content = turn.get("content", "")
         if is_explicit_confirmation(content) or is_explicit_cancellation(content):
             continue
         result = classify(content)
+        if result.intent in _TOPIC_BOUNDARY_INTENTS:
+            break
         if result.service_category is not None and result.intent in _RECOVERABLE_INTENTS:
             return result.service_category, content
+    # Fallback -- see `_recover_from_confirmation_prompt_text`'s own docstring for the exact gap
+    # this closes (a category recovered via the photo-clarification shortcut has no classify()-able
+    # USER turn for the scan above to find).
+    category, recovered_text = _recover_from_confirmation_prompt_text(state)
+    if category is not None:
+        return category, recovered_text or (state.get("normalized_message") or state.get("user_message", ""))
     return None, state.get("normalized_message") or state.get("user_message", "")
 
 
@@ -1038,7 +1784,26 @@ def _resolve_worker_ward_text(
                 worker_ward_text = _find_worker_ward_text_with_aliases(deps, ctx, hint)
                 if worker_ward_text is not None:
                     break
-    if worker_ward_text is None:
+    # LIVE-REPORTED BUG ("Pune fallback"), a THIRD instance found here, and the most insidious: the
+    # scan below matches an assistant turn's OWN echoed ward name ('Your complaint would be about
+    # ... in "Bengaluru"') just as readily as a citizen-given one -- including when that echoed
+    # ward was ITSELF a wrong substitution from an earlier turn (e.g. this exact Pune-fallback bug
+    # firing once for "Street light problem in Atlantis."). Once that happens, the WRONG ward is
+    # now sitting in `conversation_history` in Sarthi's own words, and repeating the identical
+    # message finds it again here -- a self-reinforcing loop, live-reproduced: every resend of the
+    # same "Atlantis" message kept re-offering the same wrong city, because each wrong reply became
+    # the next request's own history. Gated the same way as `_resolve_location`'s citizen_home_ward
+    # tier and `_resolve_own_ward_worker_text`'s call site above (see location_extractor.py's
+    # `looks_like_it_names_an_unrecognized_place`), further broadened by
+    # `_should_skip_home_ward_fallback`'s own docstring (a FIFTH instance: gibberish typed directly
+    # as an explicit location reply doesn't "look like" a place either): skip this ENTIRE
+    # last-resort scan too whenever the citizen already gave ANY location signal this turn, so a
+    # turn that already carries its own (unresolved) signal can't go fishing through history for a
+    # stand-in city instead. Does not affect the legitimate case this tier exists for (see its own
+    # comment below): a bare confirmation reply like "yes, submit it" carries no `ctx.location_text`
+    # of its own and doesn't match the heuristic either, so recovering an earlier genuine
+    # location_text pick from the echoed confirmation prompt is unaffected.
+    if worker_ward_text is None and not _should_skip_home_ward_fallback(ctx, complaint_text):
         # Last resort, and specifically what makes the confirmation-reply turn work when the
         # citizen originally gave the location via a SEPARATE structured signal (`ctx.
         # location_text` on an earlier turn, e.g. a location-picker selection) rather than typing
@@ -1050,10 +1815,22 @@ def _resolve_worker_ward_text(
         # which becomes a real turn in `conversation_history` the moment the citizen replies to
         # it -- so scanning every turn (not just user ones) for the same city/ward hint recovers
         # it reliably, without needing a second, separate persistence mechanism for `location_text`.
+        #
+        # LIVE-REPORTED BUG: this scan had no stopping point either -- see
+        # `_turn_closes_a_filed_complaint`'s own docstring for the exact live-reported sequence
+        # (an Ahmedabad complaint filed, a second one started and CANCELLED, then a citizen asked
+        # about Mohali -- which has no staffed worker) that this closes. Without a boundary, this
+        # scan reached straight past the cancelled attempt's own confirmation prompt (which still
+        # named Ahmedabad, from the FIRST, unrelated, already-filed complaint) and silently reused
+        # that ward instead of honestly saying Mohali has no coverage yet.
         for turn in reversed(state.get("conversation_history") or []):
+            if turn.get("role") == "assistant" and _turn_closes_a_filed_complaint(turn):
+                break
             content = turn.get("content", "")
             if not content:
                 continue
+            if turn.get("role") == "user" and classify(content).intent in _TOPIC_BOUNDARY_INTENTS:
+                break
             match = _find_worker_ward_text_with_aliases(deps, ctx, content)
             if match is None:
                 for token in re.findall(r"[^\s,.;:!?()\"]+", content):
@@ -1127,11 +1904,13 @@ def _build_confirmation_prompt(
         f"\"{complaint_text.strip()}\". Would you like me to submit this complaint? "
         "Reply \"yes, submit it\" to confirm, or \"no\" to cancel."
     )
+    options = _CONFIRMATION_OPTIONS
     return {
         "response_text": _localize(summary, state, config),
         "follow_up_required": True,
         "follow_up_question": "Would you like me to submit this complaint?",
-        "follow_up_options": ["Yes, submit it", "No, cancel"],
+        "follow_up_options": options,
+        "follow_up_options_labels": _localize_options(options, state, config),
         "routed_to": "NONE_AWAITING_CONFIRMATION",
         "sources": [],
         "service_category": category.value,
@@ -1164,11 +1943,30 @@ def complaint_flow_node(state: GraphState, config: RunnableConfig) -> dict[str, 
     awaiting_confirmation = _awaiting_confirmation(history)
 
     if awaiting_confirmation and is_explicit_cancellation(text):
+        # LIVE-REPORTED REQUEST: a citizen who cancelled a photo-attached complaint, then
+        # described a genuinely new complaint afterward, got no photo on the new one with no
+        # explanation why -- confusing, since nothing said the photo was gone. This backend has no
+        # server-side session (see this function's own docstring) and never persists an uploaded
+        # photo's actual bytes unless a complaint is genuinely CREATED (see complaint_creation
+        # below) -- a cancelled attempt's photo is truly gone, not recoverable, so the honest fix
+        # is telling the citizen that up front, right when they cancel, rather than silently
+        # reusing a real (but riskier -- see this fix's own scoping conversation) mechanism to
+        # smuggle the same photo into a later complaint. Detected via the SAME embedded
+        # "[Attached photo shows: ...]" marker `input_processing_node` folds into `normalized_
+        # message` for any captioned image (see that node's own docstring) -- which is what
+        # `_build_confirmation_prompt` below echoes verbatim into the confirmation prompt just
+        # cancelled, so its presence there is a reliable, already-available signal, no new state
+        # needed.
+        last_turn = history[-1] if history else None
+        cancelled_had_photo = bool(
+            last_turn and last_turn.get("role") == "assistant"
+            and "[attached photo shows:" in (last_turn.get("content") or "").lower()
+        )
+        cancel_text = "Okay, I won't submit that complaint. Let me know if you'd like to report something else."
+        if cancelled_had_photo:
+            cancel_text += " Note: the photo you attached isn't kept once a complaint is cancelled -- if you report this again and want a photo included, please attach it again."
         return {
-            "response_text": _localize(
-                "Okay, I won't submit that complaint. Let me know if you'd like to report something else.",
-                state, config,
-            ),
+            "response_text": _localize(cancel_text, state, config),
             "routed_to": "NONE_CANCELLED",
             "sources": [],
             "complaint_workflow_state": "CANCELLED",
@@ -1208,6 +2006,28 @@ def complaint_flow_node(state: GraphState, config: RunnableConfig) -> dict[str, 
         category_value = state.get("service_category")
         category = ServiceCategory(category_value) if category_value else _recover_category_from_history(state)
         complaint_text = text
+        # LIVE-REPORTED REQUEST ("more ChatGPT/Claude-like reasoning") -- see
+        # `_recover_photo_context_from_intent_ambiguous_turn`'s own docstring. A bare button-click
+        # reply to the intent_ambiguous photo clarification ("Report a problem", or one of the
+        # category options below it) carries no meaningful description of its own -- if the
+        # immediately preceding turn was that exact photo clarification, recover the category (only
+        # when this turn's own text didn't already supply one, e.g. "Report a problem" alone -- a
+        # category button like "Road" already resolves its own category above and keeps it) and a
+        # real, photo-derived description to use as the stored complaint text instead of the bare
+        # button label.
+        if text.strip() in (_INTENT_AMBIGUOUS_OPTIONS[0], *_CATEGORY_CLARIFICATION_OPTIONS):
+            recovered_category, recovered_text = _recover_photo_context_from_intent_ambiguous_turn(state)
+            # LIVE-REPORTED BUG (Hindi): the photo-specific recovery above only ever fires for a
+            # PHOTO-driven intent_ambiguous turn -- the far more common text-only case (no photo at
+            # all) fell through with `recovered_text` still None, leaving `complaint_text` as the
+            # bare button label itself. See `_recover_text_before_intent_ambiguous_turn`'s own
+            # docstring.
+            if recovered_text is None:
+                recovered_text = _recover_text_before_intent_ambiguous_turn(state)
+            if category is None:
+                category = recovered_category
+            if recovered_text:
+                complaint_text = recovered_text
 
     if category is None:
         return {
@@ -1289,10 +2109,25 @@ def complaint_flow_node(state: GraphState, config: RunnableConfig) -> dict[str, 
         # No location signal of ANY kind exists anywhere in this exchange -- ONLY here is the
         # citizen's own registered ward tried, as a true last resort (see
         # `_resolve_own_ward_worker_text`'s own docstring).
-        worker_ward_text, own_ward_resolved = _resolve_own_ward_worker_text(deps, ctx)
-        if worker_ward_text is not None:
-            resolved_ward = own_ward_resolved
-            has_real_location = True
+        #
+        # LIVE-REPORTED BUG ("Pune fallback"), found here too: `known_place` above only catches a
+        # place that resolved to something (an explicit `ctx.location_text`, or a real RAG
+        # gazetteer city/state) -- it says nothing about a place NAMED in the text that resolved to
+        # NOTHING at all, e.g. "Street light problem in Atlantis." from a citizen whose own home
+        # ward happens to be a real, staffed city (Bengaluru). Live-reproduced: that citizen got a
+        # confirmation prompt offering to file the complaint in Bengaluru -- their home city, which
+        # they never mentioned -- instead of being asked to clarify the location, purely because
+        # their OWN ward happened to resolve to a real worker where "Test Ward"-style placeholder
+        # wards do not. Gated the same way as `_resolve_location`'s own citizen_home_ward tier (see
+        # `_should_skip_home_ward_fallback`'s own docstring): `ctx.location_text` is always falsy by
+        # the time this line runs (the `known_place` check just above already returns early
+        # whenever it's set), so in practice this only ever gates on the message-text heuristic --
+        # shared helper used anyway, for one obvious place to read the full reasoning.
+        if not _should_skip_home_ward_fallback(ctx, complaint_text):
+            worker_ward_text, own_ward_resolved = _resolve_own_ward_worker_text(deps, ctx)
+            if worker_ward_text is not None:
+                resolved_ward = own_ward_resolved
+                has_real_location = True
 
     if not has_real_location:
         return {
@@ -1319,18 +2154,42 @@ def complaint_flow_node(state: GraphState, config: RunnableConfig) -> dict[str, 
     # like the dedicated complaint form does: the legacy single-photo column for backward
     # compatibility, and a real ComplaintEvidence row via the EXISTING evidence_repository -- no
     # second image-storage system (see this module's docstring).
+    #
+    # LIVE-REPORTED REQUEST: a fresh photo attached THIS turn (`ctx.image_saved`) always wins when
+    # present; otherwise, recover a photo attached on an EARLIER turn of this same exchange (see
+    # `_recover_photo_evidence_from_history`'s own docstring) -- the file itself was already
+    # validated and saved to disk back when it was first uploaded, so this only needs its
+    # reference, never a re-upload.
+    photo_ref = (
+        {
+            "filename": ctx.image_saved.filename,
+            "original_name": ctx.image_saved.original_name,
+            "content_type": ctx.image_saved.content_type,
+            "size": ctx.image_saved.size,
+        }
+        if ctx.image_saved is not None
+        else _recover_photo_evidence_from_history(state)
+    )
     creation_span = tracing.start_child_run(
         root, "complaint_creation", "tool",
-        inputs={"service_category": category.value, "language": state.get("original_language")},
+        inputs={"service_category": category.value, "language": state.get("response_language")},
     )
     try:
+        # response_language (auto-detected, see language_node), not original_language -- this is
+        # what `complaint_text` is ACTUALLY written in, which is what ComplaintAgent needs to
+        # translate it correctly. Using the stale client-supplied language here previously risked
+        # a real data-integrity bug: a citizen whose UI toggle disagreed with what they actually
+        # typed would get their complaint's `translated_text` stored WRONG (treated as needing no
+        # translation, or translated FROM the wrong source language) -- silently corrupting the
+        # exact field workers rely on to read complaints in their own language.
         complaint = deps.complaint_agent.create_complaint(
             db=ctx.db,
             citizen_id=str(ctx.user.id),
-            language_code=state.get("original_language") or "en",
-            text=complaint_text,
+            language_code=state.get("response_language") or "en",
+            text=_humanize_complaint_text_for_storage(complaint_text),
             audio_chunks=None,
-            photo_path=ctx.image_saved.filename if ctx.image_saved else None,
+            photo_path=photo_ref["filename"] if photo_ref else None,
+            category=category,
         )
     except (ValueError, AIServiceError) as exc:
         logger.warning("Ask Sarthi complaint_flow: complaint creation failed: %s", exc)
@@ -1345,20 +2204,22 @@ def complaint_flow_node(state: GraphState, config: RunnableConfig) -> dict[str, 
         }
     tracing.end_run(creation_span, outputs={"complaint_id": complaint.id, "status": complaint.status})
 
-    if ctx.image_saved is not None:
-        # The file is already validated and written to disk (see ask_with_image()) -- this only
-        # records the ComplaintEvidence row, the exact same primitive _save_evidence_files()
-        # itself calls, so this doesn't re-validate/re-write a file that's already safely saved.
+    if photo_ref is not None:
+        # The file is already validated and written to disk (either just now, by ask_with_image(),
+        # or on an earlier turn of this same exchange -- see `_recover_photo_evidence_from_history`)
+        # -- this only records the ComplaintEvidence row, the exact same primitive
+        # _save_evidence_files() itself calls, so this doesn't re-validate/re-write a file that's
+        # already safely saved.
         evidence_repository.add_evidence(
             ctx.db,
             complaint_id=complaint.id,
             update_id=None,
             uploaded_by=ctx.user.id,
             uploader_role="citizen",
-            file_name=ctx.image_saved.original_name,
-            file_path=ctx.image_saved.filename,
-            file_type=ctx.image_saved.content_type,
-            file_size=ctx.image_saved.size,
+            file_name=photo_ref["original_name"],
+            file_path=photo_ref["filename"],
+            file_type=photo_ref["content_type"],
+            file_size=photo_ref["size"],
             stage="CITIZEN_COMPLAINT",
         )
 
@@ -1408,6 +2269,18 @@ def complaint_flow_node(state: GraphState, config: RunnableConfig) -> dict[str, 
         response_text = f"Your {category_label} complaint has been filed (complaint #{complaint.id}) and assigned to a worker."
     else:
         response_text = f"Your {category_label} complaint has been filed (complaint #{complaint.id}). It's pending assignment to a worker in your area."
+
+    # `complaint_text` here can be a RECOVERED description that references a photo (via
+    # `_recover_photo_context_from_intent_ambiguous_turn`/`_recover_from_confirmation_prompt_text`'s
+    # own "[Attached photo shows: ...]" marker), but `photo_ref` above already recovers the actual
+    # SAVED FILE from anywhere earlier in this same exchange too -- so this note now only fires in
+    # the genuinely unrecoverable case: the conversation crossed a topic/complaint boundary between
+    # the photo and this confirmation (see `_recover_photo_evidence_from_history`'s own stopping
+    # points), so the photo's own file reference is truly gone, even though the recovered text
+    # still describes it. Rare in practice, but still worth being honest about instead of silently
+    # filing with no photo and no explanation.
+    if photo_ref is None and "[attached photo shows:" in complaint_text.lower():
+        response_text += " Note: since your photo wasn't included with this exact reply, it wasn't attached to the complaint."
 
     return {
         "response_text": _localize(response_text, state, config),

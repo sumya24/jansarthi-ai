@@ -55,6 +55,7 @@ test("super admin creates a worker, who can then log in and see their (empty) qu
   await page.getByLabel("Full name").fill("Ramesh Kadam");
   await page.getByLabel("Phone number").fill(workerPhone);
   await page.getByLabel("Temporary password").fill("workerpass123");
+  await page.getByLabel("Confirm password").fill("workerpass123");
   await page.getByLabel("Assign to ward").fill(WARD);
   // The modal defaults to Marathi — pick English explicitly so the worker's dashboard (and the
   // assertions below) render in the language this test actually checks.

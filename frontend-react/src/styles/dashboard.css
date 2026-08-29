@@ -104,3 +104,312 @@
 /* Status history timeline. */
 .status-history-entry { display: flex; justify-content: space-between; gap: 10px; font-size: 12.5px; padding: 6px 0; border-bottom: 1px solid var(--line); }
 .status-history-entry:last-child { border-bottom: none; }
+
+/* My Area's persistent filter sidebar (category + status) -- replaces two chip rows with an
+   always-visible left rail, since this page's list (the whole ward, not just one citizen's own
+   complaints) tends to be long enough that a persistent filter earns its keep. See MyArea.tsx. */
+.area-with-sidebar { display: flex; gap: 24px; align-items: flex-start; }
+.area-sidebar {
+  width: 210px; flex-shrink: 0; background: var(--surface); border: 1px solid var(--line);
+  border-radius: 14px; padding: 18px 12px;
+  display: flex; flex-direction: column; gap: 3px; box-shadow: var(--shadow-sm);
+}
+.area-sidebar h4 {
+  font-size: 10.5px; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase;
+  color: var(--ink-3); margin: 4px 10px 6px;
+}
+.area-sidebar h4.second { margin-top: 16px; }
+/* Same shape/spacing/transition as .nav-drawer a (global.css) -- this sidebar is functionally the
+   same "which view am I in" navigation idea as the main nav drawer, just scoped to one page, so it
+   reads as the same design language rather than a one-off. */
+.area-side-item {
+  display: flex; align-items: center; gap: 11px; padding: 10px 12px; border-radius: 10px;
+  font-size: 13.5px; font-weight: 600; color: var(--ink-2); cursor: pointer;
+  border: none; background: none; width: 100%; text-align: left; font-family: inherit;
+  transition: color var(--dur-fast) var(--ease), background-color var(--dur-fast) var(--ease);
+}
+.area-side-item:hover { color: var(--ink); background: var(--surface-2); }
+.area-side-item.active { color: var(--accent-fg); background: color-mix(in srgb, var(--accent-fg) 12%, var(--surface)); }
+.area-side-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+.area-main-col { flex: 1; min-width: 0; }
+
+@media (max-width: 780px) {
+  .area-with-sidebar { flex-direction: column; }
+  .area-sidebar { width: 100%; }
+}
+
+/* Citizen Home dashboard -- greeting/stats/chart/attention/activity panels (CitizenHome.tsx).
+   Reuses .surface-card as the base for every panel, same as every other dashboard page. */
+.home-panels { display: grid; grid-template-columns: 1.4fr 1fr; gap: 16px; }
+@media (max-width: 780px) {
+  .home-panels { grid-template-columns: 1fr; }
+}
+.home-panel-title {
+  font-size: 11px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase;
+  color: var(--ink-3); margin: 0 0 14px; display: flex; justify-content: space-between; align-items: baseline; gap: 8px;
+}
+.home-panel-title span.sub { font-size: 10.5px; font-weight: 500; text-transform: none; letter-spacing: 0; color: var(--ink-3); }
+
+.home-bars { display: flex; align-items: flex-end; gap: 8px; height: 110px; }
+/* Gradient's bottom stop is mixed toward BLACK, never toward --surface -- mixing toward
+   --surface (the card's own background) made every bar fade to the exact color behind it, so
+   in light mode (where --surface is pure white) short bars nearly vanished at the base instead
+   of reading as a shaded bar. Mixing toward black instead stays a visibly-shaded version of the
+   same accent color against either theme's card background. */
+.home-bars .bar {
+  flex: 1; min-height: 4px; border-radius: 4px 4px 0 0;
+  background: linear-gradient(180deg, var(--accent-fg), color-mix(in srgb, var(--accent-fg) 82%, black));
+}
+.home-bars-labels { display: flex; gap: 8px; margin-top: 8px; }
+.home-bars-labels span { flex: 1; text-align: center; font-size: 10.5px; color: var(--ink-3); }
+
+/* LIVE-REPORTED: was `justify-content: space-between`, back when the dot (a single flex child)
+   sat AFTER the text -- that pushed it to the row's far right, easy to miss. Now the dot leads
+   the row (see the JSX in CitizenHome.tsx), so plain flex-start + the existing `gap` is what
+   actually produces "dot, then text" instead of "text ... dot" with a stretched gap between. */
+.home-attn-row { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--line); cursor: pointer; background: none; border-left: none; border-right: none; border-top: none; width: 100%; text-align: left; font-family: inherit; }
+.home-attn-row:last-child { border-bottom: none; }
+.home-attn-row:hover .home-attn-title { color: var(--accent-fg); }
+.home-attn-title { font-size: 13px; font-weight: 600; color: var(--ink); transition: color var(--dur-fast) var(--ease); }
+.home-attn-msg { font-size: 11.5px; color: var(--ink-3); margin-top: 2px; }
+.home-attn-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent-fg); flex-shrink: 0; }
+.home-attn-dot.read { background: var(--ink-3); opacity: 0.5; }
+
+/* Unread notification glow -- an expanding-and-fading ring, same technical pattern as the
+   AI-surfaces-only .ai-dot's own breathing glow (global.css), but a separate keyframe/class
+   since this one is deliberately used for "new activity" emphasis, not AI activity. */
+@keyframes notif-dot-glow {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent-fg) 55%, transparent); }
+  50% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent-fg) 0%, transparent); }
+}
+.home-attn-dot, .home-feed-dot.unread { animation: notif-dot-glow 1.8s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .home-attn-dot, .home-feed-dot.unread { animation: none; box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-fg) 25%, transparent); }
+}
+
+.home-feed-row { display: flex; gap: 10px; align-items: flex-start; padding: 9px 0; border-bottom: 1px solid var(--line); cursor: pointer; background: none; border-left: none; border-right: none; border-top: none; width: 100%; text-align: left; font-family: inherit; }
+.home-feed-row:last-child { border-bottom: none; }
+.home-feed-row:hover .home-feed-text { color: var(--accent-fg); }
+.home-feed-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent-fg); margin-top: 5px; flex-shrink: 0; }
+.home-feed-dot.read { background: var(--ink-3); opacity: 0.5; }
+.home-feed-text { font-size: 12.5px; color: var(--ink); transition: color var(--dur-fast) var(--ease); }
+
+/* Admin dashboard: "Workers & location" row -- complaints-by-location drill-down (state ->
+   district -> ward, LocationHierarchyPanel.tsx) beside the AI health chart (AiHealthChart.tsx).
+   Replaces the earlier Workers-summary / location-bar-chart / AI-summary layout: Workers moved
+   out of this row entirely, and the AI summary that used to sit full-width below the complaints
+   table now lives here instead, promoted into the same row as location. Equal 1fr/1fr columns +
+   the grid default align-items:stretch (no override here) is what keeps both panels the same
+   height regardless of how many rows/how tall the chart's container ends up being. */
+.admin-loc-ai-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 30px; }
+/* Equal-height stretch (the grid default -- no align-items override) keeps all 3 panels the same
+   height, same as the original Location/AI-health pair. LIVE-REPORTED: this used to leave a dead
+   gap below Location's 7 rows whenever the row stretched taller than that list needed -- fixed not
+   by breaking the equal-height stretch (`align-items: start` was tried and rejected: the user
+   wants matching card heights), but by having `.loc-list-box` center its own rows as a block (see
+   below) so any leftover stretch space splits evenly above/below instead of dead-ending after the
+   last row. */
+.admin-loc-ai-row.three-col { grid-template-columns: repeat(3, 1fr); }
+/* LIVE-REPORTED BUG: an intermediate "3 columns -> 2 columns" step used to sit here before the
+   980px full collapse -- wrapping the 3rd (donut) panel onto its own second grid row while
+   Location+AI-health stayed paired on row 1. AiHealthChart sizes its own SVG by measuring its
+   wrap div's real pixel height via ResizeObserver (see that component's own docstring) precisely
+   so it can fill whatever height the equal-height row stretch gives it -- reflowing from one row
+   of 3 stretch-partners into two rows (2 then 1) mid-render fed back into that observer and blew
+   the chart's own measured height up to 600px+ (a real runaway, not a one-off glitch: reproduced
+   at every width from 1150px down to 900px). Going straight from 3 columns to the single-column
+   980px breakpoint below removes that unstable intermediate shape entirely. */
+@media (max-width: 980px) {
+  /* `.admin-loc-ai-row.three-col` (0,2,0 specificity) otherwise beats the plain
+     `.admin-loc-ai-row` collapse rule right above (0,1,0) regardless of source order, so without
+     restating the `.three-col` selector here explicitly the 3-panel row would never actually
+     collapse to 1 column at this breakpoint -- it would just stay squeezed into 3 increasingly
+     tiny columns all the way down to mobile widths. */
+  .admin-loc-ai-row, .admin-loc-ai-row.three-col { grid-template-columns: 1fr; }
+}
+.admin-loc-ai-panel { padding: 16px 18px; display: flex; flex-direction: column; }
+.admin-loc-ai-panel h6 {
+  font-size: 11px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-3);
+  margin: 0 0 12px; display: flex; justify-content: space-between; align-items: baseline; gap: 8px;
+}
+.admin-loc-ai-body { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+
+/* -- location drill-down -- */
+.loc-crumbs { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; margin: 0 0 10px; font-size: 13px; }
+.loc-crumb-btn { background: none; border: none; padding: 4px 6px; border-radius: 6px; font-size: 13px; font-weight: 600; color: var(--ink-2); cursor: pointer; font-family: inherit; }
+.loc-crumb-btn:hover { background: var(--surface-2); color: var(--ink); }
+.loc-crumb-btn.current { color: var(--ink); cursor: default; }
+.loc-crumb-btn.current:hover { background: none; }
+.loc-crumb-sep { color: var(--ink-3); font-size: 12px; }
+
+.loc-list-box { background: var(--paper); border: 1px solid var(--line); border-radius: 10px; padding: 10px; flex: 1; overflow-y: auto; min-height: 220px; max-height: 420px; }
+.loc-list { display: flex; flex-direction: column; gap: 6px; }
+.loc-row {
+  display: flex; align-items: center; gap: 12px; width: 100%; text-align: left;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px;
+  cursor: pointer; font-family: inherit; color: var(--ink); box-shadow: var(--shadow-sm);
+  transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease-out);
+}
+.loc-row:hover { border-color: var(--accent-fg); box-shadow: var(--shadow-md); transform: translateY(-1px); }
+.loc-row:focus-visible { outline: 2px solid var(--accent-fg); outline-offset: 2px; }
+.loc-row.leaf { cursor: default; box-shadow: none; }
+.loc-row.leaf:hover { border-color: var(--line); box-shadow: none; transform: none; }
+/* max-width was 210px -- fine for short state names, but real ward names ("Ward 3 — Indiranagar,
+   Bengaluru") sit right at that boundary and got needlessly truncated even though the row still
+   had plenty of unused width (the status bar next to it happily shrinks to make room). 300px
+   covers real ward-name lengths without truncating; the `title` attribute on this span still
+   shows the full name on hover for the rare longer one that still clips. */
+.loc-name { font-size: 13.5px; font-weight: 600; flex: 0 0 auto; min-width: 130px; max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.loc-bar-wrap { flex: 1; min-width: 0; }
+.loc-bar { display: flex; height: 9px; border-radius: 5px; overflow: hidden; background: var(--surface-2); }
+.loc-bar span { height: 100%; }
+.loc-count { font-size: 12px; font-weight: 700; flex-shrink: 0; min-width: 30px; text-align: center; background: var(--surface-2); color: var(--ink); border-radius: 999px; padding: 3px 9px; }
+.loc-count.zero { color: var(--ink-3); background: transparent; }
+.loc-chev { color: var(--ink-3); flex-shrink: 0; }
+.loc-empty { font-size: 12.5px; color: var(--ink-3); padding: 20px 4px; text-align: center; margin: auto; }
+.loc-legend { display: flex; flex-wrap: wrap; gap: 8px 12px; margin-top: 10px; font-size: 11px; color: var(--ink-2); flex-shrink: 0; }
+.loc-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.loc-legend i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
+
+/* -- "complaints by service" zoom-drilldown donut (ServiceDonutPanel) -- plays the same role as
+   the location drill-down above (service -> status instead of state -> district -> ward), with a
+   zoom-morph transition instead of a clickable list. Class names are plain CSS (not the app's
+   BEM-ish convention) because the slice elements are created/updated imperatively in a ref-driven
+   effect, not through JSX class composition. */
+.svc-back-btn {
+  display: inline-flex; align-items: center; gap: 5px; background: var(--surface-2); border: 1px solid var(--line);
+  padding: 4px 10px 4px 7px; border-radius: 20px; font-size: 11.5px; font-weight: 700; color: var(--ink);
+  cursor: pointer; font-family: inherit; opacity: 0; transform: translateX(-6px); pointer-events: none;
+  transition: opacity var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+}
+.svc-back-btn.show { opacity: 1; transform: translateX(0); pointer-events: auto; }
+.svc-back-btn:hover { background: var(--line); }
+.svc-crumb-current { font-size: 13px; font-weight: 700; color: var(--ink); }
+
+/* Wraps the donut+legend and the hint line as ONE block, vertically centered in whatever height
+   this panel picks up from its equal-height row-mates (Location/AI health) -- the crumbs row
+   above stays pinned to the top instead (consistent with the location panel's own breadcrumbs).
+   Donut-over-legend (a column), not side-by-side, so this block actually uses the VERTICAL space
+   the row's equal-height stretch gives it, the same way Location's row-list and the AI chart both
+   fill their own height. Sized (donut 150px, legend below) so this panel's OWN natural height
+   lands close to Location's/AI-health's -- an earlier, bigger version (200px donut, taller
+   legend) overshot both of theirs by ~130px, which would have forced THEM to stretch down with
+   dead space to match, the opposite of what was wanted (LIVE-REPORTED: match the other two, don't
+   make them match this one). */
+/* LIVE-REPORTED: pinned to the top (flex-start) rather than centered -- the ring sits right under
+   the crumbs row instead of floating in the middle of the card with as much empty space above it
+   as below. */
+/* Negative margin pulls the ring up closer to the crumbs row (LIVE-REPORTED: move it higher) --
+   shared `.loc-crumbs`/`.admin-loc-ai-panel` spacing above stays untouched since Location's own
+   panel also uses those classes. */
+.svc-donut-body { flex: 1; display: flex; flex-direction: column; justify-content: flex-start; align-items: center; min-height: 0; gap: 8px; margin-top: -10px; }
+.svc-donut-stage { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+/* LIVE-REPORTED: shrunk back down from 270px -- growing the ring on request each time had pushed
+   this row's overall (equal-height) height up along with it, dragging Location/AI-health taller
+   too.
+   LIVE-REPORTED FOLLOW-UP: shrunk again, 200px -> 172px, this time to close a dead-space GAP
+   instead (Location's own natural content, with today's 6 states, was the shortest of the three
+   panels -- AI-health and this donut were both stretching the row taller than Location needed).
+   This shrink alone left the center label (below) crowding right up against the ring -- it was
+   still sized for the 200px hole -- so the two must be changed together, verified by an actual
+   screenshot of the render, not by scaling the font-size on paper alone. */
+.svc-donut-svg-wrap { position: relative; width: 172px; height: 172px; flex-shrink: 0; }
+/* LIVE-REPORTED BUG: the <svg> itself carries its own `width="200" height="200"` HTML attributes
+   (ServiceDonutPanel.tsx) -- a leftover from before the wrapper above was ever shrunk. Without this
+   rule, the svg ignores its wrapper's (smaller) CSS size entirely and renders at its own attribute
+   size instead, so the ring was actually still 200x200 and OVERFLOWING the 172x172 wrapper by 28px
+   on every side -- invisible in a quick glance/screenshot crop, but real: it pushed into the space
+   meant for the legend below. This forces the svg to always match its wrapper's actual CSS size,
+   so the two can never drift apart again regardless of what the JSX attribute says. */
+.svc-donut-svg-wrap svg { width: 100%; height: 100%; display: block; }
+/* The label sits inside the donut's own hole (a circle, not a square) -- both its WIDTH and its
+   combined-with-the-number HEIGHT have to stay inside that circle's inscribed-rectangle limit, or
+   long labels ("Roads & Potholes", "Total complaints") crowd right up against the ring itself,
+   even overlapping its colored arc on real content (LIVE-REPORTED, twice -- first at r=15.9/
+   stroke 6.5's ~103px hole, still too tight for the longer labels; see ServiceDonutPanel.tsx's own
+   CIRC comment for the r=17/stroke 5 change that grew it to ~119px at this 172px render size).
+   Numbers below are sized for that actual geometry, not just "whatever looks OK" -- change
+   svc-donut-svg-wrap's size OR the ring's r/stroke-width and these need re-checking together
+   (re-screenshot and inspect the actual render, don't just scale the numbers proportionally on
+   paper -- see the ring-shrink LIVE-REPORTED FOLLOW-UP below for why this one was missed once
+   already). */
+.svc-donut-center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; pointer-events: none; text-align: center; padding: 0 4px; }
+.svc-donut-n { font-size: 22px; font-weight: 800; letter-spacing: -0.02em; line-height: 1; transition: opacity var(--dur-fast) var(--ease); }
+.svc-donut-lbl { font-size: 7px; font-weight: 700; letter-spacing: 0.02em; text-transform: uppercase; color: var(--ink-3); margin-top: 3px; max-width: 74px; line-height: 1.2; transition: opacity var(--dur-fast) var(--ease); }
+
+.svc-slice { cursor: pointer; transition: stroke-dasharray 520ms cubic-bezier(.65,0,.35,1), stroke-dashoffset 520ms cubic-bezier(.65,0,.35,1), opacity 420ms ease, filter var(--dur-fast) var(--ease); }
+.svc-slice.svc-leaf { cursor: default; }
+.svc-slice:hover:not(.svc-leaf) { filter: brightness(1.15); }
+
+/* LIVE-REPORTED BUG: this list holds 4 rows at the "all services" level but 2-5 rows once
+   drilled into one specific service's own status breakdown (however many statuses that service
+   actually has) -- with no reserved height, the panel's own natural content height changed with
+   whichever count was currently showing, and since this row's equal-height stretch (see
+   `.admin-loc-ai-row` above) recomputes off the TALLEST panel's natural height on every render,
+   clicking between services visibly grew/shrank the whole row, not just this card. `min-height`
+   reserves room for the max realistic count (5 statuses) up front so the natural height -- and
+   therefore the row's stretched height -- never moves regardless of which view is showing;
+   `justify-content: center` centers a shorter list (fewer statuses, or the 4-service view) within
+   that reserved space instead of leaving it flush to the top. LIVE-REPORTED (round 2): 92px was
+   only measured against the 4-row case, which happened to sit exactly AT that floor -- real 5-row
+   content actually needs ~114px, so drilling into any service with all 5 statuses still grew the
+   card by the ~22px difference. 120px comfortably covers the real 5-row measurement with a small
+   margin; re-measure via each row's real rendered height (not estimated from font-size/padding
+   math -- that undershot twice) before changing row sizing again. */
+.svc-donut-legend { display: flex; flex-direction: column; justify-content: center; gap: 4px; width: 100%; max-width: 240px; min-height: 140px; }
+/* LIVE-REPORTED FOLLOW-UP: sized down alongside the ring's own 200px -> 172px shrink (~14%) -- the
+   ring and its center label were fixed to match the smaller card, but this legend was left at its
+   old size, so it now read as oversized/mismatched next to the smaller ring above it. Bumping
+   font-size back up here was tried and reverted -- at 12.5px the 5-row drilled-in legend needs
+   ~150px, over the `.svc-donut-legend` min-height:140px floor reserved for it, reintroducing the
+   exact "row grows on drill-in" bug that floor exists to prevent. Keep font-size/padding here in
+   lockstep with that floor -- re-measure both together (real rendered scrollHeight, not estimated)
+   before changing either again. */
+.svc-leg-item {
+  display: flex; align-items: center; gap: 7px; font-size: 10.5px; padding: 3px 7px; border-radius: 7px;
+  cursor: pointer; transition: background var(--dur-fast) var(--ease), opacity var(--dur) var(--ease);
+}
+.svc-leg-item.svc-leg-static { cursor: default; }
+.svc-leg-item:hover:not(.svc-leg-static) { background: var(--surface-2); }
+.svc-leg-sw { width: 12px; height: 12px; border-radius: 3px; flex-shrink: 0; }
+.svc-leg-lbl { flex: 1; font-weight: 600; }
+.svc-leg-pct { font-family: "JetBrains Mono", monospace; color: var(--ink-2); font-size: 10.5px; }
+.svc-leg-chev { color: var(--ink-3); flex-shrink: 0; width: 12px; height: 12px; }
+
+.svc-back-hint { text-align: center; font-size: 11.5px; color: var(--ink-3); margin: 0; transition: opacity var(--dur-fast) var(--ease); }
+
+/* -- AI health chart -- */
+/* LIVE-REPORTED BUG: this box (and .ai-chart-wrap below) had `flex: 1` with a min-height but no
+   max-height -- fine as long as it's always paired with Location's own stretch, but with no
+   stretch partner (this row collapses to 1 column below 980px, or now also whenever it ends up
+   alone with no sibling in its own grid row) that assumption breaks: flex:1 in an otherwise
+   auto-height ancestor chain resolved to 700-800px+ here, and the ResizeObserver-driven SVG
+   (AiHealthChart.tsx) dutifully filled every bit of it, rendering as a wildly tall, near-vertical
+   spike instead of a normal-proportioned chart. max-height is the safety net for that case.
+   LIVE-REPORTED FOLLOW-UP: this cap used to mirror Location's `.loc-list-box` cap (420px) on the
+   assumption Location was the taller panel to match -- with only 6 states today, Location's own
+   natural height is the SHORTEST of the three panels, so matching its old 420px cap left this
+   panel (and the row it stretches) taller than Location actually needs, showing as dead space
+   below Location's last row. Lowered to what this panel's own content (title + "Last 7 days" +
+   chart) actually needs at Location's real natural height instead of the old, larger shared cap. */
+.ai-chart-box { background: var(--paper); border: 1px solid var(--line); border-radius: 10px; padding: 16px 16px 10px; flex: 1; display: flex; flex-direction: column; min-height: 220px; max-height: 360px; }
+.ai-chart-wrap { position: relative; flex: 1; min-height: 140px; max-height: 290px; display: flex; align-items: center; justify-content: center; }
+.ai-chart-wrap svg { width: 100%; height: 100%; display: block; }
+.ai-chart-legend { display: flex; gap: 16px; margin-top: 10px; font-size: 10.5px; color: var(--ink-2); flex-shrink: 0; }
+.ai-chart-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.ai-chart-legend i { width: 9px; height: 3px; border-radius: 2px; display: inline-block; }
+.ai-chart-gridline { stroke: var(--line); stroke-width: 1; }
+.ai-chart-ylabel { fill: var(--ink-3); font-size: 10px; font-family: "JetBrains Mono", ui-monospace, monospace; }
+.ai-chart-empty { font-size: 12.5px; color: var(--ink-3); text-align: center; margin: auto; }
+
+/* The 5 "Cost by model" cards (AdminAiMonitoring.tsx) carry their OWN meaningful top accent --
+   blue for a real billed model, green for a genuinely free one (`borderTop`, set inline per-card
+   since the color depends on that card's own data). `.surface-card::before` above already draws
+   a DIFFERENT, purely decorative top bar (a fixed blue->green gradient, identical on every card
+   site-wide, unrelated to any card's content) -- left on, the two stacked at the same edge and the
+   meaningless site-wide one visually won, making the real per-model signal unreadable. Switched off
+   HERE ONLY (not `.surface-card` itself) so every other card in the app keeps its accent bar
+   untouched. */
+.ai-model-cost-card::before { display: none; }
+
+.home-feed-time { font-size: 11px; color: var(--ink-3); margin-top: 2px; }

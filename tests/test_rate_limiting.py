@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import time
 
+import backend.services.rate_limiter as rate_limiter_module
 from backend.config import settings
 from backend.middleware import _general_limiter
 from backend.services.rate_limiter import RateLimiter
@@ -236,8 +237,19 @@ def test_ai_unauthorized_requests_never_consume_a_real_users_quota(client, monke
 
 
 def test_ai_recovers_after_window_expires(client, monkeypatch, make_citizen):
+    """FLAKE FIX: this used to advance time via a real `time.sleep(1.2)` against a 1-second
+    window -- only a ~200ms safety margin, which the full test suite's own system load (826
+    other tests running concurrently with this one's own real Sarvam/embedding-model calls) could
+    occasionally eat into, intermittently failing this test even though nothing was actually
+    broken (confirmed: passed every time run in isolation, only ever flaked as part of the full
+    suite). Replaced with a fake, monkeypatched clock -- `RateLimiter.check()`'s only time source
+    is `time.monotonic()` (see rate_limiter.py), so controlling that directly makes the window's
+    expiry deterministic and instant, with no real wall-clock sleep and no dependency on machine
+    load at all."""
     _install_real_service(monkeypatch)
     monkeypatch.setattr(settings, "AI_RATE_LIMIT_WINDOW_SECONDS", 1)
+    fake_now = [time.monotonic()]
+    monkeypatch.setattr(rate_limiter_module.time, "monotonic", lambda: fake_now[0])
     token, _ = make_citizen(phone="9100000017")
 
     for _ in range(settings.AI_RATE_LIMIT):
@@ -245,7 +257,7 @@ def test_ai_recovers_after_window_expires(client, monkeypatch, make_citizen):
     blocked = _ask(client, token, "Who do I contact about street lights in Mohali?")
     assert blocked.status_code == 429
 
-    time.sleep(1.2)
+    fake_now[0] += 1.2  # deterministically jump past the 1-second window, no real sleep needed
 
     recovered = _ask(client, token, "Who do I contact about street lights in Mohali?")
     assert recovered.status_code == 200, recovered.text
@@ -274,7 +286,18 @@ def test_general_limit_keys_authenticated_requests_by_user_not_shared_ip(client,
     general middleware prefers the authenticated user id over IP whenever a valid token is
     present."""
     token_a, _ = make_citizen(phone="9100000020")
+    # Login/signup now also sets real session cookies (see backend/deps.py's set_auth_cookies),
+    # and `client` is one shared TestClient/cookie jar for this whole test -- without clearing
+    # citizen A's leftover access_token cookie first, citizen B's OWN signup (its OTP send-code/
+    # verify-code calls have no Authorization header of their own yet) would get silently
+    # attributed to citizen A's identifier instead of falling back to IP, quietly eating into the
+    # very budget this test measures below. A real browser never hits this: logging in as a
+    # second account overwrites rather than merges with the first, and nobody signs up a second
+    # account in the middle of a still-logged-in first session the way this test's shared client
+    # does purely for convenience.
+    client.cookies.clear()
     token_b, _ = make_citizen(phone="9100000021")
+    client.cookies.clear()
 
     for _ in range(settings.GENERAL_RATE_LIMIT):
         response = client.get("/complaints", headers={"Authorization": f"Bearer {token_a}"})

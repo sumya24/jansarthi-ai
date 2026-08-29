@@ -240,6 +240,10 @@ def root_run_inputs_and_metadata(initial_state: GraphState, request_id: str) -> 
         "has_image": bool(initial_state.get("has_image")),
         "vision_used": bool(initial_state.get("vision_used")),
         "tts_used": bool(initial_state.get("tts_used")),
+        # Client-generated id, purely for Phoenix's Sessions grouping (see tracing.py's
+        # start_root_run() Phoenix branch) -- None for older/unaware clients, same as every other
+        # field here.
+        "conversation_id": initial_state.get("conversation_id"),
     }
     return inputs, metadata
 

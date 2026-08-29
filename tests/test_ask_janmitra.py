@@ -55,7 +55,7 @@ class _FakeComplaintAgent:
     a real `Complaint` ORM row directly, deterministically, so complaint_flow's downstream logic
     (ward resolution, assign_next_worker, response text) is exercised against a genuine row."""
 
-    def create_complaint(self, db, citizen_id, language_code, text, audio_chunks, photo_path):
+    def create_complaint(self, db, citizen_id, language_code, text, audio_chunks, photo_path, category=None):
         complaint = Complaint(
             citizen_id=citizen_id,
             original_text=text or "",
@@ -64,6 +64,7 @@ class _FakeComplaintAgent:
             summary=(text or "")[:80],
             photo_path=photo_path,
             status="open",
+            service_category=category.value if category else None,
         )
         db.add(complaint)
         db.commit()
@@ -78,7 +79,7 @@ def _real_ask_janmitra_service(**overrides) -> AskJanMitraService:
     calls -- see test_complaints_api.py's `_agent` mock)."""
     store, provider = _get_shared_chroma_deps()
     fake_answers = Mock()
-    fake_answers.generate = lambda q, chunks, lang, context_labels=None: (f"ANSWER: {chunks[0]}", False)
+    fake_answers.generate = lambda q, chunks, lang, context_labels=None: (f"ANSWER: {chunks[0]}", False, None)
     kwargs = {
         "vector_store": store,
         "embedding_provider": provider,
@@ -148,6 +149,98 @@ def test_type_a_complaint_creates_and_assigns_complaint(client, monkeypatch, db_
     assert complaint.status == "assigned"  # the seeded worker was eligible
     assert complaint.assigned_worker_id is not None
     db.close()
+
+
+def test_new_complaint_after_a_filed_one_does_not_inherit_its_category(
+    client, monkeypatch, db_session, make_citizen, make_worker
+):
+    """Live-reported: a citizen filed a real streetlight complaint in Ahmedabad (category+location
+    resolved, confirmed, a real complaint created) -- then started a BRAND-NEW, different
+    complaint with "I want to file a complaint." (no category named at all). This must ask for
+    the category fresh, not silently reuse "Streetlights" from the complaint that was already
+    filed and closed. See orchestration/nodes.py's _turn_closes_a_filed_complaint -- this is the
+    end-to-end regression test for the exact reported 3-turn sequence."""
+    _install_real_service(monkeypatch)
+    make_worker(phone="9100099002", ward="Mohali")
+    token, _ = make_citizen(phone="9100000028")
+
+    turn1 = _ask(client, token, "Street light not working in Mohali.", location_text="Mohali")
+    body1 = turn1.json()
+    assert body1["service_category"] == "STREETLIGHTS"
+    assert body1.get("complaint_id") is None
+
+    history = [
+        ConversationTurn(role="user", content="Street light not working in Mohali.").model_dump(),
+        ConversationTurn(role="assistant", content=body1["answer"]).model_dump(),
+    ]
+    turn2 = _ask(client, token, "Yes, submit it.", conversation_history=history)
+    body2 = turn2.json()
+    assert body2["routed_to"] == "COMPLAINT_CREATED"
+    assert body2["complaint_id"] is not None
+
+    history.append(ConversationTurn(role="user", content="Yes, submit it.").model_dump())
+    history.append(ConversationTurn(role="assistant", content=body2["answer"]).model_dump())
+    turn3 = _ask(client, token, "I want to file a complaint.", conversation_history=history)
+    body3 = turn3.json()
+    assert body3["routed_to"] == "NONE_CLARIFICATION_NEEDED"
+    assert body3["service_category"] is None
+    assert body3.get("complaint_id") is None
+    assert db_session().query(Complaint).count() == 1  # only the FIRST complaint was ever created
+
+
+def test_ward_resolution_does_not_reach_past_a_closed_complaint_attempt(
+    client, monkeypatch, db_session, make_citizen, make_worker
+):
+    """Live-reported: a citizen filed a real streetlight complaint in Mohali (confirmed, a
+    complaint created), then started and CANCELLED a second complaint attempt, then asked about
+    garbage in a real city with no staffed worker at all -- and got told the complaint would be
+    filed in Mohali (the FIRST, unrelated, already-filed complaint's ward), instead of the honest
+    "no workers set up here" answer this city with no coverage should get. Root cause: unlike
+    _recover_category_from_history/_resolve_location (both fixed earlier), the ward-recovery scan
+    inside _resolve_worker_ward_text's own "last resort" tier had no stopping point at all -- see
+    _turn_closes_a_filed_complaint's own docstring. This is the end-to-end regression test for the
+    exact reported sequence."""
+    _install_real_service(monkeypatch)
+    make_worker(phone="9100099003", ward="Mohali")
+    token, _ = make_citizen(phone="9100000029")
+
+    # Turn 1-2: file and confirm a real complaint in Mohali (the only staffed city here).
+    turn1 = _ask(client, token, "Street light not working in Mohali.", location_text="Mohali")
+    body1 = turn1.json()
+    assert body1["service_category"] == "STREETLIGHTS"
+    history = [
+        ConversationTurn(role="user", content="Street light not working in Mohali.").model_dump(),
+        ConversationTurn(role="assistant", content=body1["answer"]).model_dump(),
+    ]
+    turn2 = _ask(client, token, "Yes, submit it.", conversation_history=history)
+    body2 = turn2.json()
+    assert body2["routed_to"] == "COMPLAINT_CREATED"
+    history.append(ConversationTurn(role="user", content="Yes, submit it.").model_dump())
+    history.append(ConversationTurn(role="assistant", content=body2["answer"]).model_dump())
+
+    # Turn 3-4: start a SECOND complaint attempt in Mohali too, then explicitly cancel it.
+    turn3 = _ask(client, token, "Streetlight not working.", location_text="Mohali", conversation_history=history)
+    body3 = turn3.json()
+    assert body3["routed_to"] == "NONE_AWAITING_CONFIRMATION"
+    history.append(ConversationTurn(role="user", content="Streetlight not working.").model_dump())
+    history.append(ConversationTurn(role="assistant", content=body3["answer"]).model_dump())
+    turn4 = _ask(client, token, "No, cancel", conversation_history=history)
+    body4 = turn4.json()
+    assert body4["routed_to"] == "NONE_CANCELLED"
+    history.append(ConversationTurn(role="user", content="No, cancel").model_dump())
+    history.append(ConversationTurn(role="assistant", content=body4["answer"]).model_dump())
+
+    # Turn 5: a brand-new complaint about a DIFFERENT, real city with NO staffed worker at all.
+    # Must NOT silently reuse Mohali (the earlier, closed attempts' ward) -- must honestly say
+    # there's no coverage in Sahibzada Ajit Singh Nagar (Mohali)'s neighbor Patiala instead.
+    turn5 = _ask(
+        client, token, "Garbage is not being collected.", location_text="Patiala", conversation_history=history,
+    )
+    body5 = turn5.json()
+    assert "doesn't currently have workers" in body5["answer"].lower()
+    assert "patiala" in body5["answer"].lower()
+    assert body5.get("complaint_id") is None
+    assert db_session().query(Complaint).count() == 1  # only the FIRST (Mohali) complaint exists
 
 
 def test_type_b_service_retrieval(client, monkeypatch, make_citizen):
@@ -413,6 +506,156 @@ def test_synthetic_disclosure(client, monkeypatch, make_citizen):
     assert body["verification_status"] == "SYNTHETIC"
 
 
+def test_synthetic_source_suppressed_when_verified_covers_the_same_city_and_category(client, monkeypatch, make_citizen):
+    """Live-reported: Ahmedabad's garbage-collection answer was showing a citation labeled 'not a
+    verified official source... placeholder data' (SYNTHETIC_REPRESENTATIVE_DATA) side by side
+    with a real AMC citation, for the SAME city+category -- confusing, and no informational
+    benefit since the real source already answers the question. See rag_retriever.py's own
+    citation-honesty fix: a SYNTHETIC chunk is dropped (not just deprioritized) once a VERIFIED
+    chunk for that same (city, service_category) is also in the result set."""
+    _install_real_service(monkeypatch)
+    token, _ = make_citizen(phone="9100000019")
+    resp = _ask(client, token, "Who do I contact for garbage collection complaints in Ahmedabad?")
+    body = resp.json()
+    assert len(body["sources"]) > 0
+    assert all(s["verification_status"] == "VERIFIED" for s in body["sources"])
+    assert all(s["source_id"] != "SYNTHETIC_REPRESENTATIVE_DATA" for s in body["sources"])
+    # The real AMCCRS complaint channel (155303 / email / WhatsApp) this fix added must actually
+    # be the kind of source surfaced, not just "some verified source or other".
+    assert any(s["source_id"] == "GJ_AMC_AMCCRS_PORTAL" for s in body["sources"])
+
+
+def test_rag_answer_mentions_in_app_report_option(client, monkeypatch, make_citizen):
+    """Live-reported: the RAG answer only ever describes the traditional municipal channel (it's
+    grounded in retrieved civic-info documents, which never mention this app itself) -- a citizen
+    reading just the text, or hearing it via voice/TTS (no buttons at all), never learns the
+    in-app 'Report Issue' option exists. See rag_flow_node's own fix: one deterministic,
+    non-LLM-authored sentence appended after the grounded answer."""
+    _install_real_service(monkeypatch)
+    token, _ = make_citizen(phone="9100000020")
+    resp = _ask(client, token, "Who do I contact for garbage collection complaints in Ahmedabad?")
+    body = resp.json()
+    assert "report issue" in body["answer"].lower()
+
+
+def test_new_connection_answer_does_not_suggest_report_issue(client, monkeypatch, make_citizen):
+    """The in-app note above is skipped for a 'new connection' question -- applying for a new
+    connection isn't a "problem" this app's Report Issue flow (built for existing-service
+    complaints) handles, so suggesting it there would be actively wrong."""
+    _install_real_service(monkeypatch)
+    token, _ = make_citizen(phone="9100000021")
+    resp = _ask(client, token, "What is the procedure to apply for a new water connection in Mohali?")
+    body = resp.json()
+    assert body["insufficient_knowledge"] is False
+    assert "report issue" not in body["answer"].lower()
+
+
+def test_marathi_query_gets_the_same_verified_source_as_the_english_equivalent(client, monkeypatch, make_citizen):
+    """Live-reported: the exact same civic-info question about Bengaluru's water supply, asked in
+    Marathi script instead of English, returned a generic SYNTHETIC placeholder instead of the
+    real VERIFIED BWSSB record -- purely a cross-lingual embedding-similarity gap (the real
+    record's score for the Marathi query fell just under RAG_EMBEDDING_RELEVANCE_THRESHOLD while
+    a topically-generic SYNTHETIC chunk cleared it). Fixed generally via RagRetriever's
+    RAG_VERIFIED_RELEVANCE_THRESHOLD-gated rescue (see rag_retriever.py's own docstring on
+    `retrieve()`) -- this is the end-to-end regression test for the exact reported query; see
+    tests/test_rag_retriever.py for the city-agnostic unit-level proof that this isn't a
+    Bengaluru-only patch."""
+    _install_real_service(monkeypatch)
+    token, _ = make_citizen(phone="9100000022")
+    resp = _ask(
+        client,
+        token,
+        "बेंगळुरूमध्ये पाणीपुरवठ्याबाबत तक्रार करण्याची प्रक्रिया काय आहे?",
+        language="mr",
+    )
+    body = resp.json()
+    assert body["insufficient_knowledge"] is False
+    assert len(body["sources"]) > 0
+    assert all(s["verification_status"] == "VERIFIED" for s in body["sources"])
+    assert any(s["source_id"] == "KA_BWSSB_CONTACT_INFO" for s in body["sources"])
+
+
+def test_marathi_oblique_declension_query_resolves_to_the_named_city_not_the_citizens_own(
+    client, monkeypatch, make_citizen
+):
+    """Live-reported (second report): a citizen registered in Bengaluru asked, in Marathi, about a
+    streetlight in KOLKATA -- "कोलकात्यात बंद पडलेल्या पथदिव्याबद्दल मी तक्रार कशी करू?" -- and got
+    an answer about a DIFFERENT city (their own registered ward) with no visible error, because
+    "कोलकात्यात" (Kolkata's oblique/locative declension) matched no known alias and the app silently
+    fell back to the citizen's home ward instead of Kolkata. See location_extractor.py's
+    _devanagari_oblique_form fix -- this is the end-to-end regression test for the exact reported
+    query."""
+    _install_real_service(monkeypatch)
+    token, _ = make_citizen(phone="9100000023")
+    resp = _ask(
+        client,
+        token,
+        "कोलकात्यात बंद पडलेल्या पथदिव्याबद्दल मी तक्रार कशी करू?",
+        language="mr",
+    )
+    body = resp.json()
+    assert body["location"]["city"] == "Kolkata"
+    assert body["location"]["source"] == "text"  # resolved from the query text, not a home-ward fallback
+    assert body["insufficient_knowledge"] is False
+    assert any(s["source_id"] == "WB_KMC_STREETLIGHT_FAQ_PAGE" for s in body["sources"])
+
+
+def test_odia_streetlight_query_resolves_location_and_category_correctly(client, monkeypatch, make_citizen):
+    """Live-reported (third report, same Kolkata streetlight question, this time in Odia): "...
+    ରାସ୍ତା-ଆଲୁଅ (streetlight)..." came back with "I don't have any official information" instead
+    of the real KMC record English/Marathi both got. Two independent root causes, both fixed
+    generally (not Odia-only): (1) "କୋଲକାତାରେ" (Kolkata + the Odia locative suffix "ରେ", attached
+    with no space) never resolved to a location at all -- see location_extractor.py's
+    _ATTACHED_POSTPOSITIONS, now covering Odia/Gujarati/Bengali's own attached suffixes, not just
+    Devanagari's; (2) the question was misclassified as ROADS_POTHOLES instead of STREETLIGHTS,
+    because "ରାସ୍ତା" (road) matched before "ଆଲୁଅ" (light) got a chance -- see
+    intent_classifier.py's STREETLIGHTS-before-ROADS_POTHOLES reorder. This is the end-to-end
+    regression test for the exact reported query, both fixes together."""
+    _install_real_service(monkeypatch)
+    token, _ = make_citizen(phone="9100000026")
+    resp = _ask(
+        client,
+        token,
+        "କୋଲକାତାରେ ଏକ ଅଚଳ ରାସ୍ତା-ଆଲୁଅ (streetlight) ବିଷୟରେ ମୁଁ କିପରି ଜଣାଇବି?",
+        language="or",
+    )
+    body = resp.json()
+    assert body["location"]["city"] == "Kolkata"
+    assert body["service_category"] == "STREETLIGHTS"
+    assert body["insufficient_knowledge"] is False
+    assert any(s["source_id"] == "WB_KMC_STREETLIGHT_FAQ_PAGE" for s in body["sources"])
+
+
+def test_location_history_recovery_does_not_reach_past_an_unrelated_completed_exchange(
+    client, monkeypatch, make_citizen
+):
+    """Live-reported: after two fully-answered, unrelated Kolkata questions (streetlight, road
+    repair), a citizen asked about a NEW water connection in Pune (a real city, but not in this
+    app's knowledge base at all) -- and the answer said "I don't currently have reliable
+    information for this in Kolkata", silently substituting the earlier, unrelated conversation's
+    city for one the citizen never asked about. Same root cause and same fix as
+    test_category_recovery_does_not_reach_past_an_unrelated_completed_exchange (see
+    orchestration/nodes.py's _turn_is_open_complaint_flow): the location-history fallback had no
+    stopping point either. Fixed generally -- the assertion here is simply that the answer must
+    NEVER claim insufficient knowledge "in Kolkata", since Kolkata was never part of this
+    question."""
+    _install_real_service(monkeypatch)
+    token, _ = make_citizen(phone="9100000027")
+    history = [
+        {"role": "user", "content": "How do I report a broken streetlight in Kolkata?"},
+        {"role": "assistant", "content": "To report a broken streetlight in Kolkata, contact the citywide Control Room..."},
+        {"role": "user", "content": "What are the rules for road repair complaints in Kolkata?"},
+        {"role": "assistant", "content": "Based on the information provided, you can file a road repair complaint..."},
+    ]
+    resp = _ask(
+        client, token, "What is the process for a new water connection in Pune?",
+        conversation_history=history,
+    )
+    body = resp.json()
+    assert "kolkata" not in body["answer"].lower()
+    assert body["location"].get("city") != "Kolkata"
+
+
 def test_no_knowledge_available_says_so_honestly(client, monkeypatch, make_citizen):
     _install_real_service(monkeypatch)
     token, _ = make_citizen(phone="9100000018")
@@ -449,6 +692,151 @@ def test_falls_back_to_citizens_home_ward_when_no_other_location_signal(client, 
     assert body["insufficient_knowledge"] is False
 
 
+def test_does_not_substitute_home_ward_when_message_names_an_unrecognized_place(client, monkeypatch, make_citizen):
+    """LIVE-REPORTED BUG ("Pune fallback"): a citizen whose home ward IS a real, resolvable city
+    (Mohali) asks a civic-info question naming a DIFFERENT real place this app's knowledge base
+    simply doesn't cover (originally Pune -- since replaced with Nashik below, because Pune itself
+    later gained real, sourced knowledge-base coverage as part of the app's 6->18 city expansion,
+    which would otherwise make this test's whole premise -- "a real place this app doesn't cover"
+    -- false; see data/rag_knowledge_base/knowledge_records/verified/maharashtra/pune.json) -- the
+    answer must not silently substitute their home city and answer as if the question had been
+    about Mohali, with no indication anything was substituted. Distinct from
+    test_falls_back_to_citizens_home_ward_when_no_other_location_signal just above: that citizen's
+    message names NO place at all, so the home-ward substitution IS correct there; this one's
+    message DOES name a place, so it must not be silently overridden. Also confirms the citizen
+    sees an honest, non-"couldn't recognize" wording -- Nashik IS a real, well-known place, just
+    not one this app's gazetteer covers, so telling the citizen it "isn't a location" would be
+    misleading; see location_node's own `location_message_names_unresolved_place` and
+    location_extractor.py's looks_like_it_names_an_unrecognized_place."""
+    _install_real_service(monkeypatch)
+    token, _ = make_citizen(phone="9100000030", ward="Ward 5 — Sector 71, Mohali")
+    resp = _ask(client, token, "What is the process for a new water connection in Nashik?")
+    body = resp.json()
+    assert body["location"].get("city") != "Sahibzada Ajit Singh Nagar (Mohali)"
+    assert "mohali" not in body["answer"].lower()
+    assert body["follow_up_required"] is True
+    assert "couldn't recognize" not in body["answer"].lower()
+    assert "don't have information for this area" in body["answer"].lower()
+
+
+def test_does_not_substitute_home_ward_in_complaint_when_message_names_an_unrecognized_place(
+    client, monkeypatch, db_session, make_citizen, make_worker
+):
+    """LIVE-REPORTED BUG ("Pune fallback"), found in the COMPLAINT-creation flow too, distinct from
+    the civic-info version just above -- see nodes.py's comment on `_resolve_own_ward_worker_text`'s
+    call site in complaint_flow_node. A citizen whose own home ward IS a real, staffed city
+    (Bengaluru) reports a problem naming a place that doesn't exist at all ("Atlantis") --
+    `_resolve_own_ward_worker_text`'s "last resort" fallback fired anyway, silently offering to
+    file the complaint in Bengaluru (a city never mentioned) instead of asking for clarification.
+    Must ask for the location instead of substituting, and must never create the complaint."""
+    _install_real_service(monkeypatch)
+    make_worker(phone="9100099004", ward="Bengaluru")
+    token, _ = make_citizen(phone="9100000031", ward="Bengaluru")
+    resp = _ask(client, token, "Street light problem in Atlantis.")
+    body = resp.json()
+    assert body["follow_up_required"] is True
+    assert "bengaluru" not in body["answer"].lower()
+    assert db_session().query(Complaint).count() == 0
+
+
+def test_does_not_recover_a_ward_from_an_earlier_unrelated_filed_complaints_own_echoed_text(
+    client, monkeypatch, db_session, make_citizen, make_worker
+):
+    """LIVE-REPORTED BUG ("Pune fallback"), a THIRD instance, and the most insidious -- see nodes.py's
+    comment on `_resolve_worker_ward_text`'s own last-resort conversation-history scan. That scan
+    matches ANY turn's text against a real worker ward, including an assistant turn that is itself
+    just Sarthi's OWN echoed confirmation prompt for an EARLIER, unrelated, already-filed complaint
+    ('Your complaint would be about ... in "Bengaluru"'). A citizen who filed a real complaint in
+    Bengaluru, then later reports a problem naming a place that doesn't exist at all ("Atlantis"),
+    must not have the later complaint silently reuse Bengaluru's ward -- must ask for clarification
+    instead. Live-reproduced as a SELF-REINFORCING LOOP: once this fired once, the wrong city sat in
+    the transcript in Sarthi's own words, so every resend of the same message found it again."""
+    _install_real_service(monkeypatch)
+    make_worker(phone="9100099005", ward="Bengaluru")
+    token, _ = make_citizen(phone="9100000032", ward="Test Ward")
+
+    turn1 = _ask(client, token, "Streetlight not working in Bengaluru.")
+    body1 = turn1.json()
+    history = [
+        ConversationTurn(role="user", content="Streetlight not working in Bengaluru.").model_dump(),
+        ConversationTurn(role="assistant", content=body1["answer"]).model_dump(),
+    ]
+    turn2 = _ask(client, token, "Yes, submit it.", conversation_history=history)
+    body2 = turn2.json()
+    assert body2["routed_to"] == "COMPLAINT_CREATED"
+    history.append(ConversationTurn(role="user", content="Yes, submit it.").model_dump())
+    history.append(ConversationTurn(role="assistant", content=body2["answer"]).model_dump())
+
+    turn3 = _ask(client, token, "Street light problem in Atlantis.", conversation_history=history)
+    body3 = turn3.json()
+    assert body3["follow_up_required"] is True
+    assert "bengaluru" not in body3["answer"].lower()
+    assert db_session().query(Complaint).count() == 1  # only the earlier Bengaluru complaint exists
+
+
+def test_does_not_recover_a_city_from_an_earlier_unrelated_question_in_the_civic_info_flow(
+    client, monkeypatch, make_citizen
+):
+    """LIVE-REPORTED BUG ("Pune fallback"), a FOURTH instance -- see nodes.py's `_resolve_location`
+    comment on its own conversation-history scan's "THIRD boundary". A citizen asks a civic-info
+    question naming a place that doesn't exist at all ("Zzz Nonexistent Place") -- correctly gets
+    the honest "I don't have information for this area yet", which (like any location-clarification
+    reply) carries `follow_up_options` including "Use current location" -- so the SAME frontend
+    mechanism used for a genuine "what is the location?" answer (AskJanMitra.tsx's `handleSubmit`)
+    resends the ORIGINAL question with the citizen's typed reply as an explicit `location_text`,
+    exactly like a real citizen typing "MUMBAI" next would. That resolves correctly to Mumbai --
+    but asking about "Zzz Nonexistent Place" again afterward must give the SAME honest answer, not
+    silently reuse Mumbai from the immediately preceding turn just because that turn's text
+    happened to resolve to a real city."""
+    _install_real_service(monkeypatch)
+    token, _ = make_citizen(phone="9100000033", ward="Ward 5 — Sector 71, Mohali")
+    question = "Who do I contact for garbage collection in Zzz Nonexistent Place?"
+
+    turn1 = _ask(client, token, question)
+    body1 = turn1.json()
+    assert "don't have information" in body1["answer"].lower()
+    history = [
+        ConversationTurn(role="user", content=question).model_dump(),
+        ConversationTurn(role="assistant", content=body1["answer"]).model_dump(),
+    ]
+
+    # Mirrors AskJanMitra.tsx's `handleSubmit`: a plain typed reply to a location-clarification
+    # follow_up_required resends the ORIGINAL question with the reply as `location_text`, not as a
+    # brand-new bare `question`.
+    turn2 = _ask(client, token, question, location_text="MUMBAI", conversation_history=history)
+    body2 = turn2.json()
+    assert body2["location"].get("city") == "Mumbai"
+    history.append(ConversationTurn(role="user", content="MUMBAI").model_dump())
+    history.append(ConversationTurn(role="assistant", content=body2["answer"]).model_dump())
+
+    turn3 = _ask(client, token, question, conversation_history=history)
+    body3 = turn3.json()
+    assert "don't have information" in body3["answer"].lower()
+    assert "mumbai" not in body3["answer"].lower()
+    assert body3["location"].get("city") != "Mumbai"
+
+
+def test_does_not_substitute_home_ward_for_an_explicit_gibberish_location_reply(client, monkeypatch, make_citizen):
+    """LIVE-REPORTED BUG ("Pune fallback"), a FIFTH instance -- see nodes.py's
+    `_should_skip_home_ward_fallback` docstring. A citizen whose home ward IS a real, resolvable
+    city (Bengaluru) replies to a location-clarification prompt with plain gibberish
+    ("asdkjhaskjdh", via the explicit `location_text` field, exactly like AskJanMitra.tsx's
+    `handleSubmit` sends a typed reply to that prompt) -- gibberish doesn't "look like" a place
+    name at all, so the (narrower, message-text-only) heuristic gate alone let this silently
+    resolve to Bengaluru instead of honestly saying it couldn't recognize the reply. An EXPLICIT
+    location signal, even a failed/gibberish one, must never be silently overridden by the
+    citizen's own home ward."""
+    _install_real_service(monkeypatch)
+    token, _ = make_citizen(phone="9100000034", ward="Ward 3 — Indiranagar, Bengaluru")
+
+    resp = _ask(client, token, "Who do I contact for garbage collection?", location_text="asdkjhaskjdh")
+    body = resp.json()
+    assert body["location"].get("city") != "Bengaluru"
+    assert "bengaluru" not in body["answer"].lower()
+    assert body["follow_up_required"] is True
+    assert "couldn't recognize" in body["answer"].lower()
+
+
 def test_low_relevance_results_are_rejected_tfidf(monkeypatch):
     """Unit-level test of the relevance threshold on the LEGACY TF-IDF path: a nonsense query
     with no real keyword overlap with any chunk must not return low-quality matches just to have
@@ -471,7 +859,13 @@ def test_low_relevance_results_are_rejected_embeddings():
     category+location filter, off-topic/gibberish probes scored <=0.780 in every case measured,
     comfortably below the 0.80 default threshold used here."""
     store, provider = _get_shared_chroma_deps()
-    retriever = RagRetriever(store, provider, top_k=5, relevance_threshold=0.9)  # deliberately very strict
+    # verified_relevance_threshold pinned to the same deliberately-strict 0.9: this test is about
+    # the main threshold's strictness, not the cross-lingual VERIFIED-rescue window (see
+    # rag_retriever.py's own docstring on that mechanism) -- leaving the rescue floor at its normal
+    # 0.74 default here would let it silently admit these same real Mohali VERIFIED chunks (they
+    # score ~0.76-0.78, comfortably above 0.74) despite the test's intentionally raised bar, which
+    # would test the rescue window's default instead of the strictness this test is actually for.
+    retriever = RagRetriever(store, provider, top_k=5, relevance_threshold=0.9, verified_relevance_threshold=0.9)
     outcome = retriever.retrieve(
         "xyzzy plugh qwerty nonsense gibberish", ServiceCategory.STREETLIGHTS, "Sahibzada Ajit Singh Nagar (Mohali)", None
     )
@@ -498,6 +892,30 @@ def test_multilingual_marathi_new_connection_is_type_b(client, monkeypatch, make
     resp = _ask(client, token, "मला नवीन पाणी कनेक्शन पाहिजे.", language="mr")
     body = resp.json()
     assert body["intent"] == "TYPE_B_SERVICE_INFO"
+
+
+def test_response_language_follows_the_actual_text_not_a_stale_ui_toggle(client, monkeypatch, make_citizen):
+    """The auto-detect-response-language fix, ChatGPT/Claude-style: a citizen's UI language
+    toggle (the `language` request field) can genuinely disagree with what they actually typed in
+    any one turn -- ask() must answer in whatever language the MESSAGE is in, not the toggle.
+    Sends `language="en"` (as if the UI toggle were still on English) with a message that's
+    actually Marathi; `response_language` (and therefore `body["language"]`) must follow the real
+    text, not the request field."""
+    _install_real_service(monkeypatch)
+    token, _ = make_citizen(phone="9100000024")
+    resp = _ask(client, token, "बेंगळुरूमध्ये पाणीपुरवठ्याबाबत तक्रार करण्याची प्रक्रिया काय आहे?", language="en")
+    body = resp.json()
+    assert body["language"] == "mr"
+
+
+def test_response_language_matches_when_ui_toggle_and_text_agree(client, monkeypatch, make_citizen):
+    """Regression guard for the common case: when the toggle and the actual text already agree,
+    detection must not second-guess its way to a DIFFERENT answer."""
+    _install_real_service(monkeypatch)
+    token, _ = make_citizen(phone="9100000025")
+    resp = _ask(client, token, "Who do I contact about street lights in Mohali?", language="en")
+    body = resp.json()
+    assert body["language"] == "en"
 
 
 def test_multilingual_odia_new_connection_is_type_b(client, monkeypatch, make_citizen):

@@ -17,8 +17,9 @@ can present that proof token -- a bare client-side "verified: true" claim is nev
 
 import logging
 import re
+from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -26,10 +27,13 @@ from sqlalchemy.orm import Session
 from backend.config import settings
 from backend.database import get_db
 from backend.deps import (
+    clear_auth_cookies,
+    extract_refresh_token,
     get_current_user,
     require_login_rate_limit,
     require_otp_rate_limit,
     require_signup_rate_limit,
+    set_auth_cookies,
 )
 from backend.models import District, Locality, State, ULB, User, Ward
 from backend.services.auth_service import (
@@ -97,6 +101,23 @@ def _dev_cache_otp(email: str, code: str) -> None:
         _dev_otp_cache[email] = code
 
 
+# LIVE-REPORTED GAP: every one of the three routes below used to unconditionally call the real
+# send_otp_email -- fine normally, but the one Gmail account this app sends OTPs through has hit
+# Gmail's own daily sending-limit quota TWICE during heavy local/E2E testing (confirmed live, 3
+# days apart -- see PLAYWRIGHT_TEST_REPORT.md), blocking every signup-dependent test each time
+# with no code-level fix available until the quota reset on its own. settings.EMAIL_DEV_MODE (see
+# its own docstring in config.py) lets a local/E2E run skip the real send entirely -- the code is
+# still generated and cached via _dev_cache_otp exactly as before, so GET /auth/_dev/otp-code
+# still works unchanged; only the actual SMTP round-trip is skipped. Requires
+# ENVIRONMENT != "production" in addition to the flag itself, same belt-and-suspenders posture as
+# _dev_cache_otp/_dev/otp-code above -- a stray true value can never suppress a real send in prod.
+def _send_otp_email_or_skip(email: str, code: str, purpose: Literal["verify_email", "reset_password"]) -> None:
+    if settings.EMAIL_DEV_MODE and settings.ENVIRONMENT != "production":
+        logger.info("EMAIL_DEV_MODE: skipping real send for %s (purpose=%s); code only cached for /auth/_dev/otp-code", email, purpose)
+        return
+    send_otp_email(email, code, purpose)
+
+
 class SignupRequest(BaseModel):
     """Request body for citizen self-registration -- creates the account directly, in one call.
 
@@ -162,18 +183,22 @@ class LoginRequest(BaseModel):
 
 
 class RefreshRequest(BaseModel):
-    """Request body for POST /auth/refresh."""
+    """Request body for POST /auth/refresh. refresh_token is optional -- a real browser session
+    never has JS-level access to it at all (it lives only in the httpOnly refresh_token cookie,
+    see deps.set_auth_cookies) and calls this with an empty body, relying on that cookie instead;
+    an explicit value here is for tests/manual API use (see deps.extract_refresh_token)."""
 
-    refresh_token: str
+    refresh_token: str | None = None
 
 
 class LogoutRequest(BaseModel):
     """Request body for POST /auth/logout. No auth dependency on that route -- the refresh
     token itself is already sufficient proof of ownership to revoke just itself, and requiring a
     still-valid access token too would make logout needlessly fail for the realistic case of a
-    citizen returning to a stale tab whose access token already expired."""
+    citizen returning to a stale tab whose access token already expired. refresh_token is optional
+    for the same reason as RefreshRequest above -- a browser session relies on the cookie."""
 
-    refresh_token: str
+    refresh_token: str | None = None
 
 
 class ChangePasswordRequest(BaseModel):
@@ -405,7 +430,7 @@ def signup_send_email_code(body: SendSignupEmailCodeRequest, db: Session = Depen
     code = create_signup_email_otp(db, email)
     _dev_cache_otp(email, code)
     try:
-        send_otp_email(email, code, _VERIFY_EMAIL_PURPOSE)
+        _send_otp_email_or_skip(email, code, _VERIFY_EMAIL_PURPOSE)
     except EmailServiceError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     logger.info("Signup email verification code sent (email=%s)", email)
@@ -425,7 +450,7 @@ def signup_verify_email_code(
 
 
 @router.post("/signup", response_model=AuthResponse)
-def signup(body: SignupRequest, db: Session = Depends(get_db)) -> AuthResponse:
+def signup(body: SignupRequest, response: Response, db: Session = Depends(get_db)) -> AuthResponse:
     """Create a citizen account, in one call -- but only if body.email_verification_token proves
     (see consume_signup_email_verification) that POST /auth/signup/email/send-code and
     POST /auth/signup/email/verify-code were already completed for body.email.
@@ -491,11 +516,12 @@ def signup(body: SignupRequest, db: Session = Depends(get_db)) -> AuthResponse:
 
     access_token = create_access_token(user)
     refresh_token = create_refresh_token(user, db)
+    set_auth_cookies(response, access_token, refresh_token)
     return AuthResponse(access_token=access_token, refresh_token=refresh_token, user=UserResponse.model_validate(user))
 
 
 @router.post("/login", response_model=AuthResponse, dependencies=[Depends(require_login_rate_limit)])
-def login(body: LoginRequest, db: Session = Depends(get_db)) -> AuthResponse:
+def login(body: LoginRequest, response: Response, db: Session = Depends(get_db)) -> AuthResponse:
     """Log in with a phone number OR a verified email, plus password, for any role.
 
     Rate-limited per client IP (see backend/deps.py's require_login_rate_limit) -- counts every
@@ -517,11 +543,12 @@ def login(body: LoginRequest, db: Session = Depends(get_db)) -> AuthResponse:
     logger.info("User logged in (user_id=%s, role=%s)", user.id, user.role)
     access_token = create_access_token(user)
     refresh_token = create_refresh_token(user, db)
+    set_auth_cookies(response, access_token, refresh_token)
     return AuthResponse(access_token=access_token, refresh_token=refresh_token, user=UserResponse.model_validate(user))
 
 
 @router.post("/refresh", response_model=AuthResponse)
-def refresh(body: RefreshRequest, db: Session = Depends(get_db)) -> AuthResponse:
+def refresh(body: RefreshRequest, request: Request, response: Response, db: Session = Depends(get_db)) -> AuthResponse:
     """Redeem a refresh token for a new short-lived access token, rotating the refresh token in
     the process (see services/auth_service.py's rotate_refresh_token for the rotation/reuse-
     detection design). Deliberately not rate-limited the way /login is -- a legitimate client
@@ -529,20 +556,29 @@ def refresh(body: RefreshRequest, db: Session = Depends(get_db)) -> AuthResponse
     401-triggered silent-refresh), which is a fundamentally different traffic shape from a
     human/script guessing credentials.
     """
-    result = rotate_refresh_token(db, body.refresh_token)
+    token = extract_refresh_token(request, body.refresh_token)
+    if token is None:
+        raise HTTPException(status_code=401, detail="Invalid or expired refresh token. Please log in again.")
+    result = rotate_refresh_token(db, token)
     if result is None:
         raise HTTPException(status_code=401, detail="Invalid or expired refresh token. Please log in again.")
     user, access_token, refresh_token = result
+    set_auth_cookies(response, access_token, refresh_token)
     return AuthResponse(access_token=access_token, refresh_token=refresh_token, user=UserResponse.model_validate(user))
 
 
 @router.post("/logout", status_code=204)
-def logout(body: LogoutRequest, db: Session = Depends(get_db)) -> None:
+def logout(body: LogoutRequest, request: Request, response: Response, db: Session = Depends(get_db)) -> None:
     """Real, server-side logout -- revokes the refresh token so it can never be redeemed again,
     unlike the old client-side-only "clear localStorage" logout (under which a captured token
     stayed valid until its natural expiry regardless). See LogoutRequest's own docstring for why
-    this route has no auth dependency of its own."""
-    revoke_refresh_token(db, body.refresh_token)
+    this route has no auth dependency of its own. Always clears the auth cookies regardless of
+    whether a token was found to revoke -- the citizen's intent (leave, don't stay logged in on
+    this browser) is the same either way."""
+    token = extract_refresh_token(request, body.refresh_token)
+    if token is not None:
+        revoke_refresh_token(db, token)
+    clear_auth_cookies(response)
 
 
 @router.post("/change-password", status_code=204)
@@ -594,7 +630,7 @@ def send_email_verification(
     code = create_email_otp(db, current_user.id, email, _VERIFY_EMAIL_PURPOSE)
     _dev_cache_otp(email, code)
     try:
-        send_otp_email(email, code, _VERIFY_EMAIL_PURPOSE)
+        _send_otp_email_or_skip(email, code, _VERIFY_EMAIL_PURPOSE)
     except EmailServiceError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     logger.info("Email verification code sent (user_id=%s)", current_user.id)
@@ -646,7 +682,7 @@ def forgot_password(body: ForgotPasswordRequest, db: Session = Depends(get_db)) 
     code = create_email_otp(db, user.id, email, _RESET_PASSWORD_PURPOSE)
     _dev_cache_otp(email, code)
     try:
-        send_otp_email(email, code, _RESET_PASSWORD_PURPOSE)
+        _send_otp_email_or_skip(email, code, _RESET_PASSWORD_PURPOSE)
     except EmailServiceError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     logger.info("Password reset code requested (user_id=%s)", user.id)

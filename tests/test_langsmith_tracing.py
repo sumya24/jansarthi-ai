@@ -80,9 +80,24 @@ def test_is_enabled_false_when_langsmith_package_unavailable(monkeypatch):
 # --- 2/3: trace/span initialization ---
 
 
-def test_start_root_run_returns_none_when_disabled(monkeypatch):
+def test_start_root_run_returns_none_when_both_backends_disabled(monkeypatch):
     monkeypatch.setattr(settings, "LANGSMITH_TRACING", False)
+    monkeypatch.setattr(settings, "PHOENIX_TRACING", False)
     assert tracing.start_root_run("ask_janmitra_graph", inputs={"question": "hi"}) is None
+
+
+def test_start_root_run_returns_phoenix_only_run_when_langsmith_disabled_but_phoenix_enabled(monkeypatch):
+    """LIVE-REPORTED gap this covers: local dev running Phoenix-only (LangSmith off) must still
+    get a real, endable Phoenix span -- previously `start_root_run()` returned `None` here,
+    silently losing every span this module hand-builds (see `_PhoenixOnlyRun`'s own docstring)."""
+    monkeypatch.setattr(settings, "LANGSMITH_TRACING", False)
+    monkeypatch.setattr(settings, "PHOENIX_TRACING", True)
+    monkeypatch.setattr(tracing, "_phoenix_register", Mock())
+
+    run = tracing.start_root_run("ask_janmitra_graph", inputs={"question": "hi"})
+
+    assert isinstance(run, tracing._PhoenixOnlyRun)
+    assert run.name == "ask_janmitra_graph"
 
 
 def test_start_root_run_posts_and_returns_run_when_enabled(monkeypatch):
@@ -145,6 +160,7 @@ def test_end_run_records_error(monkeypatch):
 def test_client_init_failure_is_swallowed_not_raised(monkeypatch):
     monkeypatch.setattr(settings, "LANGSMITH_TRACING", True)
     monkeypatch.setattr(settings, "LANGSMITH_API_KEY", "ls-test-key")
+    monkeypatch.setattr(settings, "PHOENIX_TRACING", False)
     monkeypatch.setattr(tracing, "_LangSmithClient", Mock(side_effect=RuntimeError("network unreachable")))
 
     assert tracing.start_root_run("ask_janmitra_graph", inputs={}) is None
@@ -156,6 +172,7 @@ def test_client_init_failure_is_cached_not_retried_every_call(monkeypatch):
     failing_factory = Mock(side_effect=RuntimeError("network unreachable"))
     monkeypatch.setattr(settings, "LANGSMITH_TRACING", True)
     monkeypatch.setattr(settings, "LANGSMITH_API_KEY", "ls-test-key")
+    monkeypatch.setattr(settings, "PHOENIX_TRACING", False)
     monkeypatch.setattr(tracing, "_LangSmithClient", failing_factory)
 
     assert tracing.start_root_run("run_1", inputs={}) is None
@@ -165,13 +182,28 @@ def test_client_init_failure_is_cached_not_retried_every_call(monkeypatch):
 
 def test_start_root_run_swallows_post_failure(monkeypatch):
     fake_client = _enable(monkeypatch)
+    monkeypatch.setattr(settings, "PHOENIX_TRACING", False)
     fake_client.create_run.side_effect = RuntimeError("LangSmith API unreachable")
 
     assert tracing.start_root_run("ask_janmitra_graph", inputs={}) is None
 
 
+def test_start_root_run_returns_phoenix_only_run_when_langsmith_post_fails_but_phoenix_enabled(monkeypatch):
+    """Same LangSmith failure as above, but Phoenix still gets its span -- one backend's outage
+    must never take the other down with it."""
+    fake_client = _enable(monkeypatch)
+    monkeypatch.setattr(settings, "PHOENIX_TRACING", True)
+    monkeypatch.setattr(tracing, "_phoenix_register", Mock())
+    fake_client.create_run.side_effect = RuntimeError("LangSmith API unreachable")
+
+    run = tracing.start_root_run("ask_janmitra_graph", inputs={})
+
+    assert isinstance(run, tracing._PhoenixOnlyRun)
+
+
 def test_start_child_run_swallows_post_failure(monkeypatch):
     fake_client = _enable(monkeypatch)
+    monkeypatch.setattr(settings, "PHOENIX_TRACING", False)
     root = tracing.start_root_run("ask_janmitra_graph", inputs={})
     fake_client.create_run.side_effect = RuntimeError("LangSmith API unreachable")
 

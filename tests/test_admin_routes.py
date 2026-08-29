@@ -126,6 +126,87 @@ def test_list_workers_reports_open_and_resolved_counts(client, make_admin, make_
     assert ramesh["resolved_complaints"] == 1
 
 
+def _create_worker_via_api(client, admin_token: str, *, phone: str, ward: str, full_name: str = "Test Worker"):
+    """Create an additional worker reusing an ALREADY-bootstrapped admin token -- unlike the
+    make_worker fixture, this doesn't also create a fresh bootstrap admin each call, since
+    User.phone is unique and calling make_worker() more than once per test would collide on that
+    fixture's own hardcoded bootstrap-admin phone."""
+    response = client.post(
+        "/admin/workers", headers={"Authorization": f"Bearer {admin_token}"},
+        json={"full_name": full_name, "phone": phone, "password": "secret123!", "ward": ward, "preferred_language": "en"},
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def test_list_workers_page_and_page_size_slice_server_side(client, make_worker):
+    """LIVE-REPORTED GAP: GET /admin/workers always returned every worker -- opting into
+    page/page_size must now return a real, bounded slice plus an accurate X-Total-Count header,
+    while a caller that passes neither still gets everything (matching GET /complaints' own
+    contract, see that route's _paginate docstring)."""
+    make_worker(phone="9000000010", ward="Ward 1", full_name="Worker A")
+    admin_token = _login(client, "9999900000", "bootstrap-pass")
+    _create_worker_via_api(client, admin_token, phone="9000000011", ward="Ward 2", full_name="Worker B")
+    _create_worker_via_api(client, admin_token, phone="9000000012", ward="Ward 3", full_name="Worker C")
+
+    response = client.get(
+        "/admin/workers", params={"page": 1, "page_size": 2}, headers={"Authorization": f"Bearer {admin_token}"}
+    )
+    assert response.status_code == 200
+    assert len(response.json()) == 2
+    assert response.headers["X-Total-Count"] == "3"
+
+    page2 = client.get(
+        "/admin/workers", params={"page": 2, "page_size": 2}, headers={"Authorization": f"Bearer {admin_token}"}
+    )
+    assert len(page2.json()) == 1
+
+
+def test_list_workers_search_matches_name_ward_and_phone(client, make_worker):
+    make_worker(phone="9000000020", ward="Kothrud", full_name="Ramesh Kumar")
+    admin_token = _login(client, "9999900000", "bootstrap-pass")
+    _create_worker_via_api(client, admin_token, phone="9000000021", ward="Indiranagar", full_name="Suresh Patil")
+
+    for query in ("Ramesh", "Kothrud", "9000000020"):
+        response = client.get(
+            "/admin/workers", params={"search": query}, headers={"Authorization": f"Bearer {admin_token}"}
+        )
+        assert response.status_code == 200, query
+        body = response.json()
+        assert len(body) == 1, f"query={query!r} matched {len(body)} rows"
+        assert body[0]["phone"] == "9000000020"
+
+
+def test_list_workers_stat_headers_stay_aggregate_across_all_workers(client, make_worker, db_session):
+    """The two stat tiles on AdminWorkers.tsx must read as "your whole workforce," not "whatever's
+    on the current page" -- these headers must stay the same regardless of page_size."""
+    from backend.models import Complaint
+
+    _token, worker_a = make_worker(phone="9000000030", ward="Ward A")
+    admin_token = _login(client, "9999900000", "bootstrap-pass")
+    worker_b = _create_worker_via_api(client, admin_token, phone="9000000031", ward="Ward B")
+
+    db = db_session()
+    db.add(Complaint(
+        citizen_id="1", original_text="a", original_language="en", translated_text="a",
+        summary="a", ward="Ward A", status="assigned", assigned_worker_id=worker_a["id"],
+    ))
+    db.add(Complaint(
+        citizen_id="1", original_text="b", original_language="en", translated_text="b",
+        summary="b", ward="Ward B", status="resolved", assigned_worker_id=worker_b["id"],
+    ))
+    db.commit()
+    db.close()
+
+    response = client.get(
+        "/admin/workers", params={"page": 1, "page_size": 1}, headers={"Authorization": f"Bearer {admin_token}"}
+    )
+    assert response.status_code == 200
+    assert len(response.json()) == 1  # the list itself IS paginated down to 1 row
+    assert response.headers["X-Total-Open-Complaints"] == "1"
+    assert response.headers["X-Total-Resolved-Complaints"] == "1"
+
+
 # --- PATCH /admin/workers/{id} ---
 
 

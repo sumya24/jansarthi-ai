@@ -33,7 +33,13 @@ export interface AudioRecorderState {
    * isn't reliable across browsers, so this deliberately doesn't attempt it). */
   audioUrl: string | null;
   error: string | null;
-  start: () => Promise<void>;
+  /** Resolves `true` once recording has genuinely started (the mic stream is open AND the real
+   * MediaRecorder is running), `false` if it failed for any reason (see `error` for why). A
+   * caller that flips its own UI to a "listening"/"speak now" state must wait for `true` first --
+   * see VoiceAssistantOverlay.tsx's own handleMicTap for the live-reported bug this return value
+   * exists to let callers avoid: showing "listening" before this genuinely resolved raced the
+   * citizen's own first words against the mic still initializing, silently losing them. */
+  start: () => Promise<boolean>;
   stop: () => void;
   reset: () => void;
 }
@@ -110,7 +116,7 @@ export function useAudioRecorder(): AudioRecorderState {
 
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
       setError("Voice recording isn't supported in this browser. Please type your complaint instead.");
-      return;
+      return false;
     }
 
     try {
@@ -141,6 +147,7 @@ export function useAudioRecorder(): AudioRecorderState {
           return next;
         });
       }, 1000);
+      return true;
     } catch (err) {
       const name = err instanceof DOMException ? err.name : "";
       if (name === "NotAllowedError" || name === "SecurityError") {
@@ -150,6 +157,7 @@ export function useAudioRecorder(): AudioRecorderState {
       } else {
         setError("Couldn't start recording. Please type your complaint instead.");
       }
+      return false;
     }
   }, [reset, startSegmentRecorder, stopStream, stopTimer]);
 

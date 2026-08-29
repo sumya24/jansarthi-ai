@@ -115,7 +115,7 @@ def test_generate_without_context_labels_still_works_unchanged():
     it (no stray "[...]" line the caller never asked for)."""
     captured: list[str] = []
     svc = _mock_llm_answer_service(captured)
-    answer, was_llm = svc.generate("A question", ["Some chunk content."], "English")
+    answer, was_llm, _token_usage = svc.generate("A question", ["Some chunk content."], "English")
     assert was_llm is True
     assert answer == "OK"
     assert "Some chunk content." in captured[0]
@@ -128,7 +128,7 @@ def test_fallback_answer_never_leaks_the_context_label_to_the_citizen():
     svc = AnswerGenerationService.__new__(AnswerGenerationService)
     svc._client = None
     content_chunks = ["Complaint channels: In person at the ULB's engineering section."]
-    answer, was_llm = svc.generate(
+    answer, was_llm, _token_usage = svc.generate(
         "How do I report a pothole in Bhubaneswar, Odisha?", content_chunks, "English",
         context_labels=["VERIFIED | Topic: Permission to cut a municipal road"],
     )
@@ -153,7 +153,7 @@ def test_fallback_answer_skips_a_leading_faq_chunk_for_a_proper_looking_response
         "Representative service description for street light complaints in Bengaluru, Karnataka.",
         "Required information: Locality / pole number, if known; Phone number of the complainant",
     ]
-    answer, was_llm = svc.generate("How long does a streetlight repair take?", context_chunks, "English")
+    answer, was_llm, _token_usage = svc.generate("How long does a streetlight repair take?", context_chunks, "English")
     assert was_llm is False
     assert answer == context_chunks[1]
     assert not answer.lstrip().startswith("Q: ")
@@ -165,7 +165,7 @@ def test_fallback_answer_still_shows_the_faq_chunk_when_nothing_else_was_retriev
     svc = AnswerGenerationService.__new__(AnswerGenerationService)
     svc._client = None
     context_chunks = ["Q: Is this verified? A: No, this is a synthetic record."]
-    answer, was_llm = svc.generate("Some question", context_chunks, "English")
+    answer, was_llm, _token_usage = svc.generate("Some question", context_chunks, "English")
     assert was_llm is False
     assert answer == context_chunks[0]
 

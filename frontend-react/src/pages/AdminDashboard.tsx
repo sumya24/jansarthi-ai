@@ -1,21 +1,45 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import TopBar from "../components/TopBar";
 import ConfirmModal from "../components/ConfirmModal";
 import AssignWorkerModal from "../components/AssignWorkerModal";
 import StatusBadge from "../components/StatusBadge";
+import CategoryBadge from "../components/CategoryBadge";
 import ReportModal from "../components/ReportModal";
 import SummaryModal from "../components/SummaryModal";
+import LocationHierarchyPanel from "../components/LocationHierarchyPanel";
+import ServiceDonutPanel from "../components/ServiceDonutPanel";
+import AiHealthChart from "../components/AiHealthChart";
 import { useAuth } from "../lib/auth";
 import { useUiLang } from "../lib/uiLang";
+import { useDebouncedValue } from "../lib/useDebouncedValue";
 import { t } from "../lib/i18n";
-import { api, ApiError, type Complaint, type ComplaintStatus, type WorkerSummary } from "../lib/api";
+import {
+  api,
+  ApiError,
+  type Complaint,
+  type ComplaintStatus,
+  type DailyAiStat,
+  type LocationStatusCount,
+  type ServiceStatusCount,
+  type WorkerSummary,
+} from "../lib/api";
 import { useToast } from "../lib/toast";
+import SearchWithDateFilter from "../components/SearchWithDateFilter";
 import "../styles/dashboard.css";
 
 const COMPLAINTS_PAGE_SIZE = 15;
 
 type ComplaintFilter = "all" | ComplaintStatus;
+
+// LIVE-REPORTED GAP: this table always fetched EVERY complaint in the system in one response,
+// then filtered/searched/paginated all of it client-side -- filter chips, search box, and
+// pagination all already existed here, but purely as a client-side veneer over a full fetch.
+// Status filter/search/pagination are now real backend queries (GET /complaints' own `status`/
+// `search`/`page`/`page_size` params) -- see CitizenDashboard.tsx's identical note for the fuller
+// rationale (this was, in fact, the ORIGINAL pattern the other three dashboards copied their own
+// client-side-only version from).
+const STATUSES_FOR_COUNTS = ["pending", "assigned", "accepted", "in_progress", "resolved"] as const;
 
 // i18n key for each status, reused from keys that already exist elsewhere on this same page
 // (the stat tiles) rather than duplicating "Pending"/"Resolved" strings under a new name.
@@ -95,7 +119,36 @@ export default function AdminDashboard() {
 
   const [complaintFilter, setComplaintFilter] = useState<ComplaintFilter>("pending");
   const [complaintSearch, setComplaintSearch] = useState("");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
   const [complaintPage, setComplaintPage] = useState(1);
+  const [complaintTotal, setComplaintTotal] = useState(0);
+  const debouncedComplaintSearch = useDebouncedValue(complaintSearch);
+  // Per-status counts for both the top 4 stat tiles AND each filter chip's own count badge --
+  // one small batch of page_size=1 requests (payload discarded, only each response's `total` is
+  // read), decoupled from the current filter/search/page exactly like the other three
+  // dashboards' own stat cards, so switching chips or typing a search term never makes these
+  // numbers flicker.
+  const [statusCounts, setStatusCounts] = useState<Record<(typeof STATUSES_FOR_COUNTS)[number], number>>({
+    pending: 0, assigned: 0, accepted: 0, in_progress: 0, resolved: 0,
+  });
+  // Overview widgets above the complaints table -- the "complaints by location" drill-down (the
+  // one view only an admin's all-ward access makes useful) and the AI health chart, side by side.
+  // Loaded alongside the existing stat counts, not gating the complaints table's own `loading`
+  // flag -- a slow/failed fetch here just leaves that one widget empty rather than blocking the
+  // page.
+  const [locationRows, setLocationRows] = useState<LocationStatusCount[]>([]);
+  const [serviceRows, setServiceRows] = useState<ServiceStatusCount[]>([]);
+  const [aiDaily, setAiDaily] = useState<DailyAiStat[]>([]);
+  // LIVE-REPORTED BUG: these two widgets had no loading state of their own -- before their first
+  // fetch resolved, `locationRows`/`aiDaily` just sat at their initial empty arrays, so
+  // LocationHierarchyPanel/AiHealthChart rendered their own EMPTY-data message ("No complaints
+  // yet"/"No AI requests recorded yet") for the fetch's duration, which reads as broken rather
+  // than loading (very visible on a hard refresh -- the stat tiles above show a proper skeleton
+  // for that same brief window). Only gates the FIRST load, same reasoning as isFirstLoad below --
+  // a later reload() (after assigning/deleting a complaint) shouldn't flash these back to skeleton.
+  const [widgetsLoading, setWidgetsLoading] = useState(true);
+  const isFirstWidgetsLoad = useRef(true);
 
   const [deleteComplaintTarget, setDeleteComplaintTarget] = useState<Complaint | null>(null);
   const [assignComplaintTarget, setAssignComplaintTarget] = useState<Complaint | null>(null);
@@ -111,29 +164,95 @@ export default function AdminDashboard() {
   const [bulkDeleteConfirm, setBulkDeleteConfirm] = useState(false);
   const [bulkDeleting, setBulkDeleting] = useState(false);
 
+  // `loading` only gates the page's initial skeleton (before the FIRST fetch resolves) -- a later
+  // reload (paging, filter chip, search, or picking a date in SearchWithDateFilter) must not flip
+  // it back to true, since the filter-chip/search row further down sits behind `!loading`.
+  // Without this split, entering a date immediately re-triggered `load()`, which unmounted that
+  // row -- including the open date popover the admin was still typing into -- for the fetch's
+  // duration. Same fix as AdminWorkers.tsx's/AdminAiMonitoring.tsx's own isFirstLoad ref.
+  const isFirstLoad = useRef(true);
+
   async function load() {
     if (!token) return;
-    setLoading(true);
+    if (isFirstLoad.current) setLoading(true);
     setLoadError(null);
     try {
       // `workers` is fetched too -- not rendered as its own table here (see AdminWorkers.tsx),
-      // but needed for the "Assign" modal's worker picker and to match a search term against a
-      // complaint's assigned worker's name.
+      // but needed for the "Assign" modal's worker picker.
       const [workersResult, complaintsResult] = await Promise.all([
         api.listWorkers(token),
-        api.listComplaints(token),
+        api.listComplaints(token, {
+          status: complaintFilter === "all" ? undefined : complaintFilter,
+          search: debouncedComplaintSearch || undefined,
+          dateFrom: dateFrom || undefined,
+          dateTo: dateTo || undefined,
+          page: complaintPage,
+          pageSize: COMPLAINTS_PAGE_SIZE,
+        }),
       ]);
-      setWorkers(workersResult);
-      setComplaints(complaintsResult);
+      setWorkers(workersResult.items);
+      setComplaints(complaintsResult.items);
+      setComplaintTotal(complaintsResult.total);
     } catch (err) {
       setLoadError(err instanceof ApiError ? err.message : t(lang, "admin.errLoadFailed"));
     } finally {
-      setLoading(false);
+      if (isFirstLoad.current) {
+        setLoading(false);
+        isFirstLoad.current = false;
+      }
     }
   }
 
+  async function loadStats() {
+    if (!token) return;
+    try {
+      const counts = await api.complaintStatusCounts(token);
+      setStatusCounts(counts);
+    } catch {
+      // Non-critical -- the stat tiles/chip badges just keep their last known values.
+    }
+  }
+
+  async function loadOverviewWidgets() {
+    if (!token) return;
+    try {
+      const [location, service, daily] = await Promise.all([
+        api.complaintsByLocation(token),
+        api.complaintsByService(token),
+        api.aiMonitoringDaily(token),
+      ]);
+      setLocationRows(location);
+      setServiceRows(service);
+      setAiDaily(daily);
+    } catch {
+      // Non-critical -- these two widgets just keep their last known values (or stay empty) on
+      // a transient failure, same as loadStats() above.
+    } finally {
+      if (isFirstWidgetsLoad.current) {
+        setWidgetsLoading(false);
+        isFirstWidgetsLoad.current = false;
+      }
+    }
+  }
+
+  async function reload() {
+    await Promise.all([load(), loadStats(), loadOverviewWidgets()]);
+  }
+
+  // A search edit or filter-chip click always jumps back to page 1 -- the previous page number
+  // almost never still makes sense against a newly-narrowed result set.
+  useEffect(() => {
+    setComplaintPage(1);
+  }, [debouncedComplaintSearch, complaintFilter, dateFrom, dateTo]);
+
   useEffect(() => {
     load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token, complaintFilter, debouncedComplaintSearch, dateFrom, dateTo, complaintPage]);
+
+  useEffect(() => {
+    loadStats();
+    loadOverviewWidgets();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
@@ -144,7 +263,7 @@ export default function AdminDashboard() {
       await api.deleteComplaint(token, deleteComplaintTarget.id);
       toast.success(t(lang, "admin.complaintDeletedToast"));
       setDeleteComplaintTarget(null);
-      load();
+      reload();
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : t(lang, "admin.complaintDeleteErrFailed"));
     } finally {
@@ -167,7 +286,7 @@ export default function AdminDashboard() {
     setSelectedIds(new Set());
     setBulkDeleteConfirm(false);
     setBulkDeleting(false);
-    load();
+    reload();
   }
 
   function toggleOne(id: number) {
@@ -191,35 +310,13 @@ export default function AdminDashboard() {
     });
   }
 
-  const totalPending = complaints.filter((c) => c.status === "pending").length;
-  const totalOpen = complaints.filter(
-    (c) => c.status === "assigned" || c.status === "accepted" || c.status === "in_progress"
-  ).length;
-  const totalResolved = complaints.filter((c) => c.status === "resolved").length;
+  const totalPending = statusCounts.pending;
+  const totalOpen = statusCounts.assigned + statusCounts.accepted + statusCounts.in_progress;
+  const totalResolved = statusCounts.resolved;
+  const totalAll = totalPending + totalOpen + totalResolved;
 
-  const filteredComplaints = useMemo(() => {
-    let list = complaintFilter === "all" ? complaints : complaints.filter((c) => c.status === complaintFilter);
-    const q = complaintSearch.trim().toLowerCase();
-    if (q) {
-      const qId = q.replace(/^#/, ""); // "#15" and "15" both match complaint id 15
-      list = list.filter(
-        (c) =>
-          String(c.id).includes(qId) ||
-          (c.ward ?? "").toLowerCase().includes(q) ||
-          (c.display_summary || c.summary || "").toLowerCase().includes(q) ||
-          (c.assigned_worker_name ?? "").toLowerCase().includes(q)
-      );
-    }
-    return list;
-  }, [complaints, complaintFilter, complaintSearch]);
-
-  const complaintPageCount = Math.max(1, Math.ceil(filteredComplaints.length / COMPLAINTS_PAGE_SIZE));
-  const complaintCurrentPage = Math.min(complaintPage, complaintPageCount);
-  const pagedComplaints = filteredComplaints.slice(
-    (complaintCurrentPage - 1) * COMPLAINTS_PAGE_SIZE,
-    complaintCurrentPage * COMPLAINTS_PAGE_SIZE
-  );
-  const pagedIds = pagedComplaints.map((c) => c.id);
+  const complaintPageCount = Math.max(1, Math.ceil(complaintTotal / COMPLAINTS_PAGE_SIZE));
+  const pagedIds = complaints.map((c) => c.id);
 
   return (
     <div>
@@ -240,22 +337,96 @@ export default function AdminDashboard() {
           </div>
         </div>
 
+        {/* Live-reported "rendering delay": these four numbers used to render unconditionally,
+            straight from `complaints`/`workers` -- both start as empty arrays before `load()`
+            resolves, so every stat confidently showed "0" for the entire fetch, then popped to
+            the real count all at once. Misleading, not just cosmetic: a citizen/admin loading
+            the page sees a false "0 pending, 0 open, ..." before the real numbers arrive, right
+            next to the complaints TABLE below correctly showing an honest loading skeleton for
+            that same wait -- one inconsistent page, two different (and one actively wrong)
+            loading behaviors. Now gated behind the same `loading` flag as the table, with a
+            skeleton placeholder of its own instead of a fabricated zero. */}
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12, marginBottom: 30 }}>
           <div className="surface-card hoverable stat-card">
             <div className="stat-label">{t(lang, "admin.pendingStat")}</div>
-            <div className="display stat-value" style={{ color: "var(--status-critical)" }}>{totalPending}</div>
+            {loading ? (
+              <div className="skeleton" style={{ width: 40, height: 30 }} />
+            ) : (
+              <div className="display stat-value" style={{ color: "var(--status-critical)" }}>{totalPending}</div>
+            )}
           </div>
           <div className="surface-card hoverable stat-card">
             <div className="stat-label">{t(lang, "admin.openComplaintsStat")}</div>
-            <div className="display stat-value" style={{ color: "var(--status-open)" }}>{totalOpen}</div>
+            {loading ? (
+              <div className="skeleton" style={{ width: 40, height: 30 }} />
+            ) : (
+              <div className="display stat-value" style={{ color: "var(--status-open)" }}>{totalOpen}</div>
+            )}
           </div>
           <div className="surface-card hoverable stat-card">
             <div className="stat-label">{t(lang, "admin.resolvedStat")}</div>
-            <div className="display stat-value" style={{ color: "var(--status-resolved)" }}>{totalResolved}</div>
+            {loading ? (
+              <div className="skeleton" style={{ width: 40, height: 30 }} />
+            ) : (
+              <div className="display stat-value" style={{ color: "var(--status-resolved)" }}>{totalResolved}</div>
+            )}
           </div>
           <div className="surface-card hoverable stat-card">
             <div className="stat-label">{t(lang, "admin.workersStat")}</div>
-            <div className="display stat-value">{workers.length}</div>
+            {loading ? (
+              <div className="skeleton" style={{ width: 40, height: 30 }} />
+            ) : (
+              <div className="display stat-value">{workers.length}</div>
+            )}
+          </div>
+        </div>
+
+        {/* Complaints-by-location drill-down (state -> district -> ward) beside the AI health
+            chart -- Workers no longer has a summary here (the "Manage Workers" link above already
+            leads to its own full page), and the AI Monitoring summary that used to sit full-width
+            below the complaints table now lives in this row instead, promoted next to location
+            rather than pushed further down the page. */}
+        <div className="admin-loc-ai-row three-col">
+          <div className="surface-card admin-loc-ai-panel">
+            <h6>
+              <span>{t(lang, "admin.locationChartTitle")}</span>
+            </h6>
+            {widgetsLoading ? (
+              <div className="skeleton" style={{ width: "100%", height: 220 }} />
+            ) : (
+              <LocationHierarchyPanel rows={locationRows} lang={lang} statusLabel={(status) => t(lang, COMPLAINT_STATUS_LABEL_KEY[status])} />
+            )}
+          </div>
+          <div className="surface-card admin-loc-ai-panel">
+            <h6>
+              <span>{t(lang, "admin.aiHealthTitle")}</span>
+              <Link to="/admin/ai-monitoring" style={{ fontSize: 12, fontWeight: 600, color: "var(--accent-fg)", textTransform: "none", letterSpacing: 0 }}>
+                {t(lang, "admin.viewAiMonitoring")}
+              </Link>
+            </h6>
+            <p style={{ fontSize: 11, color: "var(--ink-3)", margin: "-8px 0 10px", textTransform: "none", letterSpacing: 0 }}>
+              {t(lang, "admin.aiHealthRange")}
+            </p>
+            {widgetsLoading ? (
+              <div className="skeleton" style={{ width: "100%", height: 220 }} />
+            ) : (
+              <AiHealthChart
+                daily={aiDaily}
+                emptyLabel={t(lang, "admin.aiEmpty")}
+                requestsLegend={t(lang, "admin.aiTotalRequests")}
+                latencyLegend={t(lang, "admin.aiAvgLatency")}
+              />
+            )}
+          </div>
+          <div className="surface-card admin-loc-ai-panel">
+            <h6>
+              <span>{t(lang, "admin.serviceChartTitle")}</span>
+            </h6>
+            {widgetsLoading ? (
+              <div className="skeleton" style={{ width: "100%", height: 220 }} />
+            ) : (
+              <ServiceDonutPanel rows={serviceRows} lang={lang} statusLabel={(status) => t(lang, COMPLAINT_STATUS_LABEL_KEY[status])} />
+            )}
           </div>
         </div>
 
@@ -268,7 +439,7 @@ export default function AdminDashboard() {
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 12, marginBottom: 14 }}>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
                 {(["all", "pending", "assigned", "accepted", "in_progress", "resolved"] as const).map((f) => {
-                  const count = f === "all" ? complaints.length : complaints.filter((c) => c.status === f).length;
+                  const count = f === "all" ? totalAll : statusCounts[f];
                   const labelKey = f === "all" ? "admin.filterAll" : COMPLAINT_STATUS_LABEL_KEY[f];
                   const active = complaintFilter === f;
                   return (
@@ -277,7 +448,6 @@ export default function AdminDashboard() {
                       className={`filter-chip btn btn-sm ${active ? "btn-primary" : "btn-ghost"}`}
                       onClick={() => {
                         setComplaintFilter(f);
-                        setComplaintPage(1);
                         setSelectedIds(new Set());
                       }}
                     >
@@ -306,29 +476,30 @@ export default function AdminDashboard() {
                     whatever sliver of space happened to be left on the flex line, squeezing the
                     input (and its placeholder text) far narrower than the intended 380px even when
                     the line hadn't actually wrapped. */}
-                <div className="field" style={{ margin: 0, width: "100%" }}>
-                  <input
-                    type="text"
-                    aria-label={t(lang, "admin.searchComplaintsAndWorkers")}
-                    placeholder={t(lang, "admin.searchComplaintsAndWorkers")}
-                    value={complaintSearch}
-                    onChange={(e) => {
-                      setComplaintSearch(e.target.value);
-                      setComplaintPage(1);
-                      setSelectedIds(new Set());
-                    }}
+                <div style={{ width: "100%" }}>
+                  <SearchWithDateFilter
+                    searchValue={complaintSearch}
+                    onSearchChange={setComplaintSearch}
+                    searchPlaceholder={t(lang, "admin.searchComplaintsAndWorkers")}
+                    dateFrom={dateFrom}
+                    dateTo={dateTo}
+                    onDateFromChange={setDateFrom}
+                    onDateToChange={setDateTo}
+                    lang={lang}
+                    width={380}
+                    onAnyChange={() => setSelectedIds(new Set())}
                   />
                 </div>
               </div>
             </div>
 
-            {complaints.length === 0 ? (
+            {totalAll === 0 ? (
               <p style={{ color: "var(--ink-2)" }}>{t(lang, "admin.noComplaints")}</p>
-            ) : filteredComplaints.length === 0 ? (
+            ) : complaintTotal === 0 ? (
               <p style={{ color: "var(--ink-2)" }}>{t(lang, "admin.noComplaintsFiltered")}</p>
             ) : (
               <div className="surface-card table-scroll" style={{ overflowX: "auto", marginBottom: 34 }}>
-                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: 760 }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: 860 }}>
                   <thead>
                     <tr>
                       <th style={{ padding: "12px 16px", borderBottom: "1px solid var(--line)", width: 1 }}>
@@ -337,6 +508,7 @@ export default function AdminDashboard() {
                       {[
                         t(lang, "admin.colId"),
                         t(lang, "admin.colSummary"),
+                        t(lang, "admin.colCategory"),
                         t(lang, "admin.colWard"),
                         t(lang, "admin.colStatus"),
                         t(lang, "admin.colWorker"),
@@ -350,7 +522,7 @@ export default function AdminDashboard() {
                     </tr>
                   </thead>
                   <tbody>
-                    {pagedComplaints.map((c, i) => (
+                    {complaints.map((c, i) => (
                       <tr key={c.id} className="table-row-hover enter" style={{ "--stagger": Math.min(i, 6) } as React.CSSProperties}>
                         <td style={{ padding: "12px 16px", borderBottom: "1px solid var(--line)" }}>
                           <input type="checkbox" checked={selectedIds.has(c.id)} onChange={() => toggleOne(c.id)} />
@@ -360,6 +532,9 @@ export default function AdminDashboard() {
                         </td>
                         <td style={{ padding: "12px 16px", borderBottom: "1px solid var(--line)", maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                           <Link to={`/admin/complaints/${c.id}`} style={{ color: "inherit" }}>{c.display_summary || c.summary}</Link>
+                        </td>
+                        <td style={{ padding: "12px 16px", borderBottom: "1px solid var(--line)" }}>
+                          <CategoryBadge category={c.service_category} lang={lang} />
                         </td>
                         <td style={{ padding: "12px 16px", borderBottom: "1px solid var(--line)", color: "var(--ink-2)" }}>{c.ward ?? "—"}</td>
                         <td style={{ padding: "12px 16px", borderBottom: "1px solid var(--line)" }}>
@@ -405,17 +580,17 @@ export default function AdminDashboard() {
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 16px", borderTop: "1px solid var(--line)" }}>
                     <button
                       className="btn btn-ghost btn-sm"
-                      disabled={complaintCurrentPage <= 1}
+                      disabled={complaintPage <= 1}
                       onClick={() => setComplaintPage((p) => Math.max(1, p - 1))}
                     >
                       {t(lang, "admin.paginationPrev")}
                     </button>
                     <span style={{ fontSize: 12, color: "var(--ink-2)" }}>
-                      {complaintCurrentPage} / {complaintPageCount}
+                      {complaintPage} / {complaintPageCount}
                     </span>
                     <button
                       className="btn btn-ghost btn-sm"
-                      disabled={complaintCurrentPage >= complaintPageCount}
+                      disabled={complaintPage >= complaintPageCount}
                       onClick={() => setComplaintPage((p) => Math.min(complaintPageCount, p + 1))}
                     >
                       {t(lang, "admin.paginationNext")}
@@ -470,7 +645,7 @@ export default function AdminDashboard() {
           complaint={assignComplaintTarget}
           workers={workers}
           onClose={() => setAssignComplaintTarget(null)}
-          onAssigned={load}
+          onAssigned={reload}
         />
       )}
 

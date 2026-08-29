@@ -43,6 +43,16 @@ class Settings:
     SARVAM_CONNECT_TIMEOUT_SECONDS: float = float(os.getenv("SARVAM_CONNECT_TIMEOUT_SECONDS", "10"))
     SARVAM_REQUEST_TIMEOUT_SECONDS: float = float(os.getenv("SARVAM_REQUEST_TIMEOUT_SECONDS", "15"))
     SARVAM_REASONING_READ_TIMEOUT_SECONDS: float = float(os.getenv("SARVAM_REASONING_READ_TIMEOUT_SECONDS", "45"))
+    # LIVE-REPORTED GAP: text-to-speech was originally bucketed with STT/translation under the
+    # 15s "fast call" timeout above, on the assumption that, like those two, it always finishes
+    # quickly. Not true in practice -- synthesis time scales with the length of the text being
+    # spoken, and a real production-length Marathi answer paragraph was directly observed timing
+    # out at exactly the 15s mark (`sarvam_client.py`'s own TTS logs: started, then "The read
+    # operation timed out" ~15.4s later). Given its own longer timeout here, applied per-call via
+    # `request_options={"timeout_in_seconds": ...}` (see `synthesize_speech()`) rather than
+    # folded into the shared client-level timeout above, since STT/translation genuinely are
+    # still fast and shouldn't wait this long on a real failure.
+    SARVAM_TTS_READ_TIMEOUT_SECONDS: float = float(os.getenv("SARVAM_TTS_READ_TIMEOUT_SECONDS", "30"))
 
     # Ask Sarthi voice assistant TTS (see backend/services/sarvam_client.py's
     # synthesize_speech()) -- one fixed default voice/model for v1, not user-configurable (a
@@ -63,9 +73,14 @@ class Settings:
     UPLOAD_FOLDER: str = os.getenv("UPLOAD_FOLDER", str(BASE_DIR / "uploads"))
     MAX_PHOTO_SIZE_BYTES: int = 5 * 1024 * 1024  # 5 MB
     ALLOWED_PHOTO_CONTENT_TYPES: tuple[str, ...] = ("image/jpeg", "image/png", "image/jpg")
+    # How long an Ask Sarthi chat photo is kept on disk before being cleaned up if it never ended
+    # up attached to a real complaint (see services/upload_cleanup_service.py's own docstring for
+    # why this can't just be zero -- a citizen mid-conversation still needs their just-attached
+    # photo to survive until they decide whether to file).
+    ORPHANED_UPLOAD_RETENTION_HOURS: int = int(os.getenv("ORPHANED_UPLOAD_RETENTION_HOURS", "48"))
 
     # Database
-    DATABASE_URL: str = os.getenv("DATABASE_URL", f"sqlite:///{BASE_DIR / 'janmitra.db'}")
+    DATABASE_URL: str = os.getenv("DATABASE_URL", f"sqlite:///{BASE_DIR / 'jansarthi.db'}")
 
     # Base URL the Streamlit frontends use to reach the FastAPI backend
     BACKEND_URL: str = os.getenv("BACKEND_URL", "http://localhost:8000")
@@ -104,9 +119,24 @@ class Settings:
     # docs/ask_janmitra_rag_architecture.md.
     EMBEDDING_MODEL_NAME: str = os.getenv("EMBEDDING_MODEL_NAME", "intfloat/multilingual-e5-small")
 
-    # Ask Sarthi image understanding (see backend/services/vision_service.py). A small local
-    # vision-language model, not a hosted vendor -- Sarvam has no vision capability, and the user
-    # chose to avoid adding a new AI vendor/API key for this feature.
+    # Ask Sarthi image understanding (see backend/services/vision_service.py). Originally a small
+    # local vision-language model only -- Sarvam has no vision capability, and a new hosted
+    # vendor/API key was deliberately avoided for this feature at first. Revisited 2026-08-27:
+    # this local model is also what was crashing the whole backend process under real memory
+    # pressure (both here and, more importantly, on the smaller production VM) -- LIVE-REPORTED
+    # DECISION: use Google Gemini's free tier (genuinely free, no card, real image input support --
+    # confirmed directly against a live API key and a real image+text call, 2026-08-27) as the
+    # PRIMARY captioner, with this local model kept as an automatic fallback -- same "primary +
+    # graceful degradation" shape as every other AI call in this app (Sarvam LLM -> raw excerpts,
+    # translation failure -> English). GEMINI_API_KEY unset (the default) skips straight to this
+    # local model, unchanged from before -- nothing breaks without a key.
+    GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
+    # "gemini-3.5-flash-lite" confirmed live 2026-08-27 to be the current free-tier vision-capable
+    # model -- "gemini-2.5-flash-lite" (an earlier, reasonable-looking default) returns a real 404
+    # "no longer available to new users" error as of this date; Google renames/retires free-tier
+    # model ids periodically, so this may need updating again later.
+    GEMINI_VISION_MODEL: str = os.getenv("GEMINI_VISION_MODEL", "gemini-3.5-flash-lite")
+    GEMINI_TIMEOUT_SECONDS: float = float(os.getenv("GEMINI_TIMEOUT_SECONDS", "15"))
     VISION_MODEL_NAME: str = os.getenv("VISION_MODEL_NAME", "vikhyatk/moondream2")
     CHROMA_PERSIST_DIR: Path = Path(os.getenv("CHROMA_PERSIST_DIR", str(BASE_DIR / "data" / "rag_knowledge_base" / "chroma")))
     CHROMA_COLLECTION_NAME: str = os.getenv("CHROMA_COLLECTION_NAME", "janmitra_knowledge")
@@ -147,6 +177,22 @@ class Settings:
     # narrow enough that a genuinely borderline real question could go either way -- documented as
     # a known limitation, not hidden (see docs/ask_janmitra_rag_architecture.md).
     RAG_EMBEDDING_RELEVANCE_THRESHOLD: float = float(os.getenv("RAG_EMBEDDING_RELEVANCE_THRESHOLD", "0.79"))
+
+    # A separate, lower floor for VERIFIED chunks specifically (see rag_retriever.py's own
+    # "cross-lingual verified rescue" comment for the full mechanism) -- live-reproduced gap: the
+    # exact same question about Bengaluru's water-supply procedure, asked in English, scored the
+    # real BWSSB record at 0.87+ (comfortably above RAG_EMBEDDING_RELEVANCE_THRESHOLD); asked in
+    # Marathi script, the SAME real BWSSB chunks scored only 0.75-0.79 -- just under the main
+    # threshold -- while topically-generic SYNTHETIC placeholder chunks for the same city+category
+    # scored 0.80-0.84 and passed easily. Not a metadata-filtering gap (category+location had
+    # already narrowed the candidate pool correctly, same safety precondition
+    # RAG_EMBEDDING_RELEVANCE_THRESHOLD's own docstring already relies on) -- a real, measured
+    # cross-lingual embedding-similarity gap specifically for non-English scripts against this
+    # knowledge base's English-authored content. Deliberately only ever widens the bar for content
+    # that's already VERIFIED (never fabricated, from a real government source) and already passed
+    # the same city+category filter every other chunk did -- never a blanket relaxation of the main
+    # threshold, which stays exactly as measured/justified above for everything else.
+    RAG_VERIFIED_RELEVANCE_THRESHOLD: float = float(os.getenv("RAG_VERIFIED_RELEVANCE_THRESHOLD", "0.74"))
 
     # Hardcoded identities (kept only for the legacy Streamlit frontends, which
     # predate real auth and are superseded by the React app + JWT login below)
@@ -190,6 +236,18 @@ class Settings:
     # alias than the login username.
     EMAIL_FROM_ADDRESS: str = os.getenv("EMAIL_FROM_ADDRESS") or os.getenv("SMTP_USERNAME", "")
     EMAIL_FROM_NAME: str = os.getenv("EMAIL_FROM_NAME", "JanSarthi AI")
+    # LIVE-REPORTED GAP: every real OTP send goes through the one Gmail account configured above,
+    # which has repeatedly hit Gmail's own daily sending-limit quota during heavy local/E2E
+    # testing (confirmed live twice, 3 days apart -- see PLAYWRIGHT_TEST_REPORT.md) -- blocking
+    # every signup-dependent test, not a code bug. When true, the three OTP-sending routes
+    # (routes/auth.py) skip the real SMTP send entirely and only cache the code via the existing
+    # `_dev_cache_otp`/`GET /auth/_dev/otp-code` mechanism (already dev-only, already how
+    # Playwright specs read a code back) -- so local/E2E runs never depend on Gmail's quota at
+    # all. Every call site ALSO requires `ENVIRONMENT != "production"` before honoring this flag
+    # (same belt-and-suspenders pattern _dev_cache_otp itself already uses just below in
+    # routes/auth.py) -- a stray true value in a production environment can never bypass a real
+    # send on its own.
+    EMAIL_DEV_MODE: bool = os.getenv("EMAIL_DEV_MODE", "false").strip().lower() == "true"
     # A 6-digit OTP is short-lived by design, unlike the month-long refresh token above.
     OTP_EXPIRE_MINUTES: int = int(os.getenv("OTP_EXPIRE_MINUTES", "10"))
     # A 6-digit code has only 1,000,000 possibilities -- meaningfully brute-forceable without a
@@ -247,9 +305,16 @@ class Settings:
     # General baseline, applied to every route except /health by backend/middleware.py's
     # GeneralRateLimitMiddleware -- a safety net against scripted abuse/scraping across the whole
     # API, on top of (not instead of) LOGIN_RATE_LIMIT/AI_RATE_LIMIT's own stricter limits.
-    # Generous: a real user clicking through the app (loading a dashboard, filing a complaint,
-    # paging through workers) never comes close, verified live -- see docs/RATE_LIMITING.md.
-    GENERAL_RATE_LIMIT: int = int(os.getenv("GENERAL_RATE_LIMIT", "60"))
+    #
+    # Raised from 60 -> 120 after a live-reported false trip: the Admin dashboard alone fires
+    # ~5-9 requests per page load (Workers, the complaints table, status counts, the by-ward
+    # chart, AI Monitoring), NotificationBell polls every 15s in the background for every logged-
+    # in session regardless of role (another ~4/min baseline), and a real admin actively working
+    # -- refreshing, switching between Complaints/Workers/AI Monitoring, a second tab open --
+    # measurably approached 60/60s without anything actually being abusive. 120 keeps real
+    # headroom for that genuine multi-tab/active-session case across all three roles while still
+    # blocking an actually-abusive script (200+/min) quickly. See docs/RATE_LIMITING.md.
+    GENERAL_RATE_LIMIT: int = int(os.getenv("GENERAL_RATE_LIMIT", "120"))
     GENERAL_RATE_LIMIT_WINDOW_SECONDS: int = int(os.getenv("GENERAL_RATE_LIMIT_WINDOW_SECONDS", "60"))
     # Whether to trust the reverse proxy's X-Forwarded-For for the login rate limiter's per-IP
     # key, instead of the raw TCP peer address. Safe to enable ONLY when every request is
@@ -283,6 +348,18 @@ class Settings:
     # routed into for human review (see tracing.py's enqueue_for_review()) -- a knowledge-base-gap
     # backlog, not a moderation queue. Created automatically on first use if it doesn't exist yet.
     LANGSMITH_REVIEW_QUEUE_NAME: str = os.getenv("LANGSMITH_REVIEW_QUEUE_NAME", "jansarthi-ai-knowledge-gaps")
+
+    # Arize Phoenix -- a second, self-hosted tracing backend alongside LangSmith (see
+    # tracing.py's module docstring), added so a monthly vendor-side quota running out doesn't stop
+    # observability entirely. Same "off unless explicitly configured" pattern as LANGSMITH_TRACING
+    # above -- purely additive, never required for the app to function.
+    PHOENIX_TRACING: bool = os.getenv("PHOENIX_TRACING", "false").strip().lower() == "true"
+    PHOENIX_COLLECTOR_ENDPOINT: str = os.getenv("PHOENIX_COLLECTOR_ENDPOINT", "http://localhost:6006/v1/traces")
+    PHOENIX_PROJECT_NAME: str = os.getenv("PHOENIX_PROJECT_NAME", "jansarthi-ai")
+    # Admin-dashboard deep link template, same pure-string-templating approach as
+    # LANGSMITH_TRACE_URL_TEMPLATE above -- filled in once Phoenix's own trace URL shape is
+    # confirmed against the locally running instance.
+    PHOENIX_TRACE_URL_TEMPLATE: str = os.getenv("PHOENIX_TRACE_URL_TEMPLATE", "")
 
     # Error monitoring (Sentry -- see backend/main.py's init_error_monitoring()). OFF by default,
     # same "off unless explicitly configured" pattern as LANGSMITH_TRACING above: only actually
@@ -358,3 +435,19 @@ def to_bcp47(language_code: str) -> str:
     if language is None:
         raise ValueError(f"Unsupported language code: {language_code}")
     return language["bcp47"]
+
+
+def from_bcp47(bcp47_code: str) -> str | None:
+    """Reverse of to_bcp47() -- maps a Sarvam BCP-47 code (e.g. from its language-identification
+    or speech-to-text auto-detect output) back to this app's short SUPPORTED_LANGUAGES code.
+
+    Returns None (never raises) for a BCP-47 code this app has no SUPPORTED_LANGUAGES entry for
+    -- e.g. Sarvam correctly detects Tamil/Telugu/etc. in a citizen's message, but this app has
+    no UI copy or TTS voice configured for those, so there is nothing sensible to switch the
+    response into. Callers (see orchestration/nodes.py's language_node) fall back to the
+    citizen's originally-selected UI language in that case, exactly like a failed detection call.
+    """
+    for code, info in settings.SUPPORTED_LANGUAGES.items():
+        if info["bcp47"] == bcp47_code:
+            return code
+    return None

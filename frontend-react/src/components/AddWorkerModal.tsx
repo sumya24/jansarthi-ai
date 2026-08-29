@@ -6,6 +6,7 @@ import { api, ApiError } from "../lib/api";
 import { useToast } from "../lib/toast";
 import { useModalA11y } from "../lib/useModalA11y";
 import EmailVerifyField, { type EmailVerifyValue } from "./EmailVerifyField";
+import WorkerLocationPicker, { type WorkerLocationValue } from "./WorkerLocationPicker";
 
 export default function AddWorkerModal({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
   const { token } = useAuth();
@@ -15,7 +16,11 @@ export default function AddWorkerModal({ onClose, onCreated }: { onClose: () => 
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [emailValue, setEmailValue] = useState<EmailVerifyValue>({ email: "", verified: false, token: null });
-  const [ward, setWard] = useState("");
+  // LIVE-REPORTED GAP: this used to be a plain free-text ward box -- the one place left after Edit
+  // Worker (EditWorkerModal.tsx) had already moved to the real cascading State/City/Ward/Area
+  // picker. Same component, no `initial` (nothing to pre-fill for a worker that doesn't exist
+  // yet, unlike editing one).
+  const [location, setLocation] = useState<WorkerLocationValue>({ ward: "" });
   // Defaults to the admin's own current UI language, same convention Signup.tsx uses for a
   // citizen's preferred_language -- was previously hardcoded to "mr" regardless of who was
   // creating the account, silently giving every new worker Marathi unless the admin noticed
@@ -36,7 +41,7 @@ export default function AddWorkerModal({ onClose, onCreated }: { onClose: () => 
     if (!password) errors.password = true;
     if (!confirmPassword) errors.confirmPassword = true;
     else if (confirmPassword !== password) errors.confirmPassword = true;
-    if (!ward.trim()) errors.ward = true;
+    if (!location.ward.trim()) errors.ward = true;
     if (emailValue.email.trim() && !emailValue.verified) errors.email = true;
     setFieldErrors(errors);
     if (Object.keys(errors).length > 0) return;
@@ -48,7 +53,9 @@ export default function AddWorkerModal({ onClose, onCreated }: { onClose: () => 
         full_name: fullName.trim(),
         phone: phone.trim(),
         password,
-        ward: ward.trim(),
+        ward: location.ward,
+        ward_id: location.ward_id,
+        locality_id: location.locality_id,
         preferred_language: language,
         ...(emailValue.email.trim() && { email: emailValue.email.trim(), email_verification_token: emailValue.token ?? undefined }),
       });
@@ -66,7 +73,19 @@ export default function AddWorkerModal({ onClose, onCreated }: { onClose: () => 
 
   return (
     <div className="overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
-      <div ref={modalRef} className="modal" role="dialog" aria-modal="true" aria-labelledby="jm-modal-title" tabIndex={-1}>
+      <div
+        ref={modalRef}
+        className="modal"
+        // LIVE-REPORTED INCONSISTENCY: SettingsModal.tsx widens to 560px for this exact reason
+        // (a 4-level cascading location picker reads as cramped at the base .modal 420px) but
+        // this modal, which grew the same WorkerLocationPicker, was never given the same
+        // treatment -- same fix, same width, for the same underlying component.
+        style={{ maxWidth: 560 }}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="jm-modal-title"
+        tabIndex={-1}
+      >
         <div className="modal-head">
           <h3 className="display" id="jm-modal-title">{t(lang, "addWorker.title")}</h3>
           <button className="x" aria-label={t(lang, "common.close")} onClick={onClose}>
@@ -117,8 +136,8 @@ export default function AddWorkerModal({ onClose, onCreated }: { onClose: () => 
           />
           {fieldErrors.email && <div className="field-error">{t(lang, "auth.signup.verifyEmailFirst")}</div>}
           <div className={`field ${fieldErrors.ward ? "has-error" : ""}`}>
-            <label htmlFor="worker-ward">{t(lang, "addWorker.ward")}</label>
-            <input id="worker-ward" type="text" value={ward} onChange={(e) => setWard(e.target.value)} placeholder={t(lang, "addWorker.wardPlaceholder")} />
+            <label>{t(lang, "addWorker.ward")}</label>
+            <WorkerLocationPicker lang={lang} onChange={setLocation} hasError={fieldErrors.ward} />
             {fieldErrors.ward && <div className="field-error">{t(lang, "common.fieldRequired")}</div>}
           </div>
           <div className="field">

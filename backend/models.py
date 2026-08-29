@@ -35,6 +35,8 @@ class Complaint(Base):
             done). Still a plain string, not a DB-level enum (unchanged from before "in_progress"
             was added) -- every transition is validated in routes/complaints.py, not by a column
             constraint.
+        service_category: ServiceCategory.value (waste/water/roads/streetlights) classified at
+            filing time, or None if it predates this column or classification was unsure.
         ward: The area this complaint is in (free text); drives which worker(s) it can be
             assigned to (see assignment_service.py). Kept as-is for backward compatibility --
             still populated the same way, from the citizen's dropdown pick at submission time.
@@ -67,6 +69,14 @@ class Complaint(Base):
     summary: Mapped[str] = mapped_column(Text, nullable=False)
     photo_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    # LIVE-REPORTED GAP: the civic-service category (waste/water/roads/streetlights) has ALWAYS
+    # been classified at filing time -- both Ask Sarthi's complaint_flow_node and the Report an
+    # Issue wizard's 3-layer classifier (real model -> keyword -> manual picker) resolve one --
+    # but until now that result was used only in the moment (for tracing / a UI hint) and then
+    # discarded, never persisted here. `ServiceCategory.value`, or None for complaints filed
+    # before this column existed (see scripts/migrate_complaint_category.py, which backfills
+    # those from their stored text) or on the rare case classification itself came back unsure.
+    service_category: Mapped[str | None] = mapped_column(String(32), nullable=True)
     ward: Mapped[str | None] = mapped_column(String(120), nullable=True)
     state_id: Mapped[int | None] = mapped_column(ForeignKey("states.id"), nullable=True)
     district_id: Mapped[int | None] = mapped_column(ForeignKey("districts.id"), nullable=True)
@@ -569,6 +579,9 @@ class AiRequestLog(Base):
             orchestration/graph.py's run_graph()).
         langsmith_trace_id: Full UUID used as the LangSmith root run id for this request, or
             None if tracing was disabled/unavailable when this request ran.
+        phoenix_trace_id: The real Phoenix (OpenTelemetry) trace id for this request, or None if
+            Phoenix tracing was disabled/unavailable. A different id space from
+            langsmith_trace_id above -- see tracing.py's get_phoenix_trace_id() docstring.
         conversation_id: Client-supplied conversation identifier, if any -- currently always
             None (see AskJanMitraRequest/GraphState's conversation_id field; this app has no
             server-side session/conversation id yet, so this column is forward-compatible
@@ -584,6 +597,18 @@ class AiRequestLog(Base):
             tracing.py's docstring).
         latency_ms: Total wall-clock time for the request.
         created_at: UTC timestamp.
+        ai_cost_inr: Real Sarvam cost for this request's answer-generation LLM call, in Indian
+            Rupees (see answer_generation_service.py's AnswerGenerationService.generate()
+            docstring for the rate) -- None whenever no LLM call happened this turn (a cache hit,
+            the no-LLM-available fallback, or a flow that never reaches rag_flow_node at all:
+            greeting, out-of-scope, complaint creation, ...). Powers the Admin AI Monitoring
+            page's cost column -- the same number Phoenix's Metrics view shows per-span, just
+            persisted locally so the admin dashboard doesn't depend on Phoenix being reachable
+            (same reasoning as phoenix_trace_id/langsmith_trace_id above).
+        ai_model_name: The Sarvam model that generated the answer (e.g. "sarvam-105b"), or None
+            under the same conditions as ai_cost_inr.
+        ai_total_tokens: Real total token count (prompt + completion) from Sarvam's own response,
+            or None under the same conditions as ai_cost_inr.
     """
 
     __tablename__ = "ai_request_logs"
@@ -591,6 +616,7 @@ class AiRequestLog(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     request_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     langsmith_trace_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    phoenix_trace_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     conversation_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     intent: Mapped[str | None] = mapped_column(String(32), nullable=True)
     service_category: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -599,6 +625,9 @@ class AiRequestLog(Base):
     error_type: Mapped[str | None] = mapped_column(String(120), nullable=True)
     latency_ms: Mapped[float] = mapped_column(Float, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+    ai_cost_inr: Mapped[float | None] = mapped_column(Float, nullable=True)
+    ai_model_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ai_total_tokens: Mapped[int | None] = mapped_column(nullable=True)
 
 
 class AiAlertState(Base):

@@ -1,8 +1,9 @@
 """FastAPI dependencies for authenticating requests, enforcing roles, and rate limiting."""
 
 import logging
+import secrets
 
-from fastapi import Depends, HTTPException, Request
+from fastapi import Depends, HTTPException, Request, Response
 from sqlalchemy.orm import Session
 
 from backend.config import settings
@@ -14,26 +15,95 @@ from backend.services.rate_limiter import RateLimiter
 
 logger = logging.getLogger(__name__)
 
+# --- Cookie-based session auth -----------------------------------------------------------------
+# A browser session authenticates via httpOnly cookies (never readable by JS -- closing off the
+# XSS-reads-localStorage risk the old client-side token storage had); a non-browser caller (every
+# existing backend test, or any future API client) can still use a plain Authorization: Bearer
+# header instead, checked first below. Both are accepted everywhere on purpose -- this is a
+# genuine "web clients use cookies, API clients use bearer tokens" split, not a half-migrated
+# in-between state.
+ACCESS_TOKEN_COOKIE = "access_token"
+REFRESH_TOKEN_COOKIE = "refresh_token"
+CSRF_TOKEN_COOKIE = "csrf_token"
+CSRF_HEADER_NAME = "X-CSRF-Token"
+
+
+def extract_access_token(request: Request) -> str | None:
+    """The access token for this request, from whichever of the two sources above carried it."""
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        return auth_header.removeprefix("Bearer ").strip()
+    return request.cookies.get(ACCESS_TOKEN_COOKIE)
+
+
+def extract_refresh_token(request: Request, body_token: str | None) -> str | None:
+    """Same dual-source idea for the refresh token: an explicit value in the request body (tests/
+    manual API use -- see RefreshRequest/LogoutRequest's own docstrings) takes precedence, falling
+    back to the httpOnly refresh_token cookie a real browser sends automatically -- a browser
+    session has no JS-level access to that cookie's value to put it in a body itself."""
+    return body_token or request.cookies.get(REFRESH_TOKEN_COOKIE)
+
+
+def set_auth_cookies(response: Response, access_token: str, refresh_token: str) -> None:
+    """Sets the three cookies a browser session actually runs on: the two httpOnly auth cookies,
+    plus a separate, deliberately NON-httpOnly CSRF token the frontend reads back and echoes as a
+    header on every mutating request (see middleware.CSRFMiddleware) -- the standard double-
+    submit-cookie pattern, needed because cookies alone (unlike a header a script has to
+    deliberately attach) ride along with a cross-site request whether the citizen intended it or
+    not.
+
+    `secure` only turns on in production (settings.ENVIRONMENT) -- a Secure cookie is dropped
+    entirely by the browser over plain http, which local dev serves both the frontend (:5173) and
+    backend (:8000) over; the real deployment is HTTPS-only (see deploy/Caddyfile), so this is
+    never a gap in the environment where it would matter.
+
+    refresh_token is scoped to path="/auth" (the only paths that ever need to read it) rather than
+    the whole site, purely to limit which requests it rides along on -- it never needs to reach
+    e.g. GET /complaints the way access_token does.
+    """
+    secure = settings.ENVIRONMENT == "production"
+    response.set_cookie(
+        ACCESS_TOKEN_COOKIE, access_token, max_age=settings.JWT_EXPIRE_MINUTES * 60,
+        httponly=True, secure=secure, samesite="lax", path="/",
+    )
+    response.set_cookie(
+        REFRESH_TOKEN_COOKIE, refresh_token, max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400,
+        httponly=True, secure=secure, samesite="lax", path="/auth",
+    )
+    response.set_cookie(
+        CSRF_TOKEN_COOKIE, secrets.token_urlsafe(32), max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400,
+        httponly=False, secure=secure, samesite="lax", path="/",
+    )
+
+
+def clear_auth_cookies(response: Response) -> None:
+    """Logout -- deletes all three cookies set above. delete_cookie needs the same `path` each
+    cookie was originally set with, or the browser treats it as an unrelated cookie and leaves the
+    real one in place."""
+    response.delete_cookie(ACCESS_TOKEN_COOKIE, path="/")
+    response.delete_cookie(REFRESH_TOKEN_COOKIE, path="/auth")
+    response.delete_cookie(CSRF_TOKEN_COOKIE, path="/")
+
 
 def get_current_user(request: Request, db: Session = Depends(get_db)) -> User:
-    """Resolve the authenticated user from the request's Authorization header.
+    """Resolve the authenticated user from this request's access token.
 
     Args:
-        request: The incoming request, expected to carry "Authorization: Bearer <token>".
+        request: The incoming request, expected to carry either an "Authorization: Bearer <token>"
+            header or an access_token cookie (see extract_access_token).
         db: Active database session.
 
     Returns:
         The authenticated User.
 
     Raises:
-        HTTPException: 401 if the header is missing, the token is invalid/expired,
-            or the user it refers to no longer exists.
+        HTTPException: 401 if no token is present, the token is invalid/expired, or the user it
+            refers to no longer exists.
     """
-    auth_header = request.headers.get("Authorization", "")
-    if not auth_header.startswith("Bearer "):
+    token = extract_access_token(request)
+    if not token:
         raise HTTPException(status_code=401, detail="Missing or malformed Authorization header.")
 
-    token = auth_header.removeprefix("Bearer ").strip()
     try:
         payload = decode_access_token(token)
     except InvalidTokenError as exc:

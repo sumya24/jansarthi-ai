@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api, type LocationOption } from "../lib/api";
 import { t, type LangCode } from "../lib/i18n";
+import { localizeStateName } from "../lib/locationNames";
 
 export interface WorkerLocationValue {
   ward: string;
@@ -201,7 +202,7 @@ export default function WorkerLocationPicker({
           >
             <option value="">{t(lang, "signup.homeLocation.statePlaceholder")}</option>
             {states.map((s) => (
-              <option key={s.id} value={s.id}>{s.name}</option>
+              <option key={s.id} value={s.id}>{localizeStateName(s.name, lang)}</option>
             ))}
             <option value={OTHER_STATE}>{t(lang, "signup.homeLocation.stateOther")}</option>
           </select>

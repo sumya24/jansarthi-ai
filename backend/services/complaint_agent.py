@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from backend.config import to_bcp47
 from backend.models import Complaint
+from backend.schemas.rag_knowledge import ServiceCategory
 from backend.services.normalization_service import NormalizationService
 from backend.services.sarvam_client import AIServiceError, SarvamClient
 from backend.services.stt_service import STT_GAP_MARKER as _STT_GAP_MARKER
@@ -45,6 +46,7 @@ class ComplaintAgent:
         text: str | None,
         audio_chunks: list[bytes] | None,
         photo_path: str | None,
+        category: ServiceCategory | None = None,
     ) -> Complaint:
         """Process citizen input and store a new complaint record.
 
@@ -62,6 +64,11 @@ class ComplaintAgent:
                 ~28s segments client-side for exactly this reason (see
                 docs/ai_pipeline_limits.md for why 30s is a hard, actively-enforced limit).
             photo_path: Relative path to an attached photo, or None.
+            category: The civic-service category this complaint was classified as (by Ask
+                Sarthi's own intent classifier, or the Report an Issue wizard's 3-layer
+                classifier), or None if it couldn't be determined -- see LIVE-REPORTED GAP note on
+                Complaint.service_category. Optional/defaulted so no existing caller needs to
+                change unless it actually has a category to give.
 
         Returns:
             The newly created and persisted Complaint record.
@@ -119,6 +126,7 @@ class ComplaintAgent:
             summary=summary,
             photo_path=photo_path,
             status="open",
+            service_category=category.value if category else None,
         )
         db.add(complaint)
         db.commit()

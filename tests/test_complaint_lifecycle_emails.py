@@ -17,11 +17,11 @@ from backend.models import Complaint
 from backend.services.email_service import EmailServiceError
 
 
-def _fake_agent_create_complaint(db, citizen_id, language_code, text, audio_chunks, photo_path):
+def _fake_agent_create_complaint(db, citizen_id, language_code, text, audio_chunks, photo_path, category=None):
     complaint = Complaint(
         citizen_id=citizen_id, original_text=text or "(voice complaint)", original_language=language_code,
         translated_text=f"[en] {text or 'voice complaint'}", summary="A short summary.", photo_path=photo_path,
-        status="pending",
+        status="pending", service_category=category.value if category else None,
     )
     db.add(complaint)
     db.commit()

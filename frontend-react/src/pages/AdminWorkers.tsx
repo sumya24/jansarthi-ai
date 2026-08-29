@@ -1,16 +1,22 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import TopBar from "../components/TopBar";
 import AddWorkerModal from "../components/AddWorkerModal";
 import EditWorkerModal from "../components/EditWorkerModal";
 import ConfirmModal from "../components/ConfirmModal";
+import SearchWithDateFilter from "../components/SearchWithDateFilter";
 import { useAuth } from "../lib/auth";
 import { useUiLang } from "../lib/uiLang";
+import { useDebouncedValue } from "../lib/useDebouncedValue";
 import { t } from "../lib/i18n";
 import { api, ApiError, type WorkerSummary } from "../lib/api";
 import { useToast } from "../lib/toast";
 import "../styles/dashboard.css";
 
+// LIVE-REPORTED GAP: this table used to fetch and render EVERY worker in one response, then
+// filter/paginate all of it client-side -- search and pagination are now real backend queries
+// (GET /admin/workers' own `search`/`page`/`page_size` params), same reasoning as the complaint
+// dashboards (see CitizenDashboard.tsx's identical note).
 const WORKERS_PAGE_SIZE = 15;
 
 /** Same hand-drawn stroke language as components/ServiceIcons.tsx -- see AdminDashboard.tsx's
@@ -87,7 +93,19 @@ export default function AdminWorkers() {
   const [deleting, setDeleting] = useState(false);
 
   const [search, setSearch] = useState("");
+  // Same "every search box gets a date filter" rollout as AdminAiMonitoring.tsx -- filters on
+  // this worker account's own created_at.
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
   const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
+  // Decoupled from `workers` (the filtered+paged current-page list) on purpose -- these two stat
+  // tiles are meant to read as "your whole workforce," the same way every other dashboard's stat
+  // cards stay unfiltered regardless of that page's own search/pagination. Backed by the two
+  // aggregate headers GET /admin/workers now always returns (see backend's own docstring).
+  const [totalOpenComplaints, setTotalOpenComplaints] = useState(0);
+  const [totalResolvedComplaints, setTotalResolvedComplaints] = useState(0);
+  const debouncedSearch = useDebouncedValue(search);
 
   // Bulk selection -- see AdminDashboard.tsx's identical field for the reasoning (persists
   // across pages, cleared on search change).
@@ -95,23 +113,50 @@ export default function AdminWorkers() {
   const [bulkDeleteConfirm, setBulkDeleteConfirm] = useState(false);
   const [bulkDeleting, setBulkDeleting] = useState(false);
 
+  // `loading` only gates the page's initial skeleton (before the FIRST fetch resolves) -- every
+  // later reload (paging, search, or picking a date in SearchWithDateFilter) must NOT flip it back
+  // to true, since the whole search bar/filter row sits behind `!loading` further down. Without
+  // this split, entering a date immediately re-triggered `load()`, which unmounted that row --
+  // including the open date popover the admin was still typing into -- for the fetch's duration.
+  // Same fix already applied in AdminAiMonitoring.tsx (see its own isFirstRequestsLoad).
+  const isFirstLoad = useRef(true);
+
   async function load() {
     if (!token) return;
-    setLoading(true);
+    if (isFirstLoad.current) setLoading(true);
     setLoadError(null);
     try {
-      setWorkers(await api.listWorkers(token));
+      const result = await api.listWorkers(token, {
+        search: debouncedSearch || undefined,
+        page,
+        pageSize: WORKERS_PAGE_SIZE,
+        dateFrom: dateFrom || undefined,
+        dateTo: dateTo || undefined,
+      });
+      setWorkers(result.items);
+      setTotal(result.total);
+      setTotalOpenComplaints(result.totalOpenComplaints);
+      setTotalResolvedComplaints(result.totalResolvedComplaints);
     } catch (err) {
       setLoadError(err instanceof ApiError ? err.message : t(lang, "admin.errLoadFailed"));
     } finally {
-      setLoading(false);
+      if (isFirstLoad.current) {
+        setLoading(false);
+        isFirstLoad.current = false;
+      }
     }
   }
+
+  // A search edit always jumps back to page 1 -- the previous page number almost never still
+  // makes sense against a newly-narrowed result set.
+  useEffect(() => {
+    setPage(1);
+  }, [debouncedSearch, dateFrom, dateTo]);
 
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token]);
+  }, [token, debouncedSearch, page, dateFrom, dateTo]);
 
   async function confirmDelete() {
     if (!token || !deleteTarget) return;
@@ -176,24 +221,8 @@ export default function AdminWorkers() {
     });
   }
 
-  const totalOpen = workers.reduce((sum, w) => sum + w.open_complaints, 0);
-  const totalResolved = workers.reduce((sum, w) => sum + w.resolved_complaints, 0);
-
-  const filteredWorkers = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    if (!q) return workers;
-    return workers.filter(
-      (w) =>
-        w.full_name.toLowerCase().includes(q) ||
-        (w.ward ?? "").toLowerCase().includes(q) ||
-        w.phone.toLowerCase().includes(q)
-    );
-  }, [workers, search]);
-
-  const pageCount = Math.max(1, Math.ceil(filteredWorkers.length / WORKERS_PAGE_SIZE));
-  const currentPage = Math.min(page, pageCount);
-  const pagedWorkers = filteredWorkers.slice((currentPage - 1) * WORKERS_PAGE_SIZE, currentPage * WORKERS_PAGE_SIZE);
-  const pagedIds = pagedWorkers.map((w) => w.id);
+  const pageCount = Math.max(1, Math.ceil(total / WORKERS_PAGE_SIZE));
+  const pagedIds = workers.map((w) => w.id);
 
   return (
     <div>
@@ -215,15 +244,15 @@ export default function AdminWorkers() {
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12, marginBottom: 30 }}>
           <div className="surface-card hoverable stat-card">
             <div className="stat-label">{t(lang, "admin.workersStat")}</div>
-            <div className="display stat-value">{workers.length}</div>
+            <div className="display stat-value">{total}</div>
           </div>
           <div className="surface-card hoverable stat-card">
             <div className="stat-label">{t(lang, "admin.openComplaintsStat")}</div>
-            <div className="display stat-value" style={{ color: "var(--status-open)" }}>{totalOpen}</div>
+            <div className="display stat-value" style={{ color: "var(--status-open)" }}>{totalOpenComplaints}</div>
           </div>
           <div className="surface-card hoverable stat-card">
             <div className="stat-label">{t(lang, "admin.resolvedStat")}</div>
-            <div className="display stat-value" style={{ color: "var(--status-resolved)" }}>{totalResolved}</div>
+            <div className="display stat-value" style={{ color: "var(--status-resolved)" }}>{totalResolvedComplaints}</div>
           </div>
         </div>
 
@@ -237,9 +266,9 @@ export default function AdminWorkers() {
             ))}
           </div>
         )}
-        {!loading && workers.length === 0 && <p style={{ color: "var(--ink-2)" }}>{t(lang, "admin.noWorkers")}</p>}
+        {!loading && total === 0 && !debouncedSearch && <p style={{ color: "var(--ink-2)" }}>{t(lang, "admin.noWorkers")}</p>}
 
-        {!loading && workers.length > 0 && (
+        {!loading && (total > 0 || debouncedSearch) && (
           <>
             <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
               {selectedIds.size > 0 && (
@@ -247,22 +276,21 @@ export default function AdminWorkers() {
                   {t(lang, "admin.deleteSelected")} ({selectedIds.size})
                 </button>
               )}
-              <div className="field" style={{ margin: 0, width: 340, maxWidth: "100%", flexShrink: 0 }}>
-                <input
-                  type="text"
-                  aria-label={t(lang, "admin.searchWorkers")}
-                  placeholder={t(lang, "admin.searchWorkers")}
-                  value={search}
-                  onChange={(e) => {
-                    setSearch(e.target.value);
-                    setPage(1);
-                    setSelectedIds(new Set());
-                  }}
-                />
-              </div>
+              <SearchWithDateFilter
+                searchValue={search}
+                onSearchChange={setSearch}
+                searchPlaceholder={t(lang, "admin.searchWorkers")}
+                dateFrom={dateFrom}
+                dateTo={dateTo}
+                onDateFromChange={setDateFrom}
+                onDateToChange={setDateTo}
+                lang={lang}
+                width={340}
+                onAnyChange={() => setSelectedIds(new Set())}
+              />
             </div>
 
-            {filteredWorkers.length === 0 ? (
+            {total === 0 ? (
               <p style={{ color: "var(--ink-2)" }}>{t(lang, "admin.noSearchResults")}</p>
             ) : (
               <div className="surface-card table-scroll" style={{ overflowX: "auto" }}>
@@ -288,7 +316,7 @@ export default function AdminWorkers() {
                     </tr>
                   </thead>
                   <tbody>
-                    {pagedWorkers.map((w, i) => (
+                    {workers.map((w, i) => (
                       <tr key={w.id} className="table-row-hover enter" style={{ "--stagger": Math.min(i, 6) } as React.CSSProperties}>
                         <td style={{ padding: "12px 16px", borderBottom: "1px solid var(--line)" }}>
                           <input type="checkbox" checked={selectedIds.has(w.id)} onChange={() => toggleOne(w.id)} />
@@ -332,17 +360,17 @@ export default function AdminWorkers() {
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 16px", borderTop: "1px solid var(--line)" }}>
                     <button
                       className="btn btn-ghost btn-sm"
-                      disabled={currentPage <= 1}
+                      disabled={page <= 1}
                       onClick={() => setPage((p) => Math.max(1, p - 1))}
                     >
                       {t(lang, "admin.paginationPrev")}
                     </button>
                     <span style={{ fontSize: 12, color: "var(--ink-2)" }}>
-                      {currentPage} / {pageCount}
+                      {page} / {pageCount}
                     </span>
                     <button
                       className="btn btn-ghost btn-sm"
-                      disabled={currentPage >= pageCount}
+                      disabled={page >= pageCount}
                       onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
                     >
                       {t(lang, "admin.paginationNext")}

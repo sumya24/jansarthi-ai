@@ -77,14 +77,24 @@ A naive `expected_signature == actual_signature` in Python compares byte-by-byte
 
 ---
 
-## 5. The request lifecycle: from header to authorized action
+## 5. The request lifecycle: from header (or cookie) to authorized action
 
 1. Login succeeds → `create_access_token(user)` builds a JWT containing `sub` (the user's ID), `role`, `iat` (issued-at), and `exp` (expiry, `JWT_EXPIRE_MINUTES` from now — 24 hours by default).
-2. The frontend stores this token (`localStorage`, see [`docs/FRONTEND.md`](FRONTEND.md)) and sends it back as `Authorization: Bearer <token>` on every request from then on.
-3. `deps.get_current_user` reads that header, calls `decode_access_token`, which verifies the signature and checks `exp` hasn't passed, then looks up the real `User` row by the `sub` claim.
+2. **A real browser session no longer stores this token itself at all.** `login`/`signup`/`refresh` call `deps.set_auth_cookies`, which sets it as an **httpOnly** `access_token` cookie (plus an httpOnly `refresh_token` cookie, scoped to `/auth`, and a separate non-httpOnly `csrf_token` cookie — see §5a below) — the browser attaches these automatically on every request to this origin from then on. The frontend keeps the access token in plain React state for the lifetime of the tab (never `localStorage`, see `frontend-react/src/lib/auth.tsx`'s own docstring) purely so it can display things like "logged in as X" without a network round trip; a hard reload starts that state at `null` and silently re-derives a real session from the httpOnly `refresh_token` cookie instead. An explicit `Authorization: Bearer <token>` header still works too — it's what every test and any non-browser API client uses — and takes priority if both are somehow present.
+3. `deps.get_current_user` looks for the Bearer header first, then falls back to the `access_token` cookie (`deps.extract_access_token`), calls `decode_access_token`, which verifies the signature and checks `exp` hasn't passed, then looks up the real `User` row by the `sub` claim.
 4. `deps.require_role("admin")` (or any role) wraps `get_current_user` and additionally checks the resolved user's `role` is in the allowed list, rejecting with `403 Forbidden` otherwise.
 
 This is FastAPI's **dependency injection** at work — a route just declares `admin: User = Depends(require_role("admin"))` as a parameter, and all of the above happens automatically before the route's own code runs at all. See [`docs/BACKEND.md`](BACKEND.md) for more on this pattern.
+
+### 5a. Why a cookie needs its own CSRF protection (and this app's fix)
+
+Moving the tokens into httpOnly cookies closes off one attack (a malicious script on the page can no longer just read `localStorage` and steal the token) but opens a different one: a browser attaches cookies to **any** request to this origin, including one a malicious page on a completely different site tricks the citizen's browser into firing — a **Cross-Site Request Forgery (CSRF)** attack. A plain `Authorization` header doesn't have this problem, since only same-origin JavaScript can construct and attach a custom header in the first place — which is exactly what closes the gap here too.
+
+The fix (`backend/middleware.py`'s `CSRFMiddleware`) is the standard **double-submit cookie** pattern: alongside the two httpOnly cookies, the server also sets a third, deliberately **non-httpOnly** `csrf_token` cookie. The frontend reads that cookie's value with JavaScript and echoes it back as an `X-CSRF-Token` header on every request that changes something (`POST`/`PUT`/`PATCH`/`DELETE`). The middleware then just checks the cookie value and the header value match. A forged cross-site request can make the browser *send* the cookie automatically, but it can't *read* the cookie's value to also put it in the header — so the two values won't match, and the middleware rejects it with `403`. This check is skipped entirely for a request authenticating via a plain Bearer header (nothing cross-site can forge that) and for safe, read-only methods (`GET`/`HEAD`/`OPTIONS`), which never mutate anything in the first place.
+
+### 5b. Refresh-token rotation and reuse detection
+
+Each `POST /auth/refresh` call (`auth_service.rotate_refresh_token`) doesn't just issue a new access token — it **revokes the old refresh token and issues a brand new one** ("rotation"), rather than letting one refresh token be reused indefinitely for the full `REFRESH_TOKEN_EXPIRE_DAYS` window. If a refresh token is ever presented *after* it's already been rotated away, that's treated as a strong signal the token leaked and someone else is trying to use it — the server responds by revoking **every** active session for that user, not just the one that got reused, forcing a fresh login everywhere. This is why the frontend's silent-refresh calls are carefully deduplicated (`api.ts`'s `silentRefresh()`) rather than fired independently from every page: two near-simultaneous refresh calls would otherwise race each other's rotation and trip this exact reuse-detection path against a legitimate session.
 
 ---
 
@@ -108,6 +118,12 @@ This is FastAPI's **dependency injection** at work — a route just declares `ad
 **"How do you prevent privilege escalation?"** — there is no code path anywhere in the API that can create a worker or admin account; sign-up's request model has no `role` field at all. The first admin is seeded directly into the database, outside the running application. See [§6](#6-authorization-three-roles-enforced-two-ways).
 
 **"What's a timing attack, and where does it matter in your code?"** — see the `hmac.compare_digest` explanation in [§4](#4-how-this-codebase-implements-jwts--and-a-real-interview-talking-point). A genuinely great detail to bring up unprompted.
+
+**"Where do you actually store the token in the browser?"** — an httpOnly cookie, not `localStorage`. A script on the page (including one injected via XSS) can't read an httpOnly cookie's value at all, whereas anything in `localStorage` is trivially readable by any JS running on the page. The trade-off this opens up is CSRF, not XSS-based token theft — see the next question. See [§5](#5-the-request-lifecycle-from-header-or-cookie-to-authorized-action).
+
+**"If the token's in a cookie now, how do you stop CSRF?"** — the double-submit cookie pattern: a third, non-httpOnly `csrf_token` cookie that the frontend must read with JS and echo back as a request header, which a forged cross-site request can't do (it can make the cookie ride along automatically, but can't read its value to also attach the header). See [§5a](#5a-why-a-cookie-needs-its-own-csrf-protection-and-this-apps-fix).
+
+**"What happens if a refresh token leaks?"** — refresh tokens rotate on every use, and presenting an already-rotated (i.e., already-used) one is treated as reuse/compromise, revoking every active session for that user, not just the one token. See [§5b](#5b-refresh-token-rotation-and-reuse-detection).
 
 ---
 

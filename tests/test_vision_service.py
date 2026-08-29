@@ -1,9 +1,17 @@
 """Tests for backend/services/vision_service.py.
 
-Never downloads/loads the real ~1.9B-param model in tests -- that would make the suite extremely
-slow and network-dependent. Instead, `_model`/`_tokenizer` are set directly (bypassing
-`_get_model()`) or the loading call is mocked, mirroring how ComplaintAgent's tests inject a fake
-SarvamClient instead of hitting the real Sarvam API.
+Never downloads/loads the real ~1.9B-param local model in tests, and never makes a real Gemini
+API call either -- that would make the suite extremely slow, network-dependent, and quota-
+consuming. Instead, `_model`/`_tokenizer` are set directly (bypassing `_get_model()`) or the
+loading call is mocked, mirroring how ComplaintAgent's tests inject a fake SarvamClient instead of
+hitting the real Sarvam API; Gemini's own HTTP call is mocked via `httpx.post`.
+
+`_no_gemini` (autouse) clears `settings.GEMINI_API_KEY` for every test in this file by default --
+most of these tests are specifically about the LOCAL fallback path, which only runs at all when
+Gemini is unconfigured or fails; a real key present in `.env` during a test run would otherwise
+make `describe_image()` skip straight to a real (or mocked-away) Gemini call instead of exercising
+the local-model code these tests actually target. Tests that specifically cover the Gemini path
+set the key back via `monkeypatch.setattr` themselves.
 """
 
 from unittest.mock import Mock, patch
@@ -11,6 +19,11 @@ from unittest.mock import Mock, patch
 import pytest
 
 from backend.services.vision_service import VisionService, VisionServiceError
+
+
+@pytest.fixture(autouse=True)
+def _no_gemini(monkeypatch):
+    monkeypatch.setattr("backend.config.settings.GEMINI_API_KEY", "")
 
 # A minimal, genuinely valid 1x1 JPEG (not just fake bytes with a jpeg-ish prefix) -- same fixture
 # used by frontend-react/e2e/evidence-upload.spec.ts, so image decoding is proven against a real
@@ -82,3 +95,54 @@ def test_model_name_defaults_from_settings():
     service = VisionService()
 
     assert service.model_name  # non-empty, pulled from backend.config.settings.VISION_MODEL_NAME
+
+
+def _fake_gemini_response(caption: str = "A pothole caption from Gemini.", token_count: int = 12) -> Mock:
+    response = Mock()
+    response.raise_for_status = Mock()
+    response.json.return_value = {
+        "candidates": [{"content": {"parts": [{"text": caption}]}}],
+        "usageMetadata": {"candidatesTokenCount": token_count},
+    }
+    return response
+
+
+def test_describe_image_prefers_gemini_when_configured(monkeypatch):
+    monkeypatch.setattr("backend.config.settings.GEMINI_API_KEY", "fake-key")
+    monkeypatch.setattr("backend.config.settings.GEMINI_VISION_MODEL", "gemini-3.5-flash-lite")
+    service = _service_with_fake_model("SHOULD NOT BE USED -- local fallback")
+
+    with patch("httpx.post", return_value=_fake_gemini_response("A pothole, per Gemini.")) as fake_post:
+        caption = service.describe_image(JPEG_1PX)
+
+    assert caption == "A pothole, per Gemini."
+    fake_post.assert_called_once()
+    # Real model check, not just "didn't crash" -- the local fallback must never even be touched
+    # when Gemini already produced a usable caption.
+    service._model.encode_image.assert_not_called()
+    assert service.model_name == "gemini-3.5-flash-lite"
+    assert service.count_tokens(caption) == 12
+
+
+def test_describe_image_falls_back_to_local_model_when_gemini_fails(monkeypatch):
+    monkeypatch.setattr("backend.config.settings.GEMINI_API_KEY", "fake-key")
+    service = _service_with_fake_model("A broken streetlight, per the local model.")
+
+    with patch("httpx.post", side_effect=TimeoutError("Gemini took too long")):
+        caption = service.describe_image(JPEG_1PX)
+
+    assert caption == "A broken streetlight, per the local model."
+    service._model.encode_image.assert_called_once()
+    assert service.model_name == "fake/model"
+
+
+def test_describe_image_skips_gemini_entirely_when_unconfigured():
+    # `_no_gemini` (autouse) already clears the key -- this just makes that assumption explicit
+    # and confirms httpx is never even touched, not just that the local caption comes back right.
+    service = _service_with_fake_model("A pothole in the middle of a paved road.")
+
+    with patch("httpx.post") as fake_post:
+        caption = service.describe_image(JPEG_1PX)
+
+    fake_post.assert_not_called()
+    assert caption == "A pothole in the middle of a paved road."

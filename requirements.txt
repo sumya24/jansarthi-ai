@@ -48,6 +48,37 @@ langchain-core==1.5.3
 # this app imports it directly (backend/services/observability/tracing.py).
 langsmith==0.10.17
 
+# Arize Phoenix -- second, self-hosted tracing backend alongside LangSmith (see
+# backend/services/observability/tracing.py's module docstring for why: LangSmith's free monthly
+# trace quota running out shouldn't stop observability entirely). Both packages below are
+# lightweight (openinference-semantic-conventions + opentelemetry-sdk, confirmed directly) --
+# NEITHER is the full `arize-phoenix` server package, which pulls a much heavier dependency tree
+# (its own FastAPI/SQLAlchemy/etc.) that conflicts with this project's own pinned versions. Run
+# the actual Phoenix server separately (its own isolated venv or Docker container), never inside
+# this project's environment -- see PHOENIX_TRACING_PLAN.md.
+arize-phoenix-otel==0.17.1
+# REST client (Prompts/Datasets/Experiments -- see scripts/push_prompts_to_phoenix.py and
+# scripts/phoenix_rag_evaluation.py). Confirmed separately lightweight from arize-phoenix-otel
+# above -- installing it added zero new heavy dependencies (everything it needs was already
+# pulled in by arize-phoenix-otel).
+arize-phoenix-client==3.3.0
+
+# Auto-instruments LangGraph/LangChain itself (every internal graph node -- input_processing,
+# language_detection, intent_classification, etc., plus the _route_after_* conditional edges) so
+# Phoenix gets the SAME fine-grained, framework-level trace LangSmith already captures
+# automatically via its own LangChain integration -- previously Phoenix only ever saw this app's
+# own hand-built spans (ask_janmitra_graph/rag_retrieval/answer_generation/...), a real gap
+# LIVE-REPORTED by comparing an actual LangSmith trace screenshot against Phoenix's spans for the
+# same request. Confirmed lightweight via `pip install --dry-run` before installing: every one of
+# its own dependencies was already satisfied by arize-phoenix-otel above -- adds exactly one new
+# package, nothing else.
+openinference-instrumentation-langchain==0.1.72
+
+# Real speech-to-text cost tracking -- see backend/services/audio_duration.py. Pure-Python, no
+# system binaries (unlike pydub/ffmpeg); confirmed it has NO WebM support at all, which
+# audio_duration.py's own hand-rolled EBML fallback covers.
+mutagen==1.48.1
+
 # Ask Sarthi image understanding -- see backend/services/vision_service.py. Sarvam (this
 # project's only other AI vendor) has no vision/image-understanding capability (checked directly
 # against the installed SDK's type stubs); the user chose a local open-source vision-language

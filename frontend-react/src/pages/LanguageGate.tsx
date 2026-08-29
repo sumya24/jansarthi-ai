@@ -17,7 +17,8 @@ export default function LanguageGate() {
 
   function choose(code: LangCode) {
     setLang(code);
-    navigate("/welcome");
+    // replace: true -- a one-way gate, not a page worth returning to via Back.
+    navigate("/welcome", { replace: true });
   }
 
   return (

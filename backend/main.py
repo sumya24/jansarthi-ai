@@ -1,5 +1,7 @@
 """FastAPI application entry point for JanSarthi AI."""
 
+import asyncio
+import contextlib
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -9,9 +11,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from backend.config import settings
-from backend.database import init_db
-from backend.middleware import GeneralRateLimitMiddleware, SecurityHeadersMiddleware
+from backend.database import SessionLocal, init_db
+from backend.middleware import CSRFMiddleware, GeneralRateLimitMiddleware, SecurityHeadersMiddleware
 from backend.routes import admin, ask_janmitra, auth, complaints, locations, notifications
+from backend.services.upload_cleanup_service import cleanup_orphaned_uploads
 
 logging.basicConfig(
     level=logging.INFO,
@@ -100,6 +103,28 @@ def init_error_monitoring() -> None:
         logger.exception("Failed to initialize Sentry -- continuing without error monitoring")
 
 
+_UPLOAD_CLEANUP_INTERVAL_SECONDS = 6 * 60 * 60  # every 6 hours
+
+
+async def _upload_cleanup_loop() -> None:
+    """Background loop: periodically removes uploaded chat photos that never became part of a
+    real complaint (see upload_cleanup_service.cleanup_orphaned_uploads's own docstring for why
+    this exists at all). Runs once immediately (catches anything already stale from before this
+    process started), then every `_UPLOAD_CLEANUP_INTERVAL_SECONDS`. Own DB session per sweep, not
+    request-scoped -- this has nothing to do with any one request. Best-effort: a failed sweep is
+    logged, never crashes the app or stops future sweeps.
+    """
+    while True:
+        db = SessionLocal()
+        try:
+            cleanup_orphaned_uploads(db)
+        except Exception:
+            logger.exception("Orphaned-upload cleanup sweep failed -- will retry next interval")
+        finally:
+            db.close()
+        await asyncio.sleep(_UPLOAD_CLEANUP_INTERVAL_SECONDS)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     """Initialize the database, wire up error monitoring, then warm the RAG embedding model, on
@@ -137,8 +162,12 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         logger.info("RAG embedding model warmed up at startup")
     except Exception as exc:
         logger.warning("Could not warm up the RAG embedding model at startup (will lazy-load on first request): %s", exc)
+    cleanup_task = asyncio.create_task(_upload_cleanup_loop())
     logger.info("JanSarthi AI backend started")
     yield
+    cleanup_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await cleanup_task
 
 
 app = FastAPI(title="JanSarthi AI", version="0.1.0", lifespan=lifespan)
@@ -148,6 +177,7 @@ app = FastAPI(title="JanSarthi AI", version="0.1.0", lifespan=lifespan)
 # CORS headers on this middleware's own 429 responses).
 app.add_middleware(GeneralRateLimitMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(CSRFMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
@@ -161,7 +191,14 @@ app.add_middleware(
     # browser-only restriction. That's what made the report download filename fall back to the
     # generic "report.pdf" (see frontend-react/src/lib/api.ts's requestBlob()) instead of the
     # real "JanSarthi_Complaint_JM-00042_Report.pdf" the backend was already sending correctly.
-    expose_headers=["Content-Disposition"],
+    #
+    # X-Total-Count has the exact same problem, for the exact same CORS reason -- every
+    # requestPaginated() caller (My Complaints', Home's, Admin's, and Worker's own stat cards,
+    # among others) reads response.headers.get("X-Total-Count") and silently falls back to
+    # items.length when it's null, capping every one of those numbers at whatever page_size was
+    # requested (usually 1, for a cheap count-only call) instead of the real total -- invisible in
+    # every demo account so far only because no citizen had more than one complaint until now.
+    expose_headers=["Content-Disposition", "X-Total-Count"],
 )
 app.include_router(auth.router)
 app.include_router(admin.router)

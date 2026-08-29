@@ -15,7 +15,7 @@ Two layers, both built on the same small hand-rolled limiter (`backend/services/
 
 | Routes | Limit | Window | Identifier |
 |---|---|---|---|
-| Every route except `/health` | 60 | 60s | authenticated user id, else client IP (general baseline) |
+| Every route except `/health` | 120 | 60s | authenticated user id, else client IP (general baseline) |
 | `POST /auth/login` | 5 | 60s | client IP |
 | `POST /ask-janmitra`, `/ask-janmitra/image`, `/ask-janmitra/voice` | 10 (shared across all 3) | 60s | authenticated user id |
 
@@ -26,9 +26,19 @@ regardless of load elsewhere.
 
 `GENERAL_RATE_LIMIT`, `GENERAL_RATE_LIMIT_WINDOW_SECONDS`, `LOGIN_RATE_LIMIT`,
 `LOGIN_RATE_LIMIT_WINDOW_SECONDS`, `AI_RATE_LIMIT`, `AI_RATE_LIMIT_WINDOW_SECONDS` (see
-`.env.example`). Defaults (60/60s, 5/60s, 10/60s) are sized against this app's real measured
+`.env.example`). Defaults (120/60s, 5/60s, 10/60s) are sized against this app's real measured
 usage -- a location-clarification round-trip alone is 2 Ask Sarthi calls, a busy dashboard page
 load is a handful of API calls -- with real headroom for a normal demo.
+
+`GENERAL_RATE_LIMIT` was raised from its original 60 to 120 after a live-reported false trip: the
+Admin dashboard's Workers/Complaints/by-ward-chart/AI-Monitoring widgets together fire roughly
+5-9 requests per page load (the higher end was itself a bug, since fixed -- see
+`backend/routes/admin.py`'s `ComplaintStatusCounts`, which replaced five separate per-status
+requests with one), `NotificationBell` polls every 15s in the background for every logged-in
+session regardless of role, and a real admin actively working the page (refreshing, switching
+between sections, a second tab open) measurably approached 60/60s with nothing actually
+abusive happening. 120 keeps real headroom for that genuine case across citizen, worker, and
+admin alike, while a truly abusive script (200+/min) is still caught quickly.
 
 ## Identifier
 
@@ -55,11 +65,34 @@ shares the same client IP -- a handful of spec files that each log in 2-4 times 
 than a real human demo ever would within 60s. This is the limiter correctly treating "many logins
 from one IP in a short window" as suspicious, which is exactly its job -- not a bug. For a full
 local e2e run, start the backend with higher limits for that process only (standard test/CI
-practice; production's `.env` is untouched):
+practice; production's `.env` is untouched). The specs that sign up/verify a citizen or worker
+also drive `POST /auth/email/send-verification`, `POST /auth/signup/email/send-code`, and
+`POST /auth/forgot-password`, which sit behind their own separate `OTP_RATE_LIMIT` (see
+`.env.example`) rather than the general/login limiters above -- raise that too, or the same specs
+will 429 on the email step even with everything else raised:
 
+Bash:
+```bash
+GENERAL_RATE_LIMIT=1000 LOGIN_RATE_LIMIT=1000 AI_RATE_LIMIT=1000 OTP_RATE_LIMIT=1000 SIGNUP_RATE_LIMIT=1000 uvicorn backend.main:app --port 8000
 ```
-GENERAL_RATE_LIMIT=1000 LOGIN_RATE_LIMIT=1000 AI_RATE_LIMIT=1000 uvicorn backend.main:app --port 8000
+
+PowerShell:
+```powershell
+$env:GENERAL_RATE_LIMIT=1000; $env:LOGIN_RATE_LIMIT=1000; $env:AI_RATE_LIMIT=1000
+$env:OTP_RATE_LIMIT=1000; $env:SIGNUP_RATE_LIMIT=1000
+uvicorn backend.main:app --port 8000
 ```
+
+Raising rate limits only gets a local e2e run as far as the mailbox -- the OTP-sending routes
+still make a real SMTP call, which depends on the configured provider's daily sending quota
+(Gmail's free-tier limit has blocked local Playwright runs more than once, unrelated to anything
+in this app). Set `EMAIL_DEV_MODE=true` in the backend's `.env` instead (see `.env.example`) to
+skip the real send entirely for local/e2e use -- the OTP is still generated and cached for
+`GET /auth/_dev/otp-code`, which `frontend-react/e2e/helpers.ts` already reads from, so signup/
+login/forgot-password specs still run end to end without touching a real inbox or its quota. This
+is the preferred approach for local e2e runs; the rate-limit env vars above are still worth raising
+too, since `EMAIL_DEV_MODE` only removes the SMTP dependency, not the login/general/signup limits
+other specs can also hit.
 
 ## Deployment limitation
 

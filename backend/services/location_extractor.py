@@ -39,10 +39,120 @@ from backend.services.location_resolver import LocationResolver
 # is included verbatim).
 _WORD_CHAR_CLASS = r"[\wऀ-ॿঀ-৿઀-૿଀-୿]"
 
+# Attached postpositions/case-suffixes this search must tolerate directly after a matched name,
+# with NO space in between -- normal, grammatically correct usage in every non-Latin script this
+# app supports (a postposition or case suffix attaches straight onto the noun, e.g. "बेंगळुरूमध्ये"
+# = "Bengaluru-in" = "in Bengaluru"), unlike English's separate "in Bengaluru". Live-reproduced gap
+# (Devanagari, first found): a citizen's real Marathi question, "बेंगळुरूमध्ये पाणीपुरवठ्याबाबत
+# तक्रार करण्याची प्रक्रिया काय आहे?" ("What is the procedure for a water supply complaint in
+# Bengaluru?"), failed to resolve to Bengaluru at all and silently fell back to a generic SYNTHETIC
+# answer -- while the plain-English version of the exact same question correctly found the real
+# VERIFIED BWSSB record. Root cause: "बेंगळुरू" (with a following space) matches fine; only the
+# directly-ATTACHED "मध्ये" broke the word-boundary check below, since both the city name and the
+# postposition are made of the same "word character" class that check itself uses.
+#
+# Generalized to the app's other three non-Latin scripts after the identical failure mode was
+# confirmed live in each, by direct probing, not assumed from the Devanagari case alone: Odia
+# "କୋଲକାତାରେ" (କୋଲକାତା + ରେ, the Odia locative suffix), Gujarati "કોલકાતામાં" (કોલકાતા + માં, a
+# separate postposition word exactly like Hindi/Marathi's મध्ये/में), and Bengali "কলকাতায়"
+# (কলকাতা + য়, the Bengali locative suffix after a vowel-final noun -- এ is the same suffix after
+# a consonant-final one, e.g. ঘরে). One combined tuple across all four scripts is safe, not
+# reckless: each script's own Unicode block is disjoint from the others, so a Devanagari alias can
+# never accidentally match an Odia/Gujarati/Bengali suffix or vice versa -- only the ONE
+# alternative sharing the matched alias's own script can ever fire.
+#
+# Deliberately a short, targeted list per script -- the single most common locative ("in X")
+# pattern in each -- not a speculative attempt at exhaustive grammar for any of them. Other
+# postpositions/cases (dative, "about"-style, etc.) are a known follow-up, not covered here.
+#
+# "मे" (formal "में" with its anusvara/chandrabindu dropped) is included alongside it --
+# LIVE-REPORTED GAP found immediately after `_bounded_search_with_postposition` shipped (see its
+# own docstring for the "गया"/Gaya word-collision bug this whole mechanism exists to fix): a real
+# citizen sentence used "कोलकाता मे", not "कोलकाता में" -- extremely common informal Hindi typing
+# (the nasal mark is routinely dropped when typing quickly, the same way an English typo drops an
+# accent mark), and the exact-string "में" match alone missed it entirely, silently falling back
+# to the unmarked "गया" match again. Devanagari-only (hi/mr share this script) -- no equivalent
+# gap confirmed live yet for the other three scripts' own postpositions.
+_ATTACHED_POSTPOSITIONS = ("मध्ये", "में", "मे", "ରେ", "માં", "য়", "এ")
+
+# Live-reproduced gap #2 (distinct from the postposition-attachment fix above): a citizen's real
+# Marathi question, "कोलकात्यात बंद पडलेल्या पथदिव्याबद्दल मी तक्रार कशी करू?" ("How do I complain
+# about a streetlight that's stopped working in Kolkata?"), never matched "Kolkata" at all --
+# "कोलकात्यात" isn't the base alias "कोलकाता" plus an attached postposition, it's a grammatically
+# DIFFERENT surface form: standard Marathi noun declension (सामान्यरूप) for masculine/neuter nouns
+# ending in "आ" replaces the final आ with "्या" before a case marker attaches (the same rule that
+# turns "मुलगा" -> "मुलग्या", "राजा" -> "राज्या") -- "कोलकाता" -> oblique stem "कोलकात्या" -> +
+# locative "त" ("in") -> "कोलकात्यात". _bounded_search alone can't catch this: it only tolerates a
+# postposition glued onto the UNCHANGED base word, and here the word itself changes shape. Silently
+# falling through to `location=None` here is worse than the postposition bug -- the caller then
+# fell back to the citizen's own home-ward location (a DIFFERENT, WRONG city) with no visible error
+# at all, rather than honestly asking for clarification.
+#
+# Handled generally, not as a per-city alias: any alias ending in a Devanagari consonant directly
+# followed by "ा" (the dependent AA vowel sign) gets its oblique form computed on the fly and tried
+# too -- covers Kolkata, Patna, Gaya, Howrah, Patiala, Vijayawada (all today's aliases with this
+# exact ending shape) automatically, and any future one added to _CITY_ALIASES, with no new dict
+# entries required. Bare "त" is only ever tried as a suffix on the COMPUTED OBLIQUE form (never on
+# a short/generic base alias) precisely to avoid false-positives on ordinary text -- the oblique
+# stem itself is long and specific enough that a stray trailing "त" cannot coincidentally complete
+# an unrelated word.
+_OBLIQUE_ONLY_CASE_MARKERS = ("त",)
+_DEVANAGARI_AA_MATRA = "ा"
+
+
+def _devanagari_oblique_form(name: str) -> str | None:
+    """The सामान्यरूप (oblique stem) of a Devanagari name ending in consonant + आ-matra, e.g.
+    "कोलकाता" -> "कोलकात्या" -- or None if `name` doesn't end in that shape (e.g. it ends in a
+    different vowel, or in a bare consonant/independent vowel already)."""
+    if len(name) < 2 or name[-1] != _DEVANAGARI_AA_MATRA:
+        return None
+    preceding = name[-2]
+    if not ("क" <= preceding <= "ह" or preceding in "क़ख़ग़ज़ड़ढ़फ़य़"):
+        return None
+    return name[:-1] + "्या"
+
 
 def _bounded_search(needle: str, haystack: str) -> bool:
-    pattern = rf"(?<!{_WORD_CHAR_CLASS}){re.escape(needle)}(?!{_WORD_CHAR_CLASS})"
-    return re.search(pattern, haystack) is not None
+    forms: list[tuple[str, tuple[str, ...]]] = [(needle, _ATTACHED_POSTPOSITIONS)]
+    oblique = _devanagari_oblique_form(needle)
+    if oblique:
+        forms.append((oblique, _ATTACHED_POSTPOSITIONS + _OBLIQUE_ONLY_CASE_MARKERS))
+    for form, suffixes in forms:
+        suffix_alt = "|".join(re.escape(p) for p in suffixes)
+        pattern = rf"(?<!{_WORD_CHAR_CLASS}){re.escape(form)}(?:{suffix_alt})?(?!{_WORD_CHAR_CLASS})"
+        if re.search(pattern, haystack):
+            return True
+    return False
+
+
+def _bounded_search_with_postposition(needle: str, haystack: str) -> bool:
+    """LIVE-REPORTED BUG: a bare, single-word city alias can coincide with an ordinary, extremely
+    common word in the SAME language -- "गया" is both this gazetteer's alias for the real city of
+    Gaya, Bihar, AND the everyday Hindi/Marathi past-tense verb form "went"/"has [happened]" (as in
+    "हो गया", "has become"). A real citizen sentence, "...कचरा जमा हो गया है, कोलकाता में" ("...
+    garbage has piled up, in Kolkata"), matched "गया" (earlier in `_CITY_ALIASES`'s own definition
+    order, so checked first by `find_city`'s single bare-match pass below) and returned Gaya
+    WITHOUT ever reaching "कोलकाता" -- the city actually named in the very same sentence.
+
+    Same matching as `_bounded_search`, but ONLY when a locative postposition
+    (`_ATTACHED_POSTPOSITIONS`, "in X") is actually present right after the matched word -- glued
+    on with no space (Marathi-style agglutination, `_bounded_search`'s own original case) OR as its
+    own separate word with a space in between (the more common plain-Hindi phrasing this fixes,
+    "कोलकाता में"). An accidental collision with an unrelated common word essentially never has a
+    locative case marker attached to it this way ("गया है" is a verb phrase, not "गया" + "in"); a
+    genuine place reference very often does. `find_city` runs this as a FIRST, stronger-signal pass
+    over every alias before falling back to its existing bare-match pass, so a postposition-marked
+    match anywhere in the text wins over an earlier, unmarked dict-order match."""
+    forms: list[tuple[str, tuple[str, ...]]] = [(needle, _ATTACHED_POSTPOSITIONS)]
+    oblique = _devanagari_oblique_form(needle)
+    if oblique:
+        forms.append((oblique, _ATTACHED_POSTPOSITIONS + _OBLIQUE_ONLY_CASE_MARKERS))
+    for form, suffixes in forms:
+        suffix_alt = "|".join(re.escape(p) for p in suffixes)
+        pattern = rf"(?<!{_WORD_CHAR_CLASS}){re.escape(form)}\s*(?:{suffix_alt})(?!{_WORD_CHAR_CLASS})"
+        if re.search(pattern, haystack):
+            return True
+    return False
 
 # Aliases for RAG gazetteer entries whose canonical chunk-metadata name a citizen would rarely
 # type verbatim (e.g. nobody types "Sahibzada Ajit Singh Nagar (Mohali)" -- they say "Mohali").
@@ -69,6 +179,11 @@ _CITY_ALIASES: dict[str, str] = {
     # Devanagari (hi + mr) -- see module-level comment above.
     "अहमदाबाद": "Ahmedabad",
     "बंगळुरू": "Bengaluru", "बंगलुरु": "Bengaluru", "बेंगलुरू": "Bengaluru", "बेंगलुरु": "Bengaluru", "बंगलोर": "Bengaluru",
+    # ें + ळ together (distinct from both "बंगळुरू" and "बेंगलुरू" above) -- the spelling a real
+    # Marathi speaker (and Google Translate's own EN->mr output) actually used for this exact live
+    # bug report; ळ is a Marathi-specific retroflex lateral, so this combined form is genuinely
+    # more natural in Marathi than either existing variant.
+    "बेंगळुरू": "Bengaluru",
     "भोपाळ": "Bhopal", "भोपाल": "Bhopal",
     "चेन्नई": "Chennai",
     "कोईम्बतूर": "Coimbatore", "कोयंबतूर": "Coimbatore",
@@ -300,6 +415,37 @@ _STATE_ALIASES: dict[str, str] = {
 }
 
 
+# LIVE-REPORTED BUG ("Pune fallback"): a citizen asks a civic-info question naming a real place
+# this app's gazetteer simply doesn't cover (e.g. "What is the process for a new water connection
+# in Pune?" -- Pune isn't one of the 30 RAG-gazetteer cities) -- `resolve_from_text` correctly
+# finds nothing, but the caller's LAST fallback tier (the citizen's own registered home ward, e.g.
+# Bengaluru) then silently substitutes THAT city instead, answering as if the question had been
+# about Bengaluru with no indication anything was substituted. This is the same "no place named at
+# all" vs. "a place was named, we just don't recognize it" distinction the conversation-history
+# scan already had to learn to make (see nodes.py's `_TOPIC_BOUNDARY_INTENTS`) -- here applied to
+# THIS turn's own text rather than an earlier one.
+#
+# `looks_like_it_names_an_unrecognized_place` below is a narrow, English-only HEURISTIC used
+# SOLELY to gate that home-ward substitution -- never to extract or resolve an actual place name
+# (that would risk an entirely new class of mis-extraction bugs; see nodes.py's own callers for how
+# it's used: skip the home-ward fallback and use an honest "I don't have information for this
+# area"/"doesn't have workers set up here" message instead). English-only by design: the other five
+# supported UI languages don't reliably signal "this is a proper noun" via capitalization the way
+# English does, so guessing there risks more false positives than it prevents -- and non-Latin
+# place names are matched exactly via `_CITY_ALIASES` well before either caller ever reaches this
+# fallback tier, so there is no coverage gap being left open by scoping it this way.
+_PLACE_NAME_HINT_PATTERN = re.compile(
+    r"\b(?:in|at|near|for)\s+[A-Z][A-Za-z0-9]*(?:\s+[A-Z][A-Za-z0-9]*){0,3}"
+)
+
+
+def looks_like_it_names_an_unrecognized_place(text: str) -> bool:
+    """True if `text` contains a preposition ("in"/"at"/"near"/"for") immediately followed by a
+    capitalized word or short phrase (e.g. "in Pune", "near Notreal City") -- see the module-level
+    comment above for what this is (and, just as importantly, is NOT) used for."""
+    return bool(_PLACE_NAME_HINT_PATTERN.search(text))
+
+
 @dataclass
 class LocationResolution:
     """What could be determined about a question's location, and how."""
@@ -331,6 +477,27 @@ class RagGazetteer:
 
     def find_city(self, text: str) -> str | None:
         lowered = text.lower()
+        # LIVE-REPORTED BUG (see `_bounded_search_with_postposition`'s own docstring for the exact
+        # case): a FIRST pass over every alias/city, looking only for a match with an explicit
+        # locative postposition attached ("X में"/"Xमध्ये", "in X") -- a much stronger signal that
+        # the matched word is genuinely a place reference than a bare substring match, which can
+        # coincidentally collide with an unrelated common word. Runs across the FULL alias/city
+        # list before falling back to the existing bare-match pass below, so a postposition-marked
+        # match anywhere in the text wins over an earlier, unmarked dict-order match -- e.g.
+        # "...जमा हो गया है, कोलकाता में" now finds "कोलकाता" (postposition-marked) here, never
+        # reaching the bare-match pass where "गया" (dict-order-earlier, no postposition) used to
+        # win instead.
+        for alias, canonical in _CITY_ALIASES.items():
+            if _bounded_search_with_postposition(alias, lowered):
+                return canonical
+        for city in self.cities:
+            if _bounded_search_with_postposition(city.lower(), lowered):
+                return city
+            if "(" in city:
+                official_prefix = city.split("(", 1)[0].strip().lower()
+                if official_prefix and _bounded_search_with_postposition(official_prefix, lowered):
+                    return city
+
         for alias, canonical in _CITY_ALIASES.items():
             if _bounded_search(alias, lowered):
                 return canonical

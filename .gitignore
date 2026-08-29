@@ -2,8 +2,13 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+# Isolated venv for the local Arize Phoenix SERVER only -- never installed into the main project
+# env, see PHOENIX_TRACING_PLAN.md for why.
+.phoenix-venv/
 .env
 *.db
+*.db.bak-*
+*.db.backup-*
 uploads/*
 !uploads/.gitkeep
 .pytest_cache/
@@ -14,6 +19,21 @@ uploads/*
 test-results/
 playwright-report/
 blob-report/
+
+# Local dev server logs (backend_8000_v*.log, frontend_5173.log, etc.) -- never meant to be
+# committed, just scratch output from local `uvicorn`/`vite` runs.
+*.log
+
+# Word's own lock file for an open .docx (~$<name>.docx) -- never a real file to track.
+~$*.docx
+
+# Demo/test account credential lists -- local convenience exports, not source. Real plaintext
+# passwords live in these (the DB itself only ever stores a bcrypt hash) -- never meant to be
+# committed, purely a local testing convenience regenerated on demand from the live DB.
+test_accounts*.csv
+JanSarthi_Test_Accounts.csv
+JanSarthi_Test_Accounts.xlsx
+JanSarthi_AI_Manual_Test_Script.docx
 
 # RAG knowledge base: knowledge_records/ and sources/ are the hand-authored source data;
 # everything below is a pure, reproducible function of that source (see

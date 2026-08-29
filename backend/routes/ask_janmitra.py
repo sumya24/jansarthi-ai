@@ -78,6 +78,7 @@ def ask_janmitra_with_image(
     longitude: float | None = Form(None),
     location_text: str | None = Form(None),
     conversation_history: str = Form("[]"),
+    conversation_id: str | None = Form(None),
     was_voice_input: bool = Form(False),
     image: UploadFile = File(...),
     db: Session = Depends(get_db),
@@ -107,6 +108,7 @@ def ask_janmitra_with_image(
             conversation_history=history,
             image=image,
             was_voice_input=was_voice_input,
+            conversation_id=conversation_id,
         )
     except HTTPException:
         raise
@@ -122,6 +124,7 @@ def ask_janmitra_voice(
     longitude: float | None = Form(None),
     location_text: str | None = Form(None),
     conversation_history: str = Form("[]"),
+    conversation_id: str | None = Form(None),
     audio: list[UploadFile] = File(...),
     image: UploadFile | None = File(None),
     db: Session = Depends(get_db),
@@ -156,6 +159,7 @@ def ask_janmitra_voice(
             location_text=location_text,
             conversation_history=history,
             image=image,
+            conversation_id=conversation_id,
         )
     except HTTPException:
         raise

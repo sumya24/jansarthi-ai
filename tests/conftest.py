@@ -6,6 +6,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from backend.config import settings
 from backend.database import Base, get_db
 from backend.deps import _ai_limiter, _login_limiter, _otp_limiter, _signup_limiter
 from backend.main import app
@@ -29,6 +30,22 @@ def _reset_rate_limiters():
     _ai_limiter.reset()
     _otp_limiter.reset()
     _general_limiter.reset()
+
+
+@pytest.fixture(autouse=True)
+def _force_email_dev_mode_off(monkeypatch):
+    """EMAIL_DEV_MODE is a real .env setting (see backend/config.py), meant to be turned on for a
+    developer's own local/E2E runs so signup/login don't depend on a real inbox or Gmail's daily
+    quota -- but pytest loads that same .env, so without this, whatever a developer happens to
+    have set locally would silently swap every test's real-send-path assertions for a no-op skip
+    (discovered directly: turning EMAIL_DEV_MODE=true on for local E2E use broke 40+ otherwise-
+    unrelated tests across test_signup_email_verification.py, test_complaint_lifecycle_emails.py,
+    etc., all expecting send_otp_email/send_complaint_status_email to actually be called). Forcing
+    it off here makes the suite's behavior deterministic regardless of the local .env; the handful
+    of tests that specifically exercise EMAIL_DEV_MODE itself (test_email_otp.py) still work fine,
+    since their own monkeypatch.setattr(settings, "EMAIL_DEV_MODE", True) simply overrides this
+    for their own duration."""
+    monkeypatch.setattr(settings, "EMAIL_DEV_MODE", False)
 
 
 @pytest.fixture()
@@ -56,8 +73,28 @@ def db_session():
 
 @pytest.fixture()
 def client(db_session):
-    """A FastAPI TestClient wired to the isolated in-memory database."""
-    return TestClient(app)
+    """A FastAPI TestClient wired to the isolated in-memory database.
+
+    Automatically echoes the csrf_token cookie (set by login/signup/refresh -- see
+    backend/deps.py's set_auth_cookies) back as the X-CSRF-Token request header on every call,
+    exactly what a real browser session's JS does (see frontend-react/src/lib/api.ts's
+    getCsrfToken()). Needed because TestClient is itself an httpx.Client and keeps a real cookie
+    jar across requests -- after one login, every later request in this same test carries the
+    access_token/refresh_token cookies too, which is exactly what CSRFMiddleware treats as "a
+    cookie-authenticated session" and starts requiring the CSRF header on. Without this hook, every
+    test touching a mutating endpoint after login would fail with 403 "Invalid or missing CSRF
+    token" -- not a bug in the middleware, just this client acting like the browser it's now
+    standing in for.
+    """
+    test_client = TestClient(app)
+
+    def _attach_csrf_header(request):
+        csrf_token = test_client.cookies.get("csrf_token")
+        if csrf_token:
+            request.headers["X-CSRF-Token"] = csrf_token
+
+    test_client.event_hooks["request"] = [_attach_csrf_header]
+    return test_client
 
 
 @pytest.fixture()

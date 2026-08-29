@@ -19,7 +19,7 @@ from backend.services.auth_service import hash_password
 from backend.services.location_resolver import LocationResolver, ResolvedLocation
 
 
-def _fake_agent_create_complaint(db, citizen_id, language_code, text, audio_chunks, photo_path):
+def _fake_agent_create_complaint(db, citizen_id, language_code, text, audio_chunks, photo_path, category=None):
     """Same stand-in as test_complaints_api.py -- avoids any real Sarvam AI call."""
     complaint = Complaint(
         citizen_id=citizen_id,
@@ -29,6 +29,7 @@ def _fake_agent_create_complaint(db, citizen_id, language_code, text, audio_chun
         summary="A short summary.",
         photo_path=photo_path,
         status="pending",
+        service_category=category.value if category else None,
     )
     db.add(complaint)
     db.commit()

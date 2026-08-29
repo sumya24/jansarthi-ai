@@ -121,6 +121,36 @@
   border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px;
 }
 
+/* Live caption -- a rough, in-progress preview shown WHILE still talking (see
+   VoiceAssistantOverlay.tsx's `liveCaption` docstring). Deliberately distinct from
+   .voice-overlay-transcript below (the FINAL, confirmed text once a turn completes): a soft
+   dashed border and a gentle tint mark this as provisional, not yet a settled result, and the
+   blinking cursor reads as "still capturing" the same way a live captioning system feels. A
+   fixed min-height keeps the panel from visibly jumping the instant the first word arrives. */
+.voice-overlay-live-caption {
+  width: 100%; text-align: left; min-height: 52px;
+  background: color-mix(in srgb, var(--ai-to) 6%, var(--surface));
+  border: 1.5px dashed color-mix(in srgb, var(--ai-to) 40%, var(--line));
+  border-radius: 10px; padding: 10px 12px; margin-top: 4px;
+  display: flex; align-items: center;
+  animation: voice-live-caption-in var(--dur-fast) var(--ease-out) both;
+}
+.voice-overlay-live-caption p {
+  margin: 0; font-size: 14px; color: var(--ink); line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.voice-overlay-live-caption-placeholder { color: var(--ink-2); font-style: italic; }
+.voice-overlay-live-caption-cursor {
+  display: inline-block; width: 2px; height: 15px; margin-left: 2px; vertical-align: -3px;
+  background: var(--ai-to); animation: voice-live-caption-blink 1s step-end infinite;
+}
+@keyframes voice-live-caption-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+@keyframes voice-live-caption-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .voice-overlay-live-caption { animation: none; }
+  .voice-overlay-live-caption-cursor { animation: none; opacity: 0.6; }
+}
+
 .voice-overlay-transcript {
   width: 100%; text-align: left; background: var(--surface); border: 1px solid var(--line);
   border-radius: 10px; padding: 10px 12px; margin-top: 4px;

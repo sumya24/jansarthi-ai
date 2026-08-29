@@ -13,6 +13,7 @@ import { useSpeechToText } from "../lib/useSpeechToText";
 import { useToast } from "../lib/toast";
 import { SERVICE_CATEGORY_DEFS, guessServiceCategory, type ServiceCategoryDef } from "../lib/serviceCategories";
 import type { ServiceCategory } from "../lib/ragTypes";
+import { filterWardsToOwnCity, findWardMatch } from "../lib/wardFilter";
 
 type Step = "location" | "description" | "media" | "ai" | "preview";
 const STEPS: Step[] = ["location", "description", "media", "ai", "preview"];
@@ -37,7 +38,7 @@ const STEPS: Step[] = ["location", "description", "media", "ai", "preview"];
  * inline form.
  */
 export default function ReportIssue() {
-  const { token } = useAuth();
+  const { token, user } = useAuth();
   const { lang } = useUiLang();
   const [params] = useSearchParams();
   const navigate = useNavigate();
@@ -48,7 +49,7 @@ export default function ReportIssue() {
   const preselected = params.get("service") as ServiceCategory | null;
 
   const [step, setStep] = useState<Step>("location");
-  const [location, setLocation] = useState<LocationValue>({ ward: "", coords: null });
+  const [location, setLocation] = useState<LocationValue>({ ward: "", coords: null, locality: "" });
   const [wards, setWards] = useState<string[]>([]);
   const [text, setText] = useState("");
   // True once the citizen has typed over what the mic filled in -- at that point their own
@@ -73,8 +74,44 @@ export default function ReportIssue() {
 
   useEffect(() => {
     if (!token) return;
-    api.listWards(token).then(setWards).catch(() => setWards([]));
-  }, [token]);
+    api
+      .listWards(token)
+      .then((all) => {
+        // Scoped to the citizen's own city (see lib/wardFilter.ts) -- with 18 cities now real
+        // (see the location-expansion work), the old flat list had grown to 50+ wards nationwide,
+        // making a citizen's own city genuinely hard to find. An unknown/unparseable city falls
+        // back to the full list unchanged; a KNOWN city with nothing under it yet correctly comes
+        // back empty, which LocationPicker.tsx's own existing fallback turns into a plain
+        // free-text box instead of a misleading list of unrelated cities' wards.
+        const scoped = filterWardsToOwnCity(all, user?.ward);
+        setWards(scoped);
+        // LIVE-REPORTED BUG: pre-filling from `user.ward` directly (before this list has even
+        // loaded, or without checking it's actually one of the real options) let a native
+        // <select> silently default to showing its FIRST option whenever the citizen's own
+        // registered ward wasn't one of the real choices here -- a citizen whose profile ward has
+        // since changed to somewhere with no worker yet (a real, current case, not hypothetical)
+        // saw a WRONG ward pre-selected, one they never picked, with no visual hint anything was
+        // off. Only pre-fill once this real list has loaded AND findWardMatch has confirmed it
+        // actually contains the citizen's ward -- a verified match, not a guess -- so an unmatched
+        // profile ward correctly leaves the picker on its own placeholder instead of a misleading
+        // default.
+        //
+        // Uses findWardMatch (city-aware, via the same prefix logic filterWardsToOwnCity uses to
+        // scope this list), not a plain `scoped.includes(user.ward)`: a citizen whose registered
+        // city came from the Settings cascade (a district name, e.g. "...Bengaluru Urban") already
+        // gets correctly SCOPED to their city's real wards (all suffixed with the ULB name, e.g.
+        // "...Bengaluru") by filterWardsToOwnCity's own prefix matching -- but an exact-string
+        // `.includes()` check here would then fail to find their own ward in that (correctly
+        // scoped) list, leaving the field blank even though their real ward is right there under a
+        // differently-suffixed city name. findWardMatch returns the scoped list's own exact string
+        // (the only value a <select>'s <option> actually holds), never `user.ward` itself.
+        const match = findWardMatch(scoped, user?.ward);
+        if (match) {
+          setLocation((prev) => (prev.ward ? prev : { ...prev, ward: match }));
+        }
+      })
+      .catch(() => setWards([]));
+  }, [token, user?.ward]);
 
   const descriptionTextareaRef = useRef<HTMLTextAreaElement>(null);
   useEffect(() => {
@@ -192,7 +229,20 @@ export default function ReportIssue() {
     } else {
       form.append("text", text.trim());
     }
+    // LIVE-REPORTED GAP: `category` here is already the wizard's own resolved classification
+    // (real model -> keyword match -> manual picker, see this file's own module docstring) -- it
+    // used to only ever drive the "AI Understanding" preview card, never actually get sent along
+    // with the rest of the submission, so Complaint.service_category stayed unset for every
+    // form-filed complaint. `category.id` is a real ServiceCategory value (see
+    // lib/serviceCategories.ts), validated again server-side.
+    if (category) form.append("category", category.id);
     if (location.ward.trim()) form.append("ward", location.ward.trim());
+    // Maps to the backend's own `address` field -- see LocationValue.locality's own docstring
+    // (LocationPicker.tsx) for why this exists alongside the ward pick. Sent whenever the citizen
+    // typed anything, independent of whether GPS coords are also present below -- an explicit
+    // typed address always takes priority over a GPS reverse-geocode (see create_complaint's own
+    // "not complaint.address" guard before overwriting it from resolved coordinates).
+    if (location.locality.trim()) form.append("address", location.locality.trim());
     // Sent whenever "use current location" succeeded, regardless of whether a ward was also
     // picked — the backend independently resolves/stores both (see routes/complaints.py).
     if (location.coords) {
@@ -450,7 +500,11 @@ export default function ReportIssue() {
                 </div>
                 <div className="wizard-summary-row">
                   <dt>{t(lang, "wizard.preview.location")}</dt>
-                  <dd>{location.ward || t(lang, "wizard.preview.noLocation")}</dd>
+                  <dd>
+                    {location.ward || location.locality.trim()
+                      ? [location.ward, location.locality.trim()].filter(Boolean).join(" — ")
+                      : t(lang, "wizard.preview.noLocation")}
+                  </dd>
                 </div>
                 <div className="wizard-summary-row">
                   <dt>{t(lang, "wizard.preview.description")}</dt>

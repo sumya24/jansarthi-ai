@@ -16,7 +16,7 @@ from backend.services.auth_service import hash_password
 from backend.services.sarvam_client import AIServiceError
 
 
-def _fake_agent_create_complaint(db, citizen_id, language_code, text, audio_chunks, photo_path):
+def _fake_agent_create_complaint(db, citizen_id, language_code, text, audio_chunks, photo_path, category=None):
     """Stand in for ComplaintAgent.create_complaint without calling any external API."""
     complaint = Complaint(
         citizen_id=citizen_id,
@@ -26,6 +26,7 @@ def _fake_agent_create_complaint(db, citizen_id, language_code, text, audio_chun
         summary="A short summary.",
         photo_path=photo_path,
         status="pending",
+        service_category=category.value if category else None,
     )
     db.add(complaint)
     db.commit()
@@ -91,6 +92,40 @@ def test_create_complaint_assigns_to_worker_in_matching_ward(client, monkeypatch
     assert body["status"] == "assigned"
     assert body["assigned_worker_name"] == worker["full_name"]
     assert body["assigned_worker_phone"] is None  # not revealed until accepted
+
+
+def test_create_complaint_stores_category_when_given(client, monkeypatch, make_citizen):
+    """LIVE-REPORTED GAP: the category classified by the Report an Issue wizard's own 3-layer
+    classification (real model -> keyword -> manual picker) used to be thrown away -- it must now
+    actually persist onto the complaint row and come back in the response."""
+    monkeypatch.setattr(
+        complaints_module, "_agent", Mock(create_complaint=_fake_agent_create_complaint)
+    )
+    token, _user = make_citizen(phone="9000000001")
+
+    response = client.post(
+        "/complaints",
+        headers={"Authorization": f"Bearer {token}"},
+        data={"language": "en", "text": "Streetlight not working", "category": "STREETLIGHTS"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["service_category"] == "STREETLIGHTS"
+
+
+def test_create_complaint_rejects_unknown_category(client, monkeypatch, make_citizen):
+    monkeypatch.setattr(
+        complaints_module, "_agent", Mock(create_complaint=_fake_agent_create_complaint)
+    )
+    token, _user = make_citizen(phone="9000000001")
+
+    response = client.post(
+        "/complaints",
+        headers={"Authorization": f"Bearer {token}"},
+        data={"language": "en", "text": "Something", "category": "NOT_A_REAL_CATEGORY"},
+    )
+
+    assert response.status_code == 400
 
 
 def test_create_complaint_requires_authentication(client):
@@ -268,6 +303,372 @@ def test_worker_id_filter_is_ignored_for_non_admin_roles(client, make_worker, db
     body = response.json()
     assert len(body) == 1
     assert body[0]["assigned_worker_name"] == worker["full_name"]
+
+
+def test_list_complaints_page_and_page_size_slice_server_side(client, make_admin, db_session):
+    """LIVE-REPORTED GAP: GET /complaints always returned every matching row -- opting into
+    page/page_size must now return a real, bounded slice plus an accurate X-Total-Count header,
+    while a caller that passes neither still gets everything (see other tests in this file that
+    don't pass these params -- all pre-existing, all still pass unmodified)."""
+    make_admin(phone="9999999999", password="adminpass")
+    login = client.post("/auth/login", json={"identifier": "9999999999", "password": "adminpass"})
+    admin_token = login.json()["access_token"]
+
+    db = db_session()
+    for i in range(5):
+        db.add(Complaint(
+            citizen_id="1", original_text=f"c{i}", original_language="en",
+            translated_text=f"Complaint {i}", summary=f"s{i}", ward="Ward 14", status="pending",
+        ))
+    db.commit()
+    db.close()
+
+    response = client.get(
+        "/complaints", params={"page": 1, "page_size": 2},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    assert len(response.json()) == 2
+    assert response.headers["X-Total-Count"] == "5"
+
+    page2 = client.get(
+        "/complaints", params={"page": 2, "page_size": 2},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert len(page2.json()) == 2
+    # Different rows than page 1 -- a real slice, not the same page repeated.
+    assert {c["id"] for c in page2.json()}.isdisjoint({c["id"] for c in response.json()})
+
+
+def test_list_complaints_status_filter(client, make_admin, db_session):
+    make_admin(phone="9999999999", password="adminpass")
+    login = client.post("/auth/login", json={"identifier": "9999999999", "password": "adminpass"})
+    admin_token = login.json()["access_token"]
+
+    db = db_session()
+    db.add(Complaint(
+        citizen_id="1", original_text="a", original_language="en",
+        translated_text="a", summary="a", ward="Ward 14", status="pending",
+    ))
+    db.add(Complaint(
+        citizen_id="1", original_text="b", original_language="en",
+        translated_text="b", summary="b", ward="Ward 14", status="resolved",
+    ))
+    db.commit()
+    db.close()
+
+    response = client.get(
+        "/complaints", params={"status": "resolved"}, headers={"Authorization": f"Bearer {admin_token}"}
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) == 1
+    assert body[0]["status"] == "resolved"
+
+
+def test_list_complaints_rejects_unknown_status_filter(client, make_admin):
+    make_admin(phone="9999999999", password="adminpass")
+    login = client.post("/auth/login", json={"identifier": "9999999999", "password": "adminpass"})
+    admin_token = login.json()["access_token"]
+
+    response = client.get(
+        "/complaints", params={"status": "not_a_real_status"}, headers={"Authorization": f"Bearer {admin_token}"}
+    )
+    assert response.status_code == 400
+
+
+def test_list_complaints_search_matches_id_ward_summary_and_worker_name(client, make_admin, make_worker, db_session):
+    make_admin(phone="9999999999", password="adminpass")
+    login = client.post("/auth/login", json={"identifier": "9999999999", "password": "adminpass"})
+    admin_token = login.json()["access_token"]
+    _, worker = make_worker(phone="9000000002", ward="Ward 14", full_name="Ramesh Kumar")
+
+    db = db_session()
+    target = Complaint(
+        citizen_id="1", original_text="a", original_language="en",
+        translated_text="A pothole near the market", summary="Pothole report",
+        ward="Kothrud", status="assigned", assigned_worker_id=worker["id"],
+    )
+    other = Complaint(
+        citizen_id="1", original_text="b", original_language="en",
+        translated_text="Garbage not collected", summary="Garbage",
+        ward="Indiranagar", status="pending",
+    )
+    db.add_all([target, other])
+    db.commit()
+    target_id = target.id
+    db.close()
+
+    for query in (str(target_id), "Kothrud", "Pothole", "Ramesh"):
+        response = client.get(
+            "/complaints", params={"search": query}, headers={"Authorization": f"Bearer {admin_token}"}
+        )
+        assert response.status_code == 200, query
+        body = response.json()
+        assert len(body) == 1, f"query={query!r} matched {len(body)} rows"
+        assert body[0]["id"] == target_id
+
+
+def test_list_complaints_category_filter(client, make_admin, db_session):
+    """LIVE-REPORTED GAP: Complaint.service_category didn't exist at all until this fix -- every
+    complaint's classified category was discarded after filing. This is the filter that backs My
+    Area's per-service chips (and GET /complaints' own equivalent)."""
+    make_admin(phone="9999999999", password="adminpass")
+    login = client.post("/auth/login", json={"identifier": "9999999999", "password": "adminpass"})
+    admin_token = login.json()["access_token"]
+
+    db = db_session()
+    db.add(Complaint(
+        citizen_id="1", original_text="a", original_language="en", translated_text="a",
+        summary="a", ward="Ward 14", status="pending", service_category="STREETLIGHTS",
+    ))
+    db.add(Complaint(
+        citizen_id="1", original_text="b", original_language="en", translated_text="b",
+        summary="b", ward="Ward 14", status="pending", service_category="ROADS_POTHOLES",
+    ))
+    db.add(Complaint(
+        citizen_id="1", original_text="c", original_language="en", translated_text="c",
+        summary="c", ward="Ward 14", status="pending", service_category=None,
+    ))
+    db.commit()
+    db.close()
+
+    response = client.get(
+        "/complaints", params={"category": "STREETLIGHTS"}, headers={"Authorization": f"Bearer {admin_token}"}
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) == 1
+    assert body[0]["service_category"] == "STREETLIGHTS"
+
+
+def test_list_complaints_rejects_unknown_category_filter(client, make_admin):
+    make_admin(phone="9999999999", password="adminpass")
+    login = client.post("/auth/login", json={"identifier": "9999999999", "password": "adminpass"})
+    admin_token = login.json()["access_token"]
+
+    response = client.get(
+        "/complaints", params={"category": "NOT_A_REAL_CATEGORY"}, headers={"Authorization": f"Bearer {admin_token}"}
+    )
+    assert response.status_code == 400
+
+
+def test_area_summary_search_and_pagination(client, make_citizen, db_session):
+    token, citizen = make_citizen(phone="9000000010", ward="Kothrud")
+
+    db = db_session()
+    for i in range(3):
+        db.add(Complaint(
+            citizen_id=str(citizen["id"]), original_text=f"c{i}", original_language="en",
+            translated_text=f"Pothole issue {i}", summary=f"s{i}", ward="Kothrud", status="pending",
+        ))
+    db.add(Complaint(
+        citizen_id=str(citizen["id"]), original_text="d", original_language="en",
+        translated_text="Garbage overflow", summary="d", ward="Kothrud", status="resolved",
+    ))
+    db.commit()
+    db.close()
+
+    all_response = client.get("/complaints/area-summary", headers={"Authorization": f"Bearer {token}"})
+    assert all_response.status_code == 200
+    all_body = all_response.json()
+    assert all_body["total"] == 4
+    assert len(all_body["complaints"]) == 4
+    # Stat counts describe the WHOLE ward, unaffected by any later search/page params.
+    assert all_body["pending_count"] == 3
+    assert all_body["resolved_count"] == 1
+
+    paged = client.get(
+        "/complaints/area-summary", params={"page": 1, "page_size": 2},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    paged_body = paged.json()
+    assert paged_body["total"] == 4
+    assert len(paged_body["complaints"]) == 2
+
+    searched = client.get(
+        "/complaints/area-summary", params={"search": "Garbage"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    searched_body = searched.json()
+    assert searched_body["total"] == 1
+    assert len(searched_body["complaints"]) == 1
+    assert "Garbage" in searched_body["complaints"][0]["display_text"]
+    # The stat counts must stay ward-wide even on a search response, not re-derived from the
+    # filtered list.
+    assert searched_body["pending_count"] == 3
+    assert searched_body["resolved_count"] == 1
+
+
+def test_area_summary_status_filter_accepts_a_comma_separated_bucket(client, make_citizen, db_session):
+    """LIVE-REPORTED NEED: My Area's own "Pending" stat groups THREE raw statuses (pending/
+    assigned/accepted) into one citizen-legible bucket -- a status filter chip for it must be
+    able to match all three at once, not just one exact value."""
+    token, citizen = make_citizen(phone="9000000011", ward="Indiranagar")
+
+    db = db_session()
+    db.add(Complaint(
+        citizen_id=str(citizen["id"]), original_text="a", original_language="en",
+        translated_text="a", summary="a", ward="Indiranagar", status="pending",
+    ))
+    db.add(Complaint(
+        citizen_id=str(citizen["id"]), original_text="b", original_language="en",
+        translated_text="b", summary="b", ward="Indiranagar", status="assigned",
+    ))
+    db.add(Complaint(
+        citizen_id=str(citizen["id"]), original_text="c", original_language="en",
+        translated_text="c", summary="c", ward="Indiranagar", status="accepted",
+    ))
+    db.add(Complaint(
+        citizen_id=str(citizen["id"]), original_text="d", original_language="en",
+        translated_text="d", summary="d", ward="Indiranagar", status="resolved",
+    ))
+    db.commit()
+    db.close()
+
+    response = client.get(
+        "/complaints/area-summary", params={"status": "pending,assigned,accepted"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 3
+    assert {c["status"] for c in body["complaints"]} == {"pending", "assigned", "accepted"}
+
+
+def test_area_summary_category_filter(client, make_citizen, db_session):
+    """Backs My Area's own per-service (Waste/Water/Roads/Streetlights) filter chips.
+
+    LIVE-REPORTED REQUEST: picking a category must reframe the stat counts to that category's
+    own breakdown ("if I select Roads, show a dashboard for Roads") -- unlike status/search,
+    which only ever narrow the list, never the stat counts."""
+    token, citizen = make_citizen(phone="9000000012", ward="Kothrud")
+
+    db = db_session()
+    db.add(Complaint(
+        citizen_id=str(citizen["id"]), original_text="a", original_language="en",
+        translated_text="Pothole", summary="a", ward="Kothrud", status="pending",
+        service_category="ROADS_POTHOLES",
+    ))
+    db.add(Complaint(
+        citizen_id=str(citizen["id"]), original_text="b", original_language="en",
+        translated_text="Streetlight out", summary="b", ward="Kothrud", status="pending",
+        service_category="STREETLIGHTS",
+    ))
+    db.add(Complaint(
+        citizen_id=str(citizen["id"]), original_text="c", original_language="en",
+        translated_text="Another streetlight out", summary="c", ward="Kothrud", status="resolved",
+        service_category="STREETLIGHTS",
+    ))
+    db.commit()
+    db.close()
+
+    response = client.get(
+        "/complaints/area-summary", params={"category": "STREETLIGHTS"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 2
+    assert {c["service_category"] for c in body["complaints"]} == {"STREETLIGHTS"}
+    # Stat counts now scope to the selected category, not the whole ward.
+    assert body["pending_count"] == 1
+    assert body["resolved_count"] == 1
+
+    all_categories = client.get(
+        "/complaints/area-summary", headers={"Authorization": f"Bearer {token}"}
+    ).json()
+    # With no category filter, stats go back to describing the whole ward.
+    assert all_categories["pending_count"] == 2
+    assert all_categories["resolved_count"] == 1
+
+
+def test_area_summary_category_filter_paginates_correctly(client, make_citizen, db_session):
+    """LIVE-REPORTED QUESTION: does picking a service (e.g. Roads & Potholes) still page
+    correctly, or does pagination only work on the unfiltered "All" view? -- `category` is
+    applied to `listing_query` BEFORE `_paginate` (see get_area_summary), so `total`/the page
+    slice must both reflect the category-filtered count, not the whole ward's."""
+    token, citizen = make_citizen(phone="9000000013", ward="Kothrud")
+
+    db = db_session()
+    for i in range(12):
+        db.add(Complaint(
+            citizen_id=str(citizen["id"]), original_text=f"r{i}", original_language="en",
+            translated_text=f"Pothole {i}", summary=f"r{i}", ward="Kothrud", status="pending",
+            service_category="ROADS_POTHOLES",
+        ))
+    for i in range(3):
+        db.add(Complaint(
+            citizen_id=str(citizen["id"]), original_text=f"g{i}", original_language="en",
+            translated_text=f"Garbage {i}", summary=f"g{i}", ward="Kothrud", status="pending",
+            service_category="WASTE_SANITATION",
+        ))
+    db.commit()
+    db.close()
+
+    page1 = client.get(
+        "/complaints/area-summary", params={"category": "ROADS_POTHOLES", "page": 1, "page_size": 10},
+        headers={"Authorization": f"Bearer {token}"},
+    ).json()
+    assert page1["total"] == 12  # only the 12 Roads complaints, not all 15
+    assert len(page1["complaints"]) == 10
+    assert {c["service_category"] for c in page1["complaints"]} == {"ROADS_POTHOLES"}
+
+    page2 = client.get(
+        "/complaints/area-summary", params={"category": "ROADS_POTHOLES", "page": 2, "page_size": 10},
+        headers={"Authorization": f"Bearer {token}"},
+    ).json()
+    assert page2["total"] == 12
+    assert len(page2["complaints"]) == 2  # the remaining 2, a real second page, not a repeat
+    page1_ids = {c["id"] for c in page1["complaints"]}
+    page2_ids = {c["id"] for c in page2["complaints"]}
+    assert page1_ids.isdisjoint(page2_ids)
+
+
+def test_area_summary_category_status_and_search_combine_with_and_not_or(client, make_citizen, db_session):
+    """LIVE-REPORTED QUESTION: if I pick a category (e.g. Streetlights) AND a status (e.g.
+    Pending) AND type something in the search box, does the search box search WITHIN that
+    filtered set, or does it ignore the other two filters? Must be AND -- a complaint only shows
+    up if it matches the category, the status, AND the search text, all at once."""
+    token, citizen = make_citizen(phone="9000000014", ward="Kothrud")
+
+    db = db_session()
+    # Matches all three filters -- the only one that should ever come back.
+    db.add(Complaint(
+        citizen_id=str(citizen["id"]), original_text="a", original_language="en",
+        translated_text="Streetlight flickering near the market", summary="a",
+        ward="Kothrud", status="pending", service_category="STREETLIGHTS",
+    ))
+    # Right category + status, wrong search text.
+    db.add(Complaint(
+        citizen_id=str(citizen["id"]), original_text="b", original_language="en",
+        translated_text="Streetlight completely dark", summary="b",
+        ward="Kothrud", status="pending", service_category="STREETLIGHTS",
+    ))
+    # Right category + search text, wrong status (resolved, not pending).
+    db.add(Complaint(
+        citizen_id=str(citizen["id"]), original_text="c", original_language="en",
+        translated_text="Streetlight flickering, now fixed", summary="c",
+        ward="Kothrud", status="resolved", service_category="STREETLIGHTS",
+    ))
+    # Right status + search text, wrong category (roads, not streetlights).
+    db.add(Complaint(
+        citizen_id=str(citizen["id"]), original_text="d", original_language="en",
+        translated_text="Streetlight-adjacent pothole, flickering nearby lamp", summary="d",
+        ward="Kothrud", status="pending", service_category="ROADS_POTHOLES",
+    ))
+    db.commit()
+    db.close()
+
+    response = client.get(
+        "/complaints/area-summary",
+        params={"category": "STREETLIGHTS", "status": "pending,assigned,accepted", "search": "flickering"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 1
+    assert "flickering near the market" in body["complaints"][0]["display_text"]
 
 
 def test_list_complaints_translates_on_read(client, monkeypatch, make_admin, db_session):

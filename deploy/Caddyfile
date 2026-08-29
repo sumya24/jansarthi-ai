@@ -9,7 +9,20 @@
 {$SITE_ADDRESS:http://:80} {
 	encode gzip
 
-	@backend path /auth* /admin* /complaints* /notifications* /ask-janmitra* /locations* /uploads* /health
+	# Several of these prefixes are ALSO real frontend page routes with the identical path
+	# (e.g. "/admin", "/admin/workers", "/admin/ai-monitoring" are simultaneously backend API
+	# endpoints AND React Router pages -- see vite.config.ts's own dev-proxy version of this same
+	# problem, LIVE-REPORTED there first). Without the header check below, a real browser
+	# navigation to one of those page URLs (typing it, a bookmark, a hard refresh, a long-idle tab
+	# reloading) would ALWAYS match @backend by path alone and get the backend's raw JSON instead
+	# of ever reaching the SPA -- worse than the dev version's gap, since here there was no
+	# disambiguation at all. `Sec-Fetch-Mode: navigate` is the header browsers set ONLY for a real
+	# top-level page load and can't be overridden by JS, so "path matches AND it's not a real page
+	# load" is what actually means "proxy this to the backend."
+	@backend {
+		path /auth* /admin* /complaints* /notifications* /ask-janmitra* /locations* /uploads* /health
+		not header Sec-Fetch-Mode navigate
+	}
 	handle @backend {
 		reverse_proxy backend:8000
 	}

@@ -64,6 +64,7 @@ test("real multi-file evidence upload, end to end: select -> upload -> storage -
   await page.getByLabel("Full name").fill("Evidence Test Worker");
   await page.getByLabel("Phone number").fill(workerPhone);
   await page.getByLabel("Temporary password").fill("workerpass123");
+  await page.getByLabel("Confirm password").fill("workerpass123");
   await page.getByLabel("Assign to ward").fill(WARD);
   await page.getByRole("button", { name: "English", exact: true }).click();
   await page.getByRole("button", { name: "Add worker", exact: true }).click();
@@ -101,7 +102,10 @@ test("real multi-file evidence upload, end to end: select -> upload -> storage -
   await expect(page.locator(".multi-photo-thumb")).toHaveCount(2);
 
   await page.getByRole("button", { name: "Next" }).click();
-  await expect(page.getByText(/Development preview/)).toBeVisible({ timeout: 3000 });
+  // AI Understanding step's badge text depends on which classification layer succeeded (real
+  // model vs. keyword fallback, see ReportIssue.tsx) -- assert on the stable .dev-badge class
+  // instead of either layer's specific wording.
+  await expect(page.locator(".dev-badge")).toBeVisible({ timeout: 3000 });
   await page.getByRole("button", { name: "Next" }).click();
   await page.getByRole("button", { name: "Submit complaint" }).click();
   await expect(page.getByText("Complaint submitted successfully.")).toBeVisible({ timeout: 60000 });
@@ -201,6 +205,7 @@ test("a file that isn't really an image is rejected with a clear error, not a si
   await page.getByLabel("Full name").fill("Invalid Upload Test Worker");
   await page.getByLabel("Phone number").fill(uniquePhone());
   await page.getByLabel("Temporary password").fill("workerpass123");
+  await page.getByLabel("Confirm password").fill("workerpass123");
   await page.getByLabel("Assign to ward").fill(localWard);
   await page.getByRole("button", { name: "English", exact: true }).click();
   await page.getByRole("button", { name: "Add worker", exact: true }).click();
@@ -248,7 +253,11 @@ test("a file that isn't really an image is rejected with a clear error, not a si
   await expect(page.locator(".multi-photo-thumb")).toHaveCount(1);
 
   await page.getByRole("button", { name: "Next" }).click();
-  await expect(page.getByText(/Development preview/)).toBeVisible({ timeout: 3000 });
+  // No .dev-badge assertion here (unlike the other wizard-flow specs): this test's complaint text
+  // ("Text file disguised as a photo.") is deliberately non-civic, since it's testing invalid-image
+  // rejection, not classification -- the keyword fallback legitimately finds no category match for
+  // it, so the AI Understanding step shows wizard.ai.noMatch instead of a badge. That's correct
+  // behavior, not something to assert around; a category isn't required to proceed.
   await page.getByRole("button", { name: "Next" }).click();
   await page.getByRole("button", { name: "Submit complaint" }).click();
 

@@ -1,10 +1,21 @@
-# Ask Sarthi — Expected Response Behavior (Spec, Not Implemented)
+# Ask Sarthi — Expected Response Behavior (Original Spec, Now Superseded)
 
-**Status: this document describes required behavior for a future retrieval/chat feature. No
-chat UI, retrieval endpoint, embeddings, or vector store exist yet — this is architecture
-guidance so the data/schema decisions already made don't have to be reworked when that phase
-starts.** See `data/rag_knowledge_base/citation_examples/citation_examples.md` for worked
-examples of the citation format this spec requires.
+**Status: HISTORICAL.** This document was written *before* Ask Sarthi existed, as forward-looking
+architecture guidance ("no chat UI, retrieval endpoint, embeddings, or vector store exist yet")
+so the data/schema decisions made at the time wouldn't have to be reworked once that phase
+started. All of that has since been built, tested, and is live — see
+[`docs/ask_janmitra_rag_architecture.md`](ask_janmitra_rag_architecture.md),
+[`docs/ask_janmitra_orchestration.md`](ask_janmitra_orchestration.md), and
+[`docs/ask_janmitra_service_flow.md`](ask_janmitra_service_flow.md) for what's actually
+implemented today; those three are the current source of truth. Kept here as the original design
+intent, not rewritten to match the current implementation — the location-clarification flow in
+particular has since gone through several real, live-reported bug fixes not reflected below (see
+`backend/services/orchestration/nodes.py`'s own extensive docstrings on `_resolve_location` and
+`_should_skip_home_ward_fallback` for the actual, current behavior — including that an unresolved
+location now gets an honest "I couldn't recognize that as a location" message rather than
+repeating the same clarification question a second time). See
+`data/rag_knowledge_base/citation_examples/citation_examples.md` for worked examples of the
+citation format this spec requires — that part is still accurate.
 
 ## 1. Intent classification (first step, before any retrieval)
 

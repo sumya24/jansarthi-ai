@@ -139,7 +139,25 @@ def test_chroma_collection_opens_and_reports_expected_size():
     # See knowledge_records/verified/puducherry/oulgaret.json (now 4 records),
     # knowledge_records/verified/jammu_and_kashmir/srinagar.json, and sources/inventory.json's
     # corresponding entries.
-    assert store.size == 971
+    # 975, not the earlier 971 -- Ahmedabad's WASTE_SANITATION category gained a real AMCCRS
+    # complaint-channel record (GJ_AMC_AMCCRS_WASTE_CHANNEL) live-reproduced as missing: a citizen
+    # asking "who do I contact for garbage collection in Ahmedabad" got a vague answer with no
+    # phone number, while a general web search for the same question surfaced AMC's real 155303
+    # toll-free/email/WhatsApp channel immediately. Directly confirmed via the actual AMCCRS
+    # complaint-registration form (amccrs.com/AMCPortal/View/ComplaintRegistration.aspx), which
+    # lists an explicit "SWM" (Solid Waste Management) category group -- the same real channel
+    # already used for this city's Water/Drainage, Roads, and Streetlight records, just missing
+    # its Waste sibling until now. See knowledge_records/verified/gujarat/ahmedabad.json (now 5
+    # records).
+    # 1053, not the earlier 975 -- 26 new records added across two changes: real, sourced
+    # VERIFIED knowledge for 6 newly-added cities (Vadodara, Pune, Mangaluru, Madurai, Kanpur,
+    # Asansol -- all 4 service categories each, 24 records), plus a real gap closed in Bengaluru's
+    # own knowledge base (it was missing ROADS_POTHOLES and STREETLIGHTS entirely -- added real
+    # BBMP contact channels for both, 2 records). See knowledge_records/verified/{gujarat/
+    # vadodara,maharashtra/pune,karnataka/mangaluru,tamil_nadu/madurai,uttar_pradesh/kanpur,
+    # west_bengal/asansol}.json and karnataka/bengaluru.json (now 4 records), plus
+    # sources/inventory.json's corresponding entries.
+    assert store.size == 1053
 
 
 def test_chroma_persist_dir_is_configurable_not_hardcoded():

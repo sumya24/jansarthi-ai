@@ -3,10 +3,11 @@ import Mascot, { type MascotState } from "./Mascot";
 import MultiPhotoUpload from "./MultiPhotoUpload";
 import { useUiLang } from "../lib/uiLang";
 import { useAuth } from "../lib/auth";
-import { t, SUPPORTED_LANGUAGES } from "../lib/i18n";
+import { t, toLangCode, SUPPORTED_LANGUAGES } from "../lib/i18n";
 import { api, ApiError } from "../lib/api";
 import { useAudioRecorder } from "../lib/useAudioRecorder";
-import type { AskJanMitraConversationTurn } from "../lib/ragTypes";
+import { useSpeechToText } from "../lib/useSpeechToText";
+import type { AskJanMitraConversationTurn, AskVoiceResponse } from "../lib/ragTypes";
 import "./VoiceAssistantOverlay.css";
 
 type VoicePhase = "idle" | "listening" | "processing" | "speaking" | "error";
@@ -27,19 +28,69 @@ type VoicePhase = "idle" | "listening" | "processing" | "speaking" | "error";
  * while the <audio> element is actually firing `playing` -- removed again on pause/ended/error
  * (see the `audioPlaying` state below, set only from those real events) -- so it never appears
  * to speak without real audio playing, and never for a fixed/guessed duration.
+ *
+ * Live-reported bug: this overlay used to keep its own conversation history, seeded empty every
+ * time it opened and never shared with the main Ask Sarthi chat page in either direction -- a
+ * voice conversation was invisible in the text transcript, and switching back to typing afterward
+ * lost all context from what was just said out loud. `initialHistory`/`onTurnComplete` close that
+ * gap: this overlay now STARTS from whatever the main page has already discussed (so it can
+ * recover a category/location the citizen already gave in text, exactly like a fresh text turn
+ * would), and reports each of its own turns back up to the parent (so closing the overlay shows
+ * the voice exchange in the same transcript, and a later typed message carries it as context) --
+ * one shared conversation, not two disconnected ones.
  */
-export default function VoiceAssistantOverlay({ onClose }: { onClose: () => void }) {
+export default function VoiceAssistantOverlay({
+  onClose,
+  initialHistory,
+  onTurnComplete,
+  conversationId,
+}: {
+  onClose: () => void;
+  initialHistory: AskJanMitraConversationTurn[];
+  /** LIVE-REPORTED BUG, fixed alongside `initialHistory`'s own: the turn this reports back to the
+   * main chat used to lose the attached photo (no thumbnail in the background transcript, even
+   * though the request genuinely included one) and never showed how long the reply took (unlike
+   * every typed/photo turn, which does) -- because this callback only ever passed `question`/
+   * `response`, nothing about the image or real elapsed time. `durationMs` is measured here
+   * (right around the actual `api.askJanMitraVoice` call, not a guess); `imagePreview` is a
+   * `URL.createObjectURL()` blob of whatever was attached THIS turn, or `undefined` if nothing
+   * was -- same shape/lifecycle as `AskJanMitra.tsx`'s own text/image submit path, which is also
+   * where this blob's cleanup (`imagePreviewUrlsRef`) lives, not here. */
+  onTurnComplete: (question: string, response: AskVoiceResponse, durationMs: number, imagePreview?: string) => void;
+  /** Observability only (see AskJanMitra.tsx's loadOrCreateConversationId docstring) -- passed
+   * through so a voice turn groups into the SAME Phoenix session as the rest of this chat, not a
+   * separate one, matching how `initialHistory`/`onTurnComplete` already keep this one shared
+   * conversation instead of two disconnected ones. */
+  conversationId: string;
+}) {
   const { lang } = useUiLang();
   const { token } = useAuth();
   const recorder = useAudioRecorder();
+  // LIVE-REPORTED REQUEST: while `recorder` above captures the real audio this turn is actually
+  // decided from (unchanged), this is a SECOND, independent transcription running purely for a
+  // live, on-screen caption while the citizen is still talking -- the same browser-native
+  // technology Mic 1 already uses (see useSpeechToText.ts's own docstring), reused here only for
+  // display. Deliberately Chrome/Edge-only, same limitation Mic 1 already has (`supported` below
+  // gates all of it, so an unsupported browser just shows nothing extra -- silently, never a
+  // broken control) -- covered live testing across Firefox before shipping. Its own `error` is
+  // NEVER surfaced as a voice-turn error: this is a cosmetic preview, not the thing that actually
+  // determines the complaint/answer, so its failure must never look like the real turn failed.
+  const liveCaption = useSpeechToText(lang);
 
   const [phase, setPhase] = useState<VoicePhase>("idle");
   const [error, setError] = useState<string | null>(null);
   const [transcript, setTranscript] = useState<string | null>(null);
   const [responseText, setResponseText] = useState<string | null>(null);
+  // LIVE-REPORTED BUG: the "Transcript"/"Response" labels below rendered in the account-wide UI
+  // toggle (`lang`), not the language THIS turn actually came back in -- see i18n.ts's
+  // `toLangCode` docstring for the full context. Set alongside `responseText` from the same real
+  // `result.language`, so both labels follow the actual conversation, not a stale toggle.
+  const [responseLanguage, setResponseLanguage] = useState<string | null>(null);
   const [muted, setMuted] = useState(false);
   const [audioPlaying, setAudioPlaying] = useState(false);
-  const [history, setHistory] = useState<AskJanMitraConversationTurn[]>([]);
+  // Seeded from the main chat's own history (see this component's own docstring), not an empty
+  // array -- every turn taken IN this overlay still just appends onto it locally, same as before.
+  const [history, setHistory] = useState<AskJanMitraConversationTurn[]>(initialHistory);
   const [attachedImage, setAttachedImage] = useState<File[]>([]);
 
   const stopRequestedRef = useRef(false);
@@ -70,37 +121,77 @@ export default function VoiceAssistantOverlay({ onClose }: { onClose: () => void
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  function handleMicTap() {
+  async function handleMicTap() {
     if (phase === "listening") {
       stopRequestedRef.current = true;
       setPhase("processing");
       recorder.stop();
+      if (liveCaption.supported) liveCaption.stop();
       return;
     }
     if (phase === "idle" || phase === "error") {
       setError(null);
       setResponseText(null);
+      setResponseLanguage(null);
+      // LIVE-REPORTED BUG: `transcript` (the "YOU SAID" box) was missing from this reset, unlike
+      // `responseText`/`responseLanguage` right above it -- so starting a SECOND turn in the same
+      // overlay session kept showing the FIRST turn's transcript all the way through "Thinking..."
+      // (this turn's own transcript genuinely doesn't exist yet until the backend responds), which
+      // reads as "it didn't hear my new question at all" rather than "still processing your new
+      // one". Cleared here for the same reason the two lines above already are.
+      setTranscript(null);
+      // LIVE-REPORTED BUG: `recorder.start()` is genuinely async -- it opens the mic stream, THEN
+      // starts the real MediaRecorder. This used to flip to "listening" (which visually invites
+      // the citizen to start talking) before awaiting that, so a citizen who spoke the instant
+      // they saw "listening" had their first word(s) captured by nothing -- confirmed live: the
+      // citizen said "tell me about this image", but the backend's own STT transcript (visible in
+      // Phoenix's speech_to_text span) shows only "this image" ever arrived. Awaiting `start()`
+      // first, and only flipping to "listening" on its real success, closes that gap -- the
+      // indicator now can't appear before recording genuinely is.
+      const started = await recorder.start();
+      if (!started) return; // recorder.error is already set and rendered independently below
       setPhase("listening");
-      void recorder.start();
+      if (liveCaption.supported) {
+        liveCaption.reset();
+        liveCaption.start();
+      }
     }
   }
 
   async function submitTurn(segments: Blob[]) {
     if (!token) return;
+    // Captured before the attempted image, in case decoding it as a preview URL ever throws --
+    // this turn's real elapsed time shouldn't depend on that succeeding.
+    const sentAt = performance.now();
+    // Created now (this turn's image, if any, is about to be cleared on success either way) --
+    // `undefined` when nothing was attached, matching AskJanMitra.tsx's own text/image submit path.
+    const imagePreview = attachedImage[0] ? URL.createObjectURL(attachedImage[0]) : undefined;
     try {
       const result = await api.askJanMitraVoice(token, {
         language: lang,
         conversation_history: history,
+        conversation_id: conversationId,
         audioSegments: segments,
         image: attachedImage[0] ?? null,
       });
       setTranscript(result.question);
       setResponseText(result.answer);
+      setResponseLanguage(result.language);
       setHistory((prev) => [
         ...prev,
         { role: "user", content: result.question },
-        { role: "assistant", content: result.answer },
+        // `complaint_workflow_state` echoed here too -- same gap, same fix as the main text chat
+        // (see AskJanMitra.tsx's own historyForRequest comment): without it, a complaint filed or
+        // cancelled via voice can't be recognized as a closed boundary on a later turn (voice OR
+        // text, since this history is shared with the main chat -- see this component's own
+        // docstring), letting a brand-new complaint silently reuse its stale ward/category.
+        { role: "assistant", content: result.answer, complaint_workflow_state: result.complaint_workflow_state },
       ]);
+      // Reports this turn up to the main chat page (see this component's own docstring) -- so
+      // closing the overlay shows it in the same transcript, sources/follow-up options included,
+      // now with the real elapsed time and the attached photo (if any) too -- see this prop's own
+      // docstring for the live-reported gap this closes.
+      onTurnComplete(result.question, result, performance.now() - sentAt, imagePreview);
       // Only clear on success -- a failed request keeps the attached photo so the citizen can
       // just retry, matching AskJanMitra.tsx's own text/image submit behavior.
       setAttachedImage([]);
@@ -113,6 +204,10 @@ export default function VoiceAssistantOverlay({ onClose }: { onClose: () => void
         setPhase("idle");
       }
     } catch (err) {
+      // The request never succeeded, so `imagePreview` (if created above) was never handed off
+      // to the parent for its own cleanup tracking -- revoke it here instead, or it leaks for the
+      // rest of this tab's life.
+      if (imagePreview) URL.revokeObjectURL(imagePreview);
       setError(err instanceof ApiError ? err.message : t(lang, "ask.voiceAssistant.errorGeneric"));
       setPhase("error");
     }
@@ -205,6 +300,22 @@ export default function VoiceAssistantOverlay({ onClose }: { onClose: () => void
 
         <div className="voice-overlay-language">{SUPPORTED_LANGUAGES[lang].name}</div>
 
+        {/* Live caption -- a rough, on-screen preview of what's being said WHILE still talking
+            (see `liveCaption`'s own docstring above for why this is a second, independent, purely
+            cosmetic transcription). Only ever shown during `listening`, on a browser that
+            supports it -- an unsupported browser (Firefox, Safari) simply never renders this,
+            same as Mic 1's own graceful degradation. A calm placeholder holds the box's height
+            steady before any words arrive, so the panel doesn't visibly jump the moment speech
+            starts. */}
+        {phase === "listening" && liveCaption.supported && (
+          <div className="voice-overlay-live-caption" aria-live="polite">
+            <p className={liveCaption.transcript ? "" : "voice-overlay-live-caption-placeholder"}>
+              {liveCaption.transcript || t(lang, "ask.voiceAssistant.liveCaptionPlaceholder")}
+              <span className="voice-overlay-live-caption-cursor" aria-hidden="true" />
+            </p>
+          </div>
+        )}
+
         {/* Attaching a photo here is optional and only meaningful before/between turns -- a
             combined voice+image turn (see backend ask_janmitra_service.ask_voice()), reusing
             the exact same single-image attach control the text/image flow already uses. */}
@@ -214,14 +325,14 @@ export default function VoiceAssistantOverlay({ onClose }: { onClose: () => void
 
         {transcript && (
           <div className="voice-overlay-transcript">
-            <div className="voice-overlay-transcript-label">{t(lang, "ask.voiceAssistant.transcriptLabel")}</div>
+            <div className="voice-overlay-transcript-label">{t(toLangCode(responseLanguage), "ask.voiceAssistant.transcriptLabel")}</div>
             <p>{transcript}</p>
           </div>
         )}
 
         {responseText && (
           <div className="voice-overlay-transcript voice-overlay-response">
-            <div className="voice-overlay-transcript-label">{t(lang, "ask.voiceAssistant.responseLabel")}</div>
+            <div className="voice-overlay-transcript-label">{t(toLangCode(responseLanguage), "ask.voiceAssistant.responseLabel")}</div>
             <p>{responseText}</p>
           </div>
         )}

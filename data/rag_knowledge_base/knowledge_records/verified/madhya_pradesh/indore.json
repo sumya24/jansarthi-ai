@@ -154,7 +154,7 @@
     "geographic_scope": "CITY",
     "department": "Smart City Indore Development Corporation",
     "authority": "Smart City Indore grievance cell",
-    "description": "Smart City Indore's own grievance-registration page lists 'Garbage' as the FIRST named complaint category (re-confirmed via a fresh fetch this round, full category list: Garbage, Road & Footpath, Public Toilets/Urinals, Park & Play Ground, Water Supply, Sewerage/Drainage, Public Health, Street Light, Other), with the same real phone/email contact as the other 3 already-recorded Indore categories (Water, Roads, Streetlights). No category-specific numeric SLA is published for garbage complaints.",
+    "description": "Smart City Indore's own grievance-registration page lists 'Garbage' as the first named complaint category, alongside others including Road & Footpath, Public Toilets/Urinals, Park & Play Ground, Water Supply, Sewerage/Drainage, Public Health, and Street Light -- with the same real phone/email contact used for Indore's other civic categories (Water, Roads, Streetlights). No category-specific numeric SLA is published for garbage complaints.",
     "procedure": "Register a complaint under the 'Garbage' category via Smart City Indore's grievance portal, Indore 311 app, phone, or email.",
     "required_information": [],
     "required_documents": [],

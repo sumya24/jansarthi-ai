@@ -12,11 +12,13 @@ see everything.
 """
 
 import logging
+from datetime import date, datetime, time, timedelta
 from typing import Literal
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import String, cast, func, or_
 from sqlalchemy.orm import Session
 
 from backend.config import settings
@@ -66,6 +68,95 @@ _STATUS_RESOLVED = "resolved"
 # notification "audiences" (worker vs citizen) are populated from two different call sites for
 # unrelated reasons (assignment vs status change) that only coincidentally share a format.
 _CITIZEN_NOTIFICATION_SNIPPET_LENGTH = 80
+
+# Every real value Complaint.status can hold (see ComplaintStatusHistory/assignment_service.py) --
+# used to validate the new `status` filter on GET /complaints and GET /complaints/area-summary
+# below, the same way `lang` is validated against settings.SUPPORTED_LANGUAGES just above each of
+# those. "open" is included even though it's rare/transient (assignment normally runs in the same
+# request a complaint is created in) -- real data can still be seen sitting at it.
+_ALL_COMPLAINT_STATUSES = ("open", "pending", "assigned", "accepted", "in_progress", "resolved")
+
+# LIVE-REPORTED GAP: GET /complaints and GET /complaints/area-summary always returned every
+# matching row -- fine at this app's current demo scale, not fine once a citizen/worker/ward has
+# hundreds of complaints (every one gets sent over the wire and, for area-summary, translated on
+# every single load, regardless of how much of it is ever actually looked at). `page`/`page_size`
+# below are opt-in and additive: a caller that passes neither gets the exact same "everything, in
+# one response" behavior as before this fix (so nothing existing breaks), while a caller that
+# opts in gets a real, bounded slice plus an accurate `X-Total-Count` response header.
+_DEFAULT_PAGE_SIZE = 20
+_MAX_PAGE_SIZE = 200
+
+
+def _parse_status_filter(status: str | None) -> list[str] | None:
+    """Accepts either one status ("resolved") or a comma-separated set ("pending,assigned,
+    accepted") -- LIVE-REPORTED NEED: My Area's own "Pending" stat bucket (see get_area_summary's
+    docstring) groups three raw statuses into one citizen-legible label, so a single-value filter
+    alone can't express "match this whole bucket" the way a status FILTER CHIP needs to. Returns
+    None for "no filter" (status was None), otherwise the parsed list -- never an empty list from
+    a non-None input, so callers can safely check `if statuses:` for "was a real filter given"."""
+    if status is None:
+        return None
+    statuses = [s for s in status.split(",") if s]
+    for s in statuses:
+        if s not in _ALL_COMPLAINT_STATUSES:
+            raise HTTPException(status_code=400, detail=f"Unknown status: {s}")
+    return statuses
+
+
+def _parse_category_filter(category: str | None) -> list[str] | None:
+    """Same shape/contract as _parse_status_filter above, for Complaint.service_category --
+    LIVE-REPORTED NEED: My Area's own per-service filter chips (Waste/Water/Roads/Streetlights)
+    need to filter the list by category the same way the status chips filter by status."""
+    if category is None:
+        return None
+    categories = [c for c in category.split(",") if c]
+    valid = {c.value for c in ServiceCategory}
+    for c in categories:
+        if c not in valid:
+            raise HTTPException(status_code=400, detail=f"Unknown category: {c}")
+    return categories
+
+
+def _apply_complaint_search(query, search: str | None, db: Session, *, include_worker_name: bool = True):
+    """Server-side substring search over a Complaint query -- id, ward, and the stored English
+    summary/text. Matches only the stored English fields, never a per-viewer translated display
+    string -- doing that against every candidate row would mean an AI translation call per row
+    just to filter, which is neither fast nor something worth spending Sarvam credits on for a
+    search box.
+
+    `include_worker_name=False` (used by GET /complaints/area-summary) drops the assigned-worker
+    match entirely -- that endpoint's own response never includes worker identity at all (see
+    AreaSummaryResponse's docstring: "no assigned-worker name/phone anywhere in this response"),
+    so letting a search term still silently reveal "a complaint assigned to worker X exists"
+    through match/no-match would undercut that same anonymization by a side channel."""
+    q = (search or "").strip()
+    if not q:
+        return query
+    qid = q.lstrip("#")  # "#15" and "15" both match complaint id 15
+    like = f"%{q}%"
+    clauses = [
+        cast(Complaint.id, String).like(f"%{qid}%"),
+        Complaint.ward.ilike(like),
+        Complaint.summary.ilike(like),
+        Complaint.translated_text.ilike(like),
+    ]
+    if include_worker_name:
+        worker_ids = db.query(User.id).filter(User.role == "worker", User.full_name.ilike(like))
+        clauses.append(Complaint.assigned_worker_id.in_(worker_ids))
+    return query.filter(or_(*clauses))
+
+
+def _paginate(query, page: int | None, page_size: int | None):
+    """Applies offset/limit only when the caller actually passed page and/or page_size -- see
+    _DEFAULT_PAGE_SIZE's docstring above for why omitting both must return every matching row
+    unchanged. Returns (possibly-sliced query, total-matching-row-count-or-None); None means "no
+    slicing happened, the caller already has everything, no header needed"."""
+    if page is None and page_size is None:
+        return query, None
+    total = query.count()
+    safe_page = max(page or 1, 1)
+    safe_size = max(min(page_size or _DEFAULT_PAGE_SIZE, _MAX_PAGE_SIZE), 1)
+    return query.offset((safe_page - 1) * safe_size).limit(safe_size), total
 
 
 def _citizen_notification_message(complaint: Complaint) -> str:
@@ -136,6 +227,9 @@ class ComplaintResponse(BaseModel):
     display_summary: str
     photo_path: str | None
     status: str
+    # ServiceCategory.value, or None -- either this complaint predates the column, or
+    # classification itself came back unsure (see Complaint.service_category's own docstring).
+    service_category: str | None
     ward: str | None
     latitude: float | None
     longitude: float | None
@@ -338,6 +432,7 @@ def _to_response(db: Session, complaint: Complaint, display_language: str | None
         display_summary=display_summary,
         photo_path=complaint.photo_path,
         status=complaint.status,
+        service_category=complaint.service_category,
         ward=complaint.ward,
         latitude=complaint.latitude,
         longitude=complaint.longitude,
@@ -473,6 +568,9 @@ class AreaComplaintSummary(BaseModel):
 
     id: int
     status: str
+    # ServiceCategory.value, or None -- not identity-revealing (unlike citizen_id/worker name),
+    # so exposing it here doesn't undercut this view's anonymization.
+    service_category: str | None
     display_text: str
     created_at: str
     status_updated_at: str
@@ -491,11 +589,20 @@ class AreaSummaryResponse(BaseModel):
     in_progress_count: int
     resolved_count: int
     complaints: list[AreaComplaintSummary]
+    # Total complaints matching `search` (or every complaint in the ward, if no search given) --
+    # NOT the same as len(complaints) once page/page_size are used, since that list is only the
+    # current page. Lets the frontend build real Prev/Next controls without a separate request.
+    total: int = 0
 
 
 @router.get("/area-summary", response_model=AreaSummaryResponse)
 def get_area_summary(
     lang: str | None = None,
+    status: str | None = None,
+    category: str | None = None,
+    search: str | None = None,
+    page: int | None = None,
+    page_size: int | None = None,
     db: Session = Depends(get_db),
     citizen: User = Depends(require_role("citizen")),
 ) -> AreaSummaryResponse:
@@ -503,26 +610,52 @@ def get_area_summary(
     Citizen-only (a worker's or admin's own "ward" means something different -- their
     operational area, not a place they live) -- requires the citizen to already have a ward set
     on their profile (signup or PATCH /auth/me), since there's nothing to key off otherwise.
+
+    `status`/`category`/`search`/`page`/`page_size`: same opt-in, additive filtering/pagination as
+    GET /complaints (see _parse_status_filter's/_parse_category_filter's/_paginate's docstrings)
+    -- applies only to the `complaints` list below, never to the pending/in_progress/resolved
+    stat counts. `status` accepts My Area's own three citizen-legible buckets as a comma-set --
+    e.g. "pending,assigned,accepted" for the "Pending" stat's own filter chip -- not just one raw
+    status.
+
+    `category` is different on purpose: picking a service (Waste/Water/Roads/Streetlights) is
+    meant to reframe the WHOLE mini-dashboard into "how's this one service doing," not just
+    narrow the list below -- LIVE-REPORTED REQUEST: "if I select Roads, it should also show like
+    a dashboard for Roads (how many pending, etc.)". So the stat counts stay ward-wide when
+    `category` is "all" (the original "unfiltered totals above, filtered list below" behavior,
+    same as every other dashboard's stat cards), but scope down to that one category's own
+    pending/in_progress/resolved breakdown once a specific category is picked -- `status`/`search`
+    still only narrow the list underneath that, never the stat counts themselves.
     """
     if not citizen.ward:
         raise HTTPException(status_code=400, detail="Set your ward in Settings to see your area's complaints.")
     if lang is not None and lang not in settings.SUPPORTED_LANGUAGES:
         raise HTTPException(status_code=400, detail=f"Unsupported language: {lang}")
     display_language = lang or citizen.preferred_language
+    statuses = _parse_status_filter(status)
+    categories = _parse_category_filter(category)
 
-    complaints = (
-        db.query(Complaint)
-        .filter(Complaint.ward == citizen.ward)
-        .order_by(Complaint.created_at.desc())
-        .all()
-    )
+    ward_query = db.query(Complaint).filter(Complaint.ward == citizen.ward)
+    stats_query = ward_query
+    if categories:
+        stats_query = stats_query.filter(Complaint.service_category.in_(categories))
 
     # "Pending" here groups every not-yet-started state (pending/assigned/accepted) into one
     # citizen-legible bucket -- the finer-grained worker-facing states aren't meaningful to a
-    # neighbor who just wants to know "hasn't started" vs "being worked on" vs "done".
-    pending_count = sum(1 for c in complaints if c.status in ("pending", "assigned", "accepted"))
-    in_progress_count = sum(1 for c in complaints if c.status == "in_progress")
-    resolved_count = sum(1 for c in complaints if c.status == "resolved")
+    # neighbor who just wants to know "hasn't started" vs "being worked on" vs "done". Computed
+    # as SQL aggregates, not a Python loop over a fetched-and-paginated list.
+    pending_count = stats_query.filter(Complaint.status.in_(("pending", "assigned", "accepted"))).count()
+    in_progress_count = stats_query.filter(Complaint.status == "in_progress").count()
+    resolved_count = stats_query.filter(Complaint.status == "resolved").count()
+
+    listing_query = stats_query
+    if statuses:
+        listing_query = listing_query.filter(Complaint.status.in_(statuses))
+    listing_query = _apply_complaint_search(listing_query, search, db, include_worker_name=False).order_by(Complaint.created_at.desc())
+    listing_query, total = _paginate(listing_query, page, page_size)
+    if total is None:
+        total = listing_query.count()
+    complaints = listing_query.all()
 
     summaries: list[AreaComplaintSummary] = []
     for c in complaints:
@@ -549,6 +682,7 @@ def get_area_summary(
             AreaComplaintSummary(
                 id=c.id,
                 status=c.status,
+                service_category=c.service_category,
                 display_text=display_text,
                 created_at=c.created_at.isoformat(),
                 status_updated_at=status_updated_at,
@@ -561,6 +695,7 @@ def get_area_summary(
         in_progress_count=in_progress_count,
         resolved_count=resolved_count,
         complaints=summaries,
+        total=total,
     )
 
 
@@ -601,6 +736,12 @@ def create_complaint(
     language: str = Form(...),
     text: str | None = Form(None),
     ward: str | None = Form(None),
+    # The Report an Issue wizard's own 3-layer classification (real model -> keyword -> manual
+    # picker, see ReportIssue.tsx) already resolves one of these before the citizen ever hits
+    # submit -- LIVE-REPORTED GAP: it was classified and then thrown away, never sent along with
+    # the rest of the form, so Complaint.service_category stayed unset for every form-filed
+    # complaint. Validated against the real enum below rather than trusted as free text.
+    category: str | None = Form(None),
     latitude: float | None = Form(None),
     longitude: float | None = Form(None),
     accuracy: float | None = Form(None),
@@ -639,6 +780,12 @@ def create_complaint(
     """
     if language not in settings.SUPPORTED_LANGUAGES:
         raise HTTPException(status_code=400, detail=f"Unsupported language: {language}")
+    parsed_category: ServiceCategory | None = None
+    if category is not None and category.strip():
+        try:
+            parsed_category = ServiceCategory(category.strip().upper())
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"Unknown category: {category}") from exc
 
     audio_chunks = [a.file.read() for a in audio if a.filename] if audio else None
     if not text and not audio_chunks:
@@ -654,6 +801,7 @@ def create_complaint(
             text=text,
             audio_chunks=audio_chunks,
             photo_path=photo_path,
+            category=parsed_category,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -742,11 +890,10 @@ def create_complaint(
 
     # A no-op when Sentry metrics aren't enabled -- see backend/services/metrics.py's own
     # docstring for why that gating lives there (the SDK's own enable_metrics flag is a confirmed
-    # no-op) rather than a settings check here too. Tagged by ward, not a service category --
-    # Complaint has no category field of its own (that only exists on AiRequestLog, a different
-    # model, for Ask Sarthi's own classification); ward is real, already on this model, and a
-    # more directly actionable breakdown for this app anyway ("which ward is generating the most
-    # complaints").
+    # no-op) rather than a settings check here too. Tagged by ward -- a more directly actionable
+    # breakdown for Sentry's own dashboards ("which ward is generating the most complaints") than
+    # category would be; category is still stored on the row itself (service_category above), just
+    # not also duplicated into this specific metric's attributes.
     sentry_metrics.count("complaint.created", 1, attributes={"ward": complaint.ward or "unknown"})
     _send_lifecycle_email_best_effort(db, complaint, "created")
 
@@ -755,8 +902,16 @@ def create_complaint(
 
 @router.get("", response_model=list[ComplaintResponse])
 def list_complaints(
+    response: Response,
     lang: str | None = None,
     worker_id: int | None = None,
+    status: str | None = None,
+    category: str | None = None,
+    search: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    page: int | None = None,
+    page_size: int | None = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> list[ComplaintResponse]:
@@ -774,10 +929,20 @@ def list_complaints(
     role filter above already applies and takes precedence) rather than a 403 — there's no
     security question to answer for a param that silently does nothing outside admin's own
     already-unrestricted "see everything" case.
+
+    `status`/`category`/`search`/`date_from`/`date_to`/`page`/`page_size`: real, server-side
+    filtering and pagination -- see _parse_status_filter's/_parse_category_filter's,
+    _apply_complaint_search's, and _paginate's own docstrings (`status`/`category` each accept a
+    comma-separated set, e.g. "pending,assigned,accepted", not just one value). `date_from`/
+    `date_to` are an inclusive calendar-day range over `created_at` (when the complaint was
+    filed). All are optional and additive; omitting page/page_size preserves the exact old
+    "every matching row, no header" behavior.
     """
     if lang is not None and lang not in settings.SUPPORTED_LANGUAGES:
         raise HTTPException(status_code=400, detail=f"Unsupported language: {lang}")
     display_language = lang or current_user.preferred_language
+    statuses = _parse_status_filter(status)
+    categories = _parse_category_filter(category)
 
     query = db.query(Complaint)
     if current_user.role == "citizen":
@@ -788,8 +953,69 @@ def list_complaints(
         query = query.filter(Complaint.assigned_worker_id == worker_id)
     # admins with no worker_id: everything, unchanged
 
-    complaints = query.order_by(Complaint.created_at.desc()).all()
+    if statuses:
+        query = query.filter(Complaint.status.in_(statuses))
+    if categories:
+        query = query.filter(Complaint.service_category.in_(categories))
+    if date_from is not None:
+        query = query.filter(Complaint.created_at >= datetime.combine(date_from, time.min))
+    if date_to is not None:
+        query = query.filter(Complaint.created_at < datetime.combine(date_to, time.min) + timedelta(days=1))
+    query = _apply_complaint_search(query, search, db)
+    query = query.order_by(Complaint.created_at.desc())
+
+    query, total = _paginate(query, page, page_size)
+    if total is not None:
+        response.headers["X-Total-Count"] = str(total)
+
+    complaints = query.all()
     return [_to_response(db, c, display_language=display_language) for c in complaints]
+
+
+class ServiceStatusCount(BaseModel):
+    """One row of the "complaints by service" breakdown (service category + status, each showing
+    a total) -- feeds the zoom-drilldown donut on the Worker/Admin dashboards. A service/status
+    combo with zero complaints is simply absent, not returned as a zero row, same convention
+    GET /complaints/by-location already uses."""
+
+    service_category: str
+    status: str
+    total: int
+
+
+@router.get("/by-service", response_model=list[ServiceStatusCount])
+def complaints_by_service(
+    worker_id: int | None = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> list[ServiceStatusCount]:
+    """Complaint counts grouped by service category AND status, scoped by role exactly like
+    list_complaints() above (citizens/workers see only their own; admins see everything, or one
+    worker's own complaints via `worker_id`). Registered before GET /{complaint_id} so "by-service"
+    is never captured as a complaint_id path param."""
+    query = db.query(Complaint.service_category, Complaint.status, func.count(Complaint.id))
+    if current_user.role == "citizen":
+        query = query.filter(Complaint.citizen_id == str(current_user.id))
+    elif current_user.role == "worker":
+        query = query.filter(Complaint.assigned_worker_id == current_user.id)
+    elif current_user.role == "admin" and worker_id is not None:
+        query = query.filter(Complaint.assigned_worker_id == worker_id)
+    # admins with no worker_id: everything, unchanged
+
+    rows = query.group_by(Complaint.service_category, Complaint.status).all()
+    # LIVE-REPORTED BUG: a complaint filed with no category set at all -- `category` is optional
+    # on POST /complaints (create_complaint), and older/incomplete submissions can genuinely have
+    # `service_category IS NULL` -- crashed this ENTIRE endpoint for every citizen/worker/admin
+    # with a 500, since ServiceStatusCount.service_category is a required string. The donut this
+    # feeds (ServiceDonutPanel.tsx) is built around SERVICE_CATEGORY_DEFS' fixed, known set of
+    # categories -- an uncategorized complaint doesn't belong in any of those slices, so it's
+    # correctly excluded here, not crashed on -- same "absent, not a zero row" convention this
+    # endpoint's own docstring already documents for a service/status combo with no complaints.
+    return [
+        ServiceStatusCount(service_category=service_category, status=status, total=total)
+        for service_category, status, total in rows
+        if service_category is not None
+    ]
 
 
 @router.get("/{complaint_id}", response_model=ComplaintDetailResponse)
