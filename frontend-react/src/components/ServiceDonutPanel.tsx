@@ -151,7 +151,12 @@ export default function ServiceDonutPanel({ rows, lang, statusLabel }: Props) {
     // ensureSliceEls -- appending unconditionally would leave old, stale `<title>`s stacking up
     // underneath each new one on every render.
     function setSliceTitle(el: SVGCircleElement, text: string) {
-      let titleEl = el.querySelector("title");
+      // TypeScript's tag-name-keyed querySelector overload maps the literal string "title" to
+      // HTMLTitleElement (the <head><title> tag) by default -- there's no separate SVG-aware
+      // overload for it, even though the element actually created/queried here is an SVG <title>
+      // (SVGTitleElement, appended via createElementNS below). An explicit generic corrects the
+      // inferred type to match what's actually on the page, rather than the wrong HTML one.
+      let titleEl = el.querySelector<SVGTitleElement>("title");
       if (!titleEl) {
         titleEl = document.createElementNS(NS, "title");
         el.appendChild(titleEl);
