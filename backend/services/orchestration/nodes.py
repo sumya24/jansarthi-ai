@@ -18,6 +18,21 @@ near my home is not working.") is itself a TYPE_A-shaped sentence. TYPE_B_SERVIC
 contact for X", "how do I apply for Y") still routes to `rag_flow_node`, unchanged. This
 necessarily changes several previously-tested TYPE_A cases -- see tests/test_ask_janmitra.py's
 updated assertions and the final report for the full list.
+
+**"Your saved city" feature (confirmed with the user before implementing)**: `complaint_flow_node`
+no longer files a complaint against ANY real, currently-staffed ward it happens to resolve, with
+no regard for whether that ward is even in the citizen's own registered city -- previously, typing
+"...in Pune" filed the complaint for Pune even for a citizen whose own Settings-saved city was,
+say, Bengaluru, with no acknowledgment of the mismatch, making the citizen's own saved location
+setting meaningless to this flow. The confirmation prompt now offers a third option, "Change
+location" (`_CONFIRMATION_OPTIONS`), which asks which ward/area to use instead; a REPLACEMENT
+that's in a genuinely different city than the citizen's own saved one is refused with an
+actionable message ("update your location in Settings first"), never silently filed. A
+replacement that's simply a DIFFERENT WARD in the SAME city is always allowed with no extra
+check -- this only guards against a genuine cross-city mismatch, mirroring the Report an Issue
+form's own ward-dropdown scoping (defaults to the citizen's own city, never forbids picking
+another ward within it). See `_wards_same_city`/`_ward_city` and the `awaiting_location_change`
+handling inside `complaint_flow_node` for the implementation.
 """
 
 from __future__ import annotations
@@ -44,6 +59,7 @@ from backend.services.intent_classifier import (
     classify,
     is_explicit_cancellation,
     is_explicit_confirmation,
+    is_explicit_location_change_request,
     looks_like_an_attempted_yes_or_no,
 )
 from backend.services.location_extractor import (
@@ -93,7 +109,7 @@ _CATEGORY_CLARIFICATION_OPTIONS = ["Garbage", "Water", "Road", "Streetlight", "O
 _LOCATION_CLARIFICATION_OPTIONS = ["Use current location", "Enter location", "Select location"]
 _IMAGE_NO_TEXT_OPTIONS = ["Report an issue", "What is this?"]
 _INTENT_AMBIGUOUS_OPTIONS = ["Report a problem", "What is the procedure?"]
-_CONFIRMATION_OPTIONS = ["Yes, submit it", "No, cancel"]
+_CONFIRMATION_OPTIONS = ["Yes, submit it", "No, cancel", "Change location"]
 
 # LIVE-REPORTED BUG: every quick-reply button's clicked VALUE is always one of these fixed,
 # hardcoded English strings (see `_localize_options`'s own docstring for why) -- never organic
@@ -511,11 +527,20 @@ _INTENT_AMBIGUOUS_CLARIFICATION_MARKERS = (
     "સમસ્યાની જાણ કરી રહ્યા છો",  # gu
     "কোনও সমস্যার রিপোর্ট করছেন",  # bn
 )
+# English only for now (no real Sarvam-translated fragments captured yet, unlike every other
+# group above -- see this module's own note on how those were verified) -- the explicit
+# `complaint_workflow_state` fast-path in `_last_assistant_turn_state`/`_last_turn_invites_
+# complaint_reply` is the PRIMARY signal for this one (every current caller echoes that field),
+# so a citizen replying in a non-English UI language is unaffected even before this marker text
+# has real translations; this is only the same safe fallback the other groups keep for an
+# older/non-compliant caller that predates the state field.
+_LOCATION_CHANGE_PROMPT_MARKERS = ("which ward or area would you like to use instead",)
 _COMPLAINT_FLOW_PROMPT_MARKERS = (
     _CATEGORY_CLARIFICATION_MARKERS
     + _LOCATION_CLARIFICATION_MARKERS
     + _CONFIRMATION_PROMPT_MARKERS
     + _INTENT_AMBIGUOUS_CLARIFICATION_MARKERS
+    + _LOCATION_CHANGE_PROMPT_MARKERS
 )
 
 
@@ -554,10 +579,13 @@ def _last_turn_invites_complaint_reply(conversation_history: list[dict] | None) 
     explicit_state = _last_assistant_turn_state(conversation_history)
     if explicit_state is not None:
         # DRAFT: category and/or location still being clarified. AWAITING_CONFIRMATION: the
-        # confirmation prompt itself. Both invite a reply that continues the SAME complaint flow;
-        # CONFIRMED/CANCELLED are terminal -- the next message starts fresh (see
-        # GraphState.complaint_workflow_state's own docstring for the full value list).
-        return explicit_state in ("DRAFT", "AWAITING_CONFIRMATION")
+        # confirmation prompt itself. AWAITING_LOCATION_CHANGE: the citizen picked "Change
+        # location" on that confirmation prompt and is now being asked which ward/area to use
+        # instead (see complaint_flow_node's own handling). All three invite a reply that
+        # continues the SAME complaint flow; CONFIRMED/CANCELLED are terminal -- the next message
+        # starts fresh (see GraphState.complaint_workflow_state's own docstring for the full value
+        # list).
+        return explicit_state in ("DRAFT", "AWAITING_CONFIRMATION", "AWAITING_LOCATION_CHANGE")
     return _last_assistant_turn_matches(conversation_history, _COMPLAINT_FLOW_PROMPT_MARKERS)
 
 
@@ -1616,11 +1644,22 @@ def _awaiting_confirmation(conversation_history: list[dict]) -> bool:
     return _last_assistant_turn_matches(conversation_history, _CONFIRMATION_PROMPT_MARKERS)
 
 
+def _awaiting_location_change(conversation_history: list[dict]) -> bool:
+    """Same two-tier shape as `_awaiting_confirmation` just above (explicit state first, marker-
+    text fallback second) -- true when the LAST turn is Sarthi's own "which ward or area would you
+    like to use instead?" prompt, so THIS turn's message should be read as the citizen's
+    REPLACEMENT location, not a fresh complaint description or a confirmation/cancellation reply."""
+    explicit_state = _last_assistant_turn_state(conversation_history)
+    if explicit_state is not None:
+        return explicit_state == "AWAITING_LOCATION_CHANGE"
+    return _last_assistant_turn_matches(conversation_history, _LOCATION_CHANGE_PROMPT_MARKERS)
+
+
 # Matches `_build_confirmation_prompt`'s own EXACT summary text (see that function) -- DOTALL
 # because `complaint_text` can itself contain a literal newline (the "[Attached photo shows: ...]"
 # suffix `input_processing_node` appends is on its own blank-line-separated line).
 _CONFIRMATION_PROMPT_TEXT_PATTERN = re.compile(
-    r'Your complaint would be about (?P<category_label>.+?) in ".*?":\s*"(?P<text>.+?)"\.\s*'
+    r'Your complaint would be about (?P<category_label>.+?) in "(?P<ward>.*?)":\s*"(?P<text>.+?)"\.\s*'
     r"Would you like me to submit this complaint\?",
     re.DOTALL,
 )
@@ -1653,6 +1692,33 @@ def _recover_from_confirmation_prompt_text(state: GraphState) -> tuple[ServiceCa
         return None, None
     category = _CATEGORY_LABEL_TO_ENUM.get(match.group("category_label").strip())
     return category, match.group("text").strip()
+
+
+def _recover_ward_from_confirmation_prompt_text(state: GraphState) -> str | None:
+    """LOCATION-CONFIRMATION FEATURE: the ward this complaint would ACTUALLY be filed under is
+    whatever the last confirmation prompt itself echoed back and asked the citizen to confirm --
+    the single most authoritative source there is, since it's literally the text the citizen just
+    said "yes" to. Needed specifically for a citizen who used "Change location" to switch wards:
+    without this, re-deriving the ward from scratch via `_resolve_worker_ward_text`'s own
+    conversation-history scan tier can pick the WRONG one when two real workers share the same
+    city -- that scan matches on CITY name substring per worker (see LocationResolver.
+    find_worker_ward_text's own docstring; deliberately left untouched, see this codebase's
+    instruction to preserve it), so it can return an EARLIER, no-longer-relevant same-city ward
+    instead of the one actually just confirmed. Checked FIRST, before that broader scan ever runs,
+    whenever a confirmation prompt is what's being replied to -- not just for the location-change
+    case, since the same worked example ("does the confirmed ward always match what was shown")
+    should hold true unconditionally, not just for this new feature."""
+    history = state.get("conversation_history") or []
+    if not history:
+        return None
+    last = history[-1]
+    if last.get("role") != "assistant":
+        return None
+    match = _CONFIRMATION_PROMPT_TEXT_PATTERN.search(last.get("content") or "")
+    if not match:
+        return None
+    ward = match.group("ward").strip()
+    return ward or None
 
 
 def _recover_complaint_draft_from_history(state: GraphState) -> tuple[ServiceCategory | None, str]:
@@ -1853,6 +1919,37 @@ def _resolve_worker_ward_text(
     return worker_ward_text, resolved_ward, gps_resolved
 
 
+def _ward_city(ward_text: str | None) -> str | None:
+    """Extracts the city from a real ward string's "{ward} — {locality}, {city}" convention
+    (composeWard() in HomeLocationPicker.tsx/WorkerLocationPicker.tsx, and this same backend's own
+    create_worker()/update_worker()) -- the text after the LAST comma, same as frontend
+    lib/wardFilter.ts's own parsing. Returns None for text with no comma (a ward strings without
+    this convention, e.g. a placeholder test fixture) -- "can't tell" is a real, honest answer
+    here, not an error."""
+    if not ward_text or "," not in ward_text:
+        return None
+    city = ward_text.rsplit(",", 1)[-1].strip()
+    return city or None
+
+
+def _wards_same_city(a: str, b: str) -> bool:
+    """City-aware match between two ward strings, used only by complaint_flow_node's location-
+    change handling to decide whether a citizen-picked replacement ward belongs to their own
+    saved city. Same case-insensitive PREFIX match as frontend lib/wardFilter.ts's citiesMatch --
+    kept in sync with that file; if one changes, update the other -- specifically to handle
+    Karnataka's real "Bengaluru Urban" (a citizen's own registered city, from the Settings
+    cascade) vs. plain "Bengaluru" (every real ward string's own suffix) both meaning the same
+    city. Deliberately returns True (i.e. "allow it, don't block") whenever EITHER side's city
+    can't be parsed at all -- see `_ward_city` -- rather than treating "we couldn't tell" as
+    grounds to block a citizen from changing their location; only a CONFIRMED mismatch between two
+    known cities is treated as one."""
+    city_a, city_b = _ward_city(a), _ward_city(b)
+    if not city_a or not city_b:
+        return True
+    na, nb = city_a.lower(), city_b.lower()
+    return na == nb or na.startswith(nb) or nb.startswith(na)
+
+
 def _resolve_own_ward_worker_text(deps: GraphDeps, ctx: RequestContext) -> tuple[str | None, Any]:
     """The citizen's OWN registered ward (see models.User.ward), matched against a real worker --
     TARGETED SAFETY FIX (production-safety review): deliberately kept OUT of
@@ -1941,6 +2038,12 @@ def complaint_flow_node(state: GraphState, config: RunnableConfig) -> dict[str, 
     history = state.get("conversation_history") or []
 
     awaiting_confirmation = _awaiting_confirmation(history)
+    # LOCATION-CONFIRMATION FEATURE: true when the LAST turn was this function's own "which ward
+    # or area would you like to use instead?" prompt (see the "Change location" handling below) --
+    # this turn's text is therefore the citizen's REPLACEMENT location, never a fresh complaint
+    # description. Uses the same two-tier check `_awaiting_confirmation` does (see
+    # `_awaiting_location_change`'s own docstring).
+    awaiting_location_change = _awaiting_location_change(history)
 
     if awaiting_confirmation and is_explicit_cancellation(text):
         # LIVE-REPORTED REQUEST: a citizen who cancelled a photo-attached complaint, then
@@ -1974,6 +2077,25 @@ def complaint_flow_node(state: GraphState, config: RunnableConfig) -> dict[str, 
 
     confirmed = awaiting_confirmation and is_explicit_confirmation(text)
 
+    # LOCATION-CONFIRMATION FEATURE: a citizen who picks "Change location" on the confirmation
+    # prompt is neither confirming nor cancelling -- they want to keep the same complaint but file
+    # it somewhere else. Checked BEFORE the fresh-complaint-signal override just below (so a bare
+    # "Change location" click, which itself isn't complaint-shaped text, doesn't fall through to
+    # the harmless-but-wrong "ask for a category all over again" path) and only when this isn't
+    # already a confirm (a "yes" is always unambiguous and takes priority).
+    if awaiting_confirmation and not confirmed and is_explicit_location_change_request(text):
+        question = "Which ward or area would you like to use instead?"
+        return {
+            "response_text": _localize(question, state, config),
+            "follow_up_required": True,
+            "follow_up_question": question,
+            "follow_up_options": _LOCATION_CLARIFICATION_OPTIONS,
+            "follow_up_options_labels": _localize_options(_LOCATION_CLARIFICATION_OPTIONS, state, config),
+            "routed_to": "NONE_CLARIFICATION_NEEDED",
+            "sources": [],
+            "complaint_workflow_state": "AWAITING_LOCATION_CHANGE",
+        }
+
     # CONVERSATION & REQUEST/RESPONSE ALIGNMENT AUDIT: a reply to Sarthi's own confirmation
     # prompt is normally never itself the complaint description (see the comment on the `else`
     # branch below) -- EXCEPT when the reply is confidently, independently complaint-shaped on
@@ -2001,6 +2123,16 @@ def complaint_flow_node(state: GraphState, config: RunnableConfig) -> dict[str, 
         # itself the complaint description (whether it's "yes, submit it", "no", or an ambiguous
         # "okay"). Recover the real description/category from history instead of the OLD
         # single-line `text = state.get("normalized_message")...` this replaces.
+        category, complaint_text = _recover_complaint_draft_from_history(state)
+    elif awaiting_location_change:
+        # Same reasoning as the `awaiting_confirmation` branch just above: this turn's text is the
+        # citizen's REPLACEMENT location (e.g. "Ward 5, Kothrud, Pune"), never the complaint
+        # description -- recover the real one the same way. `_recover_complaint_draft_from_history`
+        # already handles this correctly with no changes needed: it scans backward through USER
+        # turns for one that `classify()`s as a real complaint, and a bare location string never
+        # does, so it's silently skipped over on the way to the genuine original turn further back
+        # -- the exact same behavior that already lets a plain "yes, submit it" reply skip past
+        # itself to find the real description.
         category, complaint_text = _recover_complaint_draft_from_history(state)
     else:
         category_value = state.get("service_category")
@@ -2058,13 +2190,75 @@ def complaint_flow_node(state: GraphState, config: RunnableConfig) -> dict[str, 
     # enough to proceed" -- let a complaint through for a city (Mohali) with a real name but zero
     # seeded workers, which then sat unassigned exactly like (1) did.
     #
-    # Correct fix: only proceed when a REAL, CURRENTLY-STAFFED ward can be found for this
-    # complaint -- see `_resolve_worker_ward_text` above. If none of its sources hold, this is
-    # honest instead of silently broken: says plainly that this area isn't covered yet, and does
-    # NOT create an unassignable complaint or repeat the same question forever.
-    worker_ward_text, resolved_ward, gps_resolved = _resolve_worker_ward_text(deps, ctx, state, complaint_text)
-
-    has_real_location = worker_ward_text is not None
+    # LOCATION-CONFIRMATION FEATURE: a reply to the "which ward or area would you like to use
+    # instead?" prompt is handled entirely separately from the normal resolution below -- `text`
+    # here is the citizen's REPLACEMENT location, so it (or an explicit `ctx.location_text` from
+    # the "Use current location"/"Select location" UI, checked first, same priority order as
+    # everywhere else in this file) is what gets resolved, not `complaint_text` (the ORIGINAL
+    # complaint description, recovered above). A citizen's own saved city -- `ctx.user.ward`, from
+    # their AUTHENTICATED account row, never client-suppliable -- is what a genuine city SWITCH
+    # gets checked against here. See this module's docstring section on the "your saved city"
+    # feature this closes: filing for a DIFFERENT ward inside the SAME city is always allowed (no
+    # check needed -- the citizen's own city is the default, not the only option, exactly like the
+    # Report an Issue form's own ward dropdown scoping); a REAL, currently-staffed ward that
+    # resolves to a genuinely DIFFERENT city is refused, with an honest, actionable message,
+    # instead of silently filing under a city the citizen's own profile disagrees with.
+    if awaiting_location_change:
+        location_hint = ctx.location_text or text
+        new_ward_text, new_resolved_ward, _ = _resolve_worker_ward_text(deps, ctx, state, location_hint)
+        if new_ward_text is None:
+            # Same honest "not currently served" wording the rest of this function already uses
+            # for an unresolvable location -- re-asks rather than silently falling back to
+            # anything, since a citizen actively trying to CHANGE their location must never have
+            # that attempt silently ignored.
+            honest_text = (
+                "I'm sorry, Sarthi doesn't currently have workers set up to handle complaints in "
+                f"\"{location_hint.strip()}\". Please try a different ward or area."
+            )
+            question = "Which ward or area would you like to use instead?"
+            return {
+                "response_text": _localize(honest_text + " " + question, state, config),
+                "follow_up_required": True,
+                "follow_up_question": question,
+                "follow_up_options": _LOCATION_CLARIFICATION_OPTIONS,
+                "follow_up_options_labels": _localize_options(_LOCATION_CLARIFICATION_OPTIONS, state, config),
+                "routed_to": "NONE_CLARIFICATION_NEEDED",
+                "sources": [],
+                "complaint_workflow_state": "AWAITING_LOCATION_CHANGE",
+            }
+        if ctx.user.ward and not _wards_same_city(new_ward_text, ctx.user.ward):
+            own_city = _ward_city(ctx.user.ward) or ctx.user.ward
+            honest_text = (
+                f"\"{new_ward_text}\" is not in your saved location ({own_city}). To report an "
+                "issue in a different city, please update your location in Settings first."
+            )
+            return {
+                "response_text": _localize(honest_text, state, config),
+                "routed_to": "NONE_OUT_OF_SCOPE",
+                "sources": [],
+                "complaint_workflow_state": "CANCELLED",
+            }
+        worker_ward_text, resolved_ward, gps_resolved = new_ward_text, new_resolved_ward, None
+        has_real_location = True
+    else:
+        # LOCATION-CONFIRMATION FEATURE: when the last turn WAS a confirmation prompt (about to be
+        # replied to with "yes"/"no"/something else), the ward it already echoed is the single
+        # most authoritative source -- see `_recover_ward_from_confirmation_prompt_text`'s own
+        # docstring for the real bug this closes (re-deriving the ward from scratch via the scan
+        # below can pick the WRONG same-city worker once a citizen has used "Change location").
+        # Tried first; falls through to the normal resolution unchanged for every OTHER case
+        # (no prior confirmation prompt at all, or its text didn't match for some reason).
+        worker_ward_text = _recover_ward_from_confirmation_prompt_text(state) if awaiting_confirmation else None
+        if worker_ward_text is not None:
+            resolved_ward = deps.location_resolver.resolve_ward_by_text(ctx.db, worker_ward_text)
+            gps_resolved = None
+        else:
+            # Correct fix: only proceed when a REAL, CURRENTLY-STAFFED ward can be found for this
+            # complaint -- see `_resolve_worker_ward_text` above. If none of its sources hold, this is
+            # honest instead of silently broken: says plainly that this area isn't covered yet, and does
+            # NOT create an unassignable complaint or repeat the same question forever.
+            worker_ward_text, resolved_ward, gps_resolved = _resolve_worker_ward_text(deps, ctx, state, complaint_text)
+        has_real_location = worker_ward_text is not None
     if not has_real_location:
         # A place was already established from ANY source -- explicit `ctx.location_text`, the
         # RAG gazetteer's own city/state match on this or an earlier turn (`location_city`/

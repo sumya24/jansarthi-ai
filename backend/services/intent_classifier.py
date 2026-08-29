@@ -779,6 +779,21 @@ def is_explicit_cancellation(text: str) -> bool:
     return first_word in no_words
 
 
+def is_explicit_location_change_request(text: str) -> bool:
+    """Deterministic counterpart to is_explicit_confirmation/is_explicit_cancellation above, for
+    the third quick-reply option on the complaint confirmation prompt ("Change location" -- see
+    orchestration/nodes.py's _CONFIRMATION_OPTIONS). Only ever matches the literal button value --
+    deliberately NOT a fuzzy/multilingual phrase list like the two functions above, because every
+    quick-reply button's clicked value is always one of these fixed, hardcoded English strings
+    regardless of the citizen's own UI language (see nodes.py's _localize_options docstring for
+    why) -- a citizen who instead TYPES something like "I want to use a different ward" isn't
+    recognized here and simply isn't treated as a location-change request, the same safe-fails-
+    closed direction every check in this module already takes (a miss costs one extra round-trip,
+    never a wrong/skipped action)."""
+    normalized = _normalize_for_confirmation(text)
+    return normalized == "change location"
+
+
 def looks_like_an_attempted_yes_or_no(text: str) -> bool:
     """LIVE-REPORTED BUG (voice input): "Yes, can you submit please?" -- a natural, SPOKEN way to
     confirm, unlike the terser typed/button "yes, submit it" -- ends in "?", so

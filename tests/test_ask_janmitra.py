@@ -739,6 +739,93 @@ def test_does_not_substitute_home_ward_in_complaint_when_message_names_an_unreco
     assert db_session().query(Complaint).count() == 0
 
 
+# --- "Your saved city" feature: Change location on the confirmation prompt ---
+
+
+def test_confirmation_prompt_offers_a_change_location_option(client, monkeypatch, make_worker, make_citizen):
+    _install_real_service(monkeypatch)
+    make_worker(phone="9100099010", ward="Ward 3 — Indiranagar, Bengaluru")
+    token, _ = make_citizen(phone="9100000040", ward="Ward 3 — Indiranagar, Bengaluru")
+    resp = _ask(client, token, "Street light not working near my house.")
+    body = resp.json()
+    assert body["routed_to"] == "NONE_AWAITING_CONFIRMATION"
+    assert "Change location" in body["follow_up_options"]
+
+
+def test_change_location_to_a_different_ward_in_the_same_city_is_allowed(
+    client, monkeypatch, db_session, make_worker, make_citizen
+):
+    """A citizen whose own saved city IS a real, staffed one can still switch to a DIFFERENT ward
+    within that SAME city -- no block, no extra confirmation needed beyond the normal one -- this
+    only guards against a genuine cross-city mismatch (see nodes.py's module docstring on this
+    feature)."""
+    _install_real_service(monkeypatch)
+    make_worker(phone="9100099011", ward="Ward 3 — Indiranagar, Bengaluru")
+    make_worker(phone="9100099012", ward="Ward 7 — Koramangala, Bengaluru")
+    token, _ = make_citizen(phone="9100000041", ward="Ward 3 — Indiranagar, Bengaluru")
+
+    turn1 = _ask(client, token, "Street light not working near my house.")
+    body1 = turn1.json()
+    assert "Change location" in body1["follow_up_options"]
+
+    history = [
+        ConversationTurn(role="user", content="Street light not working near my house.").model_dump(),
+        ConversationTurn(role="assistant", content=body1["answer"]).model_dump(),
+    ]
+    turn2 = _ask(client, token, "Change location", conversation_history=history)
+    body2 = turn2.json()
+    assert body2["complaint_workflow_state"] == "AWAITING_LOCATION_CHANGE"
+    assert "which ward" in body2["answer"].lower()
+
+    history.append(ConversationTurn(role="user", content="Change location").model_dump())
+    history.append(ConversationTurn(role="assistant", content=body2["answer"]).model_dump())
+    turn3 = _ask(client, token, "Ward 7 — Koramangala, Bengaluru", conversation_history=history)
+    body3 = turn3.json()
+    # Same-city switch: allowed, a FRESH confirmation prompt for the new ward -- not blocked, and
+    # not yet filed (still needs its own explicit confirmation).
+    assert body3["complaint_workflow_state"] == "AWAITING_CONFIRMATION"
+    assert "koramangala" in body3["answer"].lower()
+    assert db_session().query(Complaint).count() == 0
+
+    history.append(ConversationTurn(role="user", content="Ward 7 — Koramangala, Bengaluru").model_dump())
+    history.append(ConversationTurn(role="assistant", content=body3["answer"]).model_dump())
+    turn4 = _ask(client, token, "Yes, submit it.", conversation_history=history)
+    body4 = turn4.json()
+    assert body4["routed_to"] == "COMPLAINT_CREATED"
+    complaint = db_session().query(Complaint).filter(Complaint.id == body4["complaint_id"]).first()
+    assert complaint is not None
+    assert complaint.ward == "Ward 7 — Koramangala, Bengaluru"
+
+
+def test_change_location_to_a_different_city_is_blocked(client, monkeypatch, db_session, make_worker, make_citizen):
+    """The core of this feature: a citizen whose saved city is Bengaluru cannot switch a
+    complaint to a genuinely different city (Pune) just by naming it -- must be told to update
+    their own saved location in Settings first, and the complaint must never be created."""
+    _install_real_service(monkeypatch)
+    make_worker(phone="9100099013", ward="Ward 3 — Indiranagar, Bengaluru")
+    make_worker(phone="9100099014", ward="Ward 22 — Kothrud, Pune")
+    token, _ = make_citizen(phone="9100000042", ward="Ward 3 — Indiranagar, Bengaluru")
+
+    turn1 = _ask(client, token, "Street light not working near my house.")
+    body1 = turn1.json()
+
+    history = [
+        ConversationTurn(role="user", content="Street light not working near my house.").model_dump(),
+        ConversationTurn(role="assistant", content=body1["answer"]).model_dump(),
+    ]
+    turn2 = _ask(client, token, "Change location", conversation_history=history)
+    body2 = turn2.json()
+
+    history.append(ConversationTurn(role="user", content="Change location").model_dump())
+    history.append(ConversationTurn(role="assistant", content=body2["answer"]).model_dump())
+    turn3 = _ask(client, token, "Ward 22 — Kothrud, Pune", conversation_history=history)
+    body3 = turn3.json()
+    assert body3["complaint_workflow_state"] == "CANCELLED"
+    assert "bengaluru" in body3["answer"].lower()
+    assert "settings" in body3["answer"].lower()
+    assert db_session().query(Complaint).count() == 0
+
+
 def test_does_not_recover_a_ward_from_an_earlier_unrelated_filed_complaints_own_echoed_text(
     client, monkeypatch, db_session, make_citizen, make_worker
 ):
