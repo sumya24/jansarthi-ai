@@ -709,19 +709,24 @@ def test_does_not_substitute_home_ward_when_message_names_an_unrecognized_place(
     misleading; see location_node's own `location_message_names_unresolved_place` and
     location_extractor.py's looks_like_it_names_an_unrecognized_place.
 
-    `follow_up_required` is False, not True -- confirmed against the real response body: this
-    specific "new water connection" question is caught by rag_flow_node's own dedicated
-    WATER_NEW_-prefix filter (see that node's own comment on the Nagpur leak-repair false-match
-    this closes), which returns a direct, final "no new-connection record exists here" answer
-    rather than asking a follow-up -- there's nothing a follow-up question would usefully
-    clarify once the location genuinely isn't covered."""
+    `follow_up_required` is True, not `insufficient_knowledge` -- confirmed against the real
+    response body after PR #47 ("Ask Sarthi: only file a complaint under the citizen's own saved
+    city") landed on `main`: an unrecognized place name now routes to a genuine location
+    clarification question (`follow_up_question: "What is the location?"`, with "Use current
+    location"/"Enter location"/"Select location" options) instead of the direct, final
+    "no new-connection record exists here" answer this test originally asserted (that
+    WATER_NEW_-prefix-filter path in `rag_flow_node` is only reached once a location IS resolved
+    -- an unresolved one now asks for clarification first, before RAG ever runs). This is a real,
+    deliberate behavior change from that PR, not a regression -- the test's own core assertions
+    (no silent Mohali substitution, no misleading "couldn't recognize" wording) are unaffected
+    and still the actual point of this test."""
     _install_real_service(monkeypatch)
     token, _ = make_citizen(phone="9100000030", ward="Ward 5 — Sector 71, Mohali")
     resp = _ask(client, token, "What is the process for a new water connection in Nashik?")
     body = resp.json()
     assert body["location"].get("city") != "Sahibzada Ajit Singh Nagar (Mohali)"
     assert "mohali" not in body["answer"].lower()
-    assert body["insufficient_knowledge"] is True
+    assert body["follow_up_required"] is True
     assert "couldn't recognize" not in body["answer"].lower()
     assert "don't have information for this area" in body["answer"].lower() or "don't currently have reliable information" in body["answer"].lower()
 
