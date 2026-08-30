@@ -38,6 +38,16 @@ logger = logging.getLogger(__name__)
 _SARVAM_INPUT_COST_PER_TOKEN_INR = 29.28 / 1_000_000
 _SARVAM_OUTPUT_COST_PER_TOKEN_INR = 73.2 / 1_000_000
 
+# This task is grounded-context QA, not creative generation -- the system prompt already demands
+# the model state only facts present in the retrieved context (prompts/ask_janmitra_system_prompt.txt),
+# and a lower temperature makes its output more consistently literal to that context rather than
+# sampling more freely around it. Confirmed `temperature` is a real, accepted parameter for this
+# exact model via the installed sarvamai SDK's own ChatClient.completions() signature -- not every
+# reasoning model honors this parameter (some ignore/reject it), so this was checked directly
+# rather than assumed. Deliberately not also touching `top_p` in the same change -- moving one
+# sampling parameter at a time keeps any observed quality effect attributable to a specific cause.
+_ANSWER_TEMPERATURE = 0.2
+
 
 class AnswerGenerationService:
     def __init__(self) -> None:
@@ -104,6 +114,7 @@ class AnswerGenerationService:
                 ],
                 max_tokens=settings.LLM_MAX_TOKENS,
                 reasoning_effort="low",
+                temperature=_ANSWER_TEMPERATURE,
             )
             choice = response.choices[0]
             content = choice.message.content

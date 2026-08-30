@@ -1044,3 +1044,66 @@ def classify(question: str) -> ClassificationResult:
         matched_keywords=[],
         requests_new_connection=requests_new_connection,
     )
+
+
+# --- Multi-category detection (see orchestration/nodes.py's agent_flow_node, and
+# docs/ask_janmitra_orchestration.md §17 for the future-agent integration point this fills) ------
+#
+# `classify()` above deliberately picks exactly ONE category per message ("first match wins" --
+# see `_CATEGORY_KEYWORDS`'s own top comment) because most real messages genuinely name one issue,
+# and because several categories share ambiguous location-context words (a streetlight complaint
+# commonly names the ROAD it's on). `detect_multiple_categories()` is a SEPARATE, narrower check
+# used only to gate the multi-category supervisor node -- it must never be used in place of
+# `classify()` for ordinary single-category routing, and is deliberately conservative (biased
+# toward missing a real multi-category message rather than false-triggering on an ordinary
+# single-issue one, since the supervisor path is more expensive and structurally different).
+#
+# The conservatism is concrete, not just stated: ROADS_POTHOLES here uses a NARROWED keyword set
+# (English "pothole"/"civil work", not the bare "road" `_CATEGORY_KEYWORDS` also matches on) --
+# reusing the bare "road" family would make almost every streetlight-on-a-road complaint look
+# like a "streetlight + roads" multi-category message, which it structurally is not (see
+# `_CATEGORY_KEYWORDS`'s own STREETLIGHTS-vs-ROADS_POTHOLES collision comment -- this is that same
+# collision, just relevant to a different check). Non-English pothole-specific words
+# (hi "गड्ढा"/"गड्ढे", mr "खड्डा"/"खड्ड्या", gu "ખાડો"/"ખાડાની", bn "গর্ত") are unaffected -- none
+# of them double as a generic "road" location word, only the bare "road" family words themselves
+# are dropped here.
+#
+# KNOWN GAP (code review, honestly documented rather than guessed around): Odia has none of
+# this -- `_CATEGORY_KEYWORDS[ROADS_POTHOLES]["or"]` was ONLY ever the bare "ରାସ୍ତା" ("road"),
+# never a separate pothole-specific word, so dropping it here leaves Odia's list empty. This
+# means an Odia-speaking citizen reporting a pothole alongside another issue in one message will
+# never trigger the multi-category path today, while the identical message in en/hi/mr/gu/bn
+# would. NOT fixed by guessing an Odia word here -- every other language-specific keyword in this
+# file was added only after live-testing a real reported phrase (see e.g. the STREETLIGHTS
+# ଆଲୁଅ/ଆଲୋକ entries above), and no verified Odia pothole-specific word exists anywhere in this
+# codebase's own knowledge base or labeled test data (checked directly). Guessing one here risks
+# a wrong or unnatural translation shipping silently, which is worse than the honest gap this
+# comment documents. Needs a real, live-verified Odia phrase before this list can safely grow.
+_MULTI_CATEGORY_KEYWORDS: dict[ServiceCategory, dict[str, list[str]]] = {
+    **{cat: kws for cat, kws in _CATEGORY_KEYWORDS.items() if cat != ServiceCategory.ROADS_POTHOLES},
+    ServiceCategory.ROADS_POTHOLES: {
+        # BUG FIX (code review): "civil work" dropped -- matched as a bare, unbounded substring
+        # (via _any_match's `kw.lower() in lowered`), it isn't actually pothole-specific and
+        # false-triggered the multi-category gate for ordinary single-issue messages that merely
+        # mention an unrelated "civil works department/office" alongside a real complaint (e.g.
+        # "The streetlight near the civil works department office is broken" -- one issue,
+        # wrongly detected as two). "pothole" alone is already unambiguous and sufficient for
+        # this deliberately conservative gate (see this section's own top comment).
+        "en": ["pothole"],
+        "hi": ["गड्ढा", "गड्ढे"], "mr": ["खड्डा", "खड्ड्या"],
+        "or": [],  # KNOWN GAP -- see this section's top comment; no verified Odia word yet
+        "gu": ["ખાડો", "ખાડાની"], "bn": ["গর্ত"],
+    },
+}
+
+
+def detect_multiple_categories(question: str) -> list[ServiceCategory]:
+    """Returns every `ServiceCategory` with at least one real, unambiguous keyword match in
+    `question` -- empty if none or exactly one matched (a single match isn't a multi-category
+    signal at all; see this section's own top comment for why). Deterministic keyword matching
+    only, same as every other classification decision in this file -- no LLM decides this."""
+    matched = [
+        cat for cat, lang_keywords in _MULTI_CATEGORY_KEYWORDS.items()
+        if _any_match(question, lang_keywords)
+    ]
+    return matched if len(matched) >= 2 else []

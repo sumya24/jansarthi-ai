@@ -8,6 +8,7 @@ import wave
 
 import httpx
 from sarvamai import SarvamAI
+from tenacity import retry, retry_if_not_exception_type, stop_after_attempt, wait_exponential
 
 from backend.config import settings
 
@@ -20,6 +21,27 @@ class AIServiceError(Exception):
     Callers should catch this and return a clear error to the user instead
     of letting the failure crash the request.
     """
+
+
+# Retry policy for the three real outbound Sarvam calls below (transcribe/synthesize/translate) --
+# NOT applied to identify_language(), which is already deliberately fail-open (see its own
+# docstring) and gains little from a retry. 3 attempts total (1 original + 2 retries), short
+# exponential backoff (0.5s, then 1s, capped at 2s) -- fast/non-reasoning calls (STT/TTS/
+# translation, unlike the reasoning-model callers), so there's no reason to wait long between
+# attempts. `retry_if_not_exception_type(AIServiceError)` is the important detail: this decorator
+# wraps only the raw SDK call itself (see each method below), so the only exceptions it ever sees
+# are the SDK's own (network/timeout/5xx) -- excluding AIServiceError here is defense-in-depth
+# against ever retrying something already identified as non-retryable (e.g. a missing API key),
+# not something expected to trigger in practice given where the decorator is applied.
+# `reraise=True` means after the final attempt fails, the original exception propagates unchanged
+# (not wrapped in tenacity's own RetryError), so each method's existing `except Exception as exc:
+# raise AIServiceError(...) from exc` still fires exactly as it did before this was added.
+_retry_sarvam_call = retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=0.5, max=2),
+    retry=retry_if_not_exception_type(AIServiceError),
+    reraise=True,
+)
 
 
 # LIVE-REPORTED BUG: Sarvam's TTS (bulbul:v2) silently truncates long input text with NO error and
@@ -114,6 +136,15 @@ class SarvamClient:
             raise AIServiceError("Sarvam AI is not configured (missing SARVAM_API_KEY).")
         return self._client
 
+    @_retry_sarvam_call
+    def _call_transcribe(self, client: SarvamAI, audio_file: io.BytesIO, language_code: str):
+        # seek(0) before every attempt, including retries: audio_file is a BytesIO the SDK reads
+        # from to build the multipart upload -- a failed first attempt can leave its read cursor
+        # partway through (or at the end), and retrying without rewinding would silently upload an
+        # empty/truncated file on the second attempt instead of actually retrying the real request.
+        audio_file.seek(0)
+        return client.speech_to_text.transcribe(file=audio_file, model="saaras:v3", language_code=language_code)
+
     def transcribe(self, audio_bytes: bytes, language_code: str) -> str:
         """Transcribe spoken audio to text using Sarvam's speech-to-text model.
 
@@ -134,11 +165,7 @@ class SarvamClient:
 
             audio_file = io.BytesIO(audio_bytes)
             audio_file.name = "complaint.wav"
-            response = client.speech_to_text.transcribe(
-                file=audio_file,
-                model="saaras:v3",
-                language_code=language_code,
-            )
+            response = self._call_transcribe(client, audio_file, language_code)
             transcript = getattr(response, "transcript", None) or ""
             logger.info("STT completed (language=%s)", language_code)
             return transcript
@@ -174,6 +201,20 @@ class SarvamClient:
             logger.warning("Language identification failed, falling back to caller-supplied language: %s", exc)
             return None
 
+    @_retry_sarvam_call
+    def _call_synthesize(self, client: SarvamAI, text: str, language_code: str, speaker: str, model: str):
+        return client.text_to_speech.convert(
+            text=text,
+            language_code=language_code,
+            speaker=speaker,
+            model=model,
+            output_audio_codec="wav",
+            # Own, longer read timeout -- see settings.SARVAM_TTS_READ_TIMEOUT_SECONDS' docstring:
+            # synthesis time scales with text length, unlike the fast STT/translation calls this
+            # client's shared timeout was originally tuned for.
+            request_options={"timeout_in_seconds": int(settings.SARVAM_TTS_READ_TIMEOUT_SECONDS)},
+        )
+
     def synthesize_speech(
         self, text: str, language_code: str, speaker: str | None = None, model: str | None = None
     ) -> str:
@@ -194,17 +235,7 @@ class SarvamClient:
         client = self._require_client()
         logger.info("TTS started (language=%s)", language_code)
         try:
-            response = client.text_to_speech.convert(
-                text=text,
-                language_code=language_code,
-                speaker=speaker or settings.TTS_SPEAKER,
-                model=model or settings.TTS_MODEL,
-                output_audio_codec="wav",
-                # Own, longer read timeout -- see settings.SARVAM_TTS_READ_TIMEOUT_SECONDS'
-                # docstring: synthesis time scales with text length, unlike the fast STT/
-                # translation calls this client's shared timeout was originally tuned for.
-                request_options={"timeout_in_seconds": int(settings.SARVAM_TTS_READ_TIMEOUT_SECONDS)},
-            )
+            response = self._call_synthesize(client, text, language_code, speaker or settings.TTS_SPEAKER, model or settings.TTS_MODEL)
             audios = getattr(response, "audios", None) or []
             if not audios:
                 raise AIServiceError("Text-to-speech service returned no audio.")
@@ -251,6 +282,15 @@ class SarvamClient:
         combined = _concatenate_wav_audio(audio_chunks)
         return base64.b64encode(combined).decode("ascii")
 
+    @_retry_sarvam_call
+    def _call_translate(self, client: SarvamAI, text: str, source_language_code: str, target_language_code: str, model: str):
+        return client.text.translate(
+            input=text,
+            source_language_code=source_language_code,
+            target_language_code=target_language_code,
+            model=model,
+        )
+
     def translate(self, text: str, source_language_code: str, target_language_code: str) -> str:
         """Translate text between two languages using Sarvam's translation model.
 
@@ -279,12 +319,7 @@ class SarvamClient:
             "Translation started (%s -> %s, model=%s)", source_language_code, target_language_code, model
         )
         try:
-            response = client.text.translate(
-                input=text,
-                source_language_code=source_language_code,
-                target_language_code=target_language_code,
-                model=model,
-            )
+            response = self._call_translate(client, text, source_language_code, target_language_code, model)
             translated = getattr(response, "translated_text", None) or ""
             logger.info(
                 "Translation completed (%s -> %s)", source_language_code, target_language_code

@@ -50,6 +50,10 @@ def test_list_states_is_unauthenticated(client, db_session):
 
 
 def test_list_cities_for_state_returns_real_districts(client, db_session):
+    """A district only shows up once it has a real worker-backed ward somewhere under it -- see
+    list_cities()'s own _worker_backed_ward_ids() filter -- so this seeds a worker on the shared
+    fixture's own ward, via the same _insert_worker() helper test_location_system.py's own
+    worker-assignment tests use."""
     db = db_session()
     chain = _seed_full_hierarchy(db)
     state_id = chain["state"].id
@@ -87,6 +91,10 @@ def test_list_cities_for_nonexistent_state_is_404(client, db_session):
 
 
 def test_list_wards_for_city_returns_real_wards(client, db_session):
+    """A ward only shows up once it has a real worker directly assigned to it -- see
+    list_wards()'s own _worker_backed_ward_ids() filter -- so this seeds a worker on the shared
+    fixture's own ward, via the same _insert_worker() helper test_location_system.py's own
+    worker-assignment tests use."""
     db = db_session()
     chain = _seed_full_hierarchy(db)
     district_id = chain["district"].id
