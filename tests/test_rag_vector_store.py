@@ -157,20 +157,7 @@ def test_chroma_collection_opens_and_reports_expected_size():
     # vadodara,maharashtra/pune,karnataka/mangaluru,tamil_nadu/madurai,uttar_pradesh/kanpur,
     # west_bengal/asansol}.json and karnataka/bengaluru.json (now 4 records), plus
     # sources/inventory.json's corresponding entries.
-    # 1057, not the earlier 1053 -- live-reported gap: Pune's general grievance channel record
-    # covers reporting an EXISTING water/drainage problem, but "What is the process for a new
-    # water connection in Pune?" was still answered with no real new-connection info (the
-    # post-retrieval new-connection filter in orchestration/nodes.py correctly rejected the
-    # general-channel chunk, since it isn't about new connections, and fell back to the honest
-    # "don't have that" reply -- exposing a genuine content gap, not a code bug). Closed with 1
-    # new record (MH_PMC_WATER_NEW_CONNECTION, service_id WATER_NEW_CONNECTION_PUNE), sourced
-    # from a direct fetch of PMC's own Enterprise GIS Portal help document ("Steps to Apply for
-    # Water Connection", gis.pmc.gov.in) -- the real registration -> plumber sign-off -> JE
-    # assessment -> DE approval -> demand note -> payment workflow, with SLA/fee honestly
-    # reported as NOT FOUND since the source doesn't state either. See
-    # knowledge_records/verified/maharashtra/pune.json (now 5 records) and
-    # sources/inventory.json's corresponding entry.
-    assert store.size == 1057
+    assert store.size == 1053
 
 
 def test_chroma_persist_dir_is_configurable_not_hardcoded():
