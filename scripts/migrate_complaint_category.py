@@ -36,7 +36,7 @@ def _keyword_guess(text: str) -> ServiceCategory | None:
 
 
 def main() -> None:
-    con = sqlite3.connect("janmitra.db")
+    con = sqlite3.connect("jansarthi.db")
     cur = con.cursor()
 
     cur.execute("PRAGMA table_info(complaints)")

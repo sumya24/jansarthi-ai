@@ -72,7 +72,7 @@ jobs:
     needs: build-and-push
     runs-on: ubuntu-latest
     steps:
-      # See docs/DEPLOYMENT.md for what one-time setup this expects on the server: the repo
+      # See docs/DEPLOYMENT_GCP.md for what one-time setup this expects on the server: the repo
       # cloned to SSH_DEPLOY_PATH, Docker + the Compose plugin installed, and a .env file with
       # the app's runtime secrets (SARVAM_API_KEY, JWT_SECRET_KEY, etc.) already in place.
       - name: Deploy over SSH

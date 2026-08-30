@@ -6,7 +6,7 @@ only creates missing tables, never adds columns to existing ones, so this one-of
 Idempotent: checks the column doesn't already exist before altering, so re-running is a safe no-op.
 
 Usage:
-    python scripts/add_phoenix_trace_id_column.py            # local janmitra.db
+    python scripts/add_phoenix_trace_id_column.py            # local jansarthi.db
     docker exec janmitra-ai-backend-1 python3 scripts/add_phoenix_trace_id_column.py   # production
 """
 

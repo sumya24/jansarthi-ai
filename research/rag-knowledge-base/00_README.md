@@ -158,8 +158,7 @@ notes:
 See `08_kb_schema.md` for the full 34-field schema this all compiles into.
 
 ## File map
-See the repo root plan / `future_work.md` cross-reference — this folder's
-files are numbered in the order they're meant to be produced/read:
+This folder's files are numbered in the order they're meant to be produced/read:
 `00` (this file) → `01` (scope) → `02_source_inventory/` (raw per-state
 research) → `03`–`15` (compiled deliverables, derived from `02_` only,
 no new research introduced at that stage).

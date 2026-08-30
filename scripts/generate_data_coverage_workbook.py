@@ -1,4 +1,4 @@
-"""Regenerates Data_Coverage_Dashboard.xlsx (project root) from LIVE data -- janmitra.db and
+"""Regenerates Data_Coverage_Dashboard.xlsx (project root) from LIVE data -- jansarthi.db and
 data/rag_knowledge_base/knowledge_records/ -- every time it's run. Nothing here is cached or
 remembered from a prior run; re-run this any time the underlying data changes to get a current
 snapshot. This is the "real-time" piece the tracker docs (DATA_COVERAGE_TRACKER.md,
@@ -22,7 +22,7 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
 ROOT = Path(__file__).resolve().parent.parent
-DB_PATH = ROOT / "janmitra.db"
+DB_PATH = ROOT / "jansarthi.db"
 RAG_DIR = ROOT / "data" / "rag_knowledge_base" / "knowledge_records"
 OUT_PATH = ROOT / "Data_Coverage_Dashboard.xlsx"
 
@@ -163,7 +163,7 @@ def main() -> None:
     ws.title = "Overview"
     ws["A1"] = "JanSarthi AI — Data Coverage Dashboard"
     ws["A1"].font = TITLE_FONT
-    ws["A2"] = "Regenerated fresh from janmitra.db + data/rag_knowledge_base/ every time this workbook is built."
+    ws["A2"] = "Regenerated fresh from jansarthi.db + data/rag_knowledge_base/ every time this workbook is built."
     ws["A2"].font = Font(italic=True, size=9, color="666666")
 
     total_v = sum(v["verified"] for v in state_totals.values())
