@@ -238,6 +238,16 @@ export interface LocationOption {
   name: string;
 }
 
+// See backend/routes/locations.py's ResolvedCoordinates -- every field is null if the reverse
+// geocoder couldn't determine it (an honest "don't know", never a guess); deliberately no
+// ward/locality field at all (OSM/Nominatim's ward-level coverage in India is unreliable).
+export interface ResolvedCoordinates {
+  formatted_address: string | null;
+  city_name: string | null;
+  district_name: string | null;
+  state_name: string | null;
+}
+
 export interface AuthResponse {
   access_token: string;
   refresh_token: string;
@@ -649,6 +659,14 @@ export const api = {
   // choice, never fabricated, since a ward with nothing seeded under it (most of them, today)
   // resolves to `null` and the field stays exactly the free-text box it already was.
   resolveWard: (text: string) => request<LocationOption | null>(`/locations/wards/resolve?${new URLSearchParams({ text })}`, {}),
+
+  // LIVE-REPORTED GAP: "Use current location" (LocationPicker.tsx) used to attach raw GPS coords
+  // with only a generic "location detected" badge -- no indication of WHERE was actually
+  // detected, since ward-level reverse geocoding only ever ran server-side, after final
+  // submission. This calls that same resolver live, so the citizen can see and confirm an honest
+  // human-readable address the moment location is detected, not after the fact.
+  resolveCoordinates: (lat: number, lng: number) =>
+    request<ResolvedCoordinates>(`/locations/resolve-coordinates?${new URLSearchParams({ lat: String(lat), lng: String(lng) })}`, {}),
 
   getAreaSummary: (
     token: string,
