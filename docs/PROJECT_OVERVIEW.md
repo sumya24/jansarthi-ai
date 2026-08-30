@@ -199,7 +199,7 @@ Everything AI-related — how speech-to-text, spelling cleanup, translation, and
 
 ## 9. A known limitation: no database migrations
 
-Worth being upfront about, since it'll surprise anyone used to a framework like Django or Rails: this project has **no migration system**. `database.py`'s `init_db()` calls `Base.metadata.create_all()`, which creates tables that don't exist yet — but if you add a new column to an *existing* table (say, `Complaint`), nothing automatically adds that column to a database file that already has data in it. The two options, both used already in this codebase (see `scripts/migrate_assignment_tracking.py` for an example), are: write a small one-off script that runs an `ALTER TABLE`, or, for local development, just delete `janmitra.db` and let it recreate from scratch.
+Worth being upfront about, since it'll surprise anyone used to a framework like Django or Rails: this project has **no migration system**. `database.py`'s `init_db()` calls `Base.metadata.create_all()`, which creates tables that don't exist yet — but if you add a new column to an *existing* table (say, `Complaint`), nothing automatically adds that column to a database file that already has data in it. The two options, both used already in this codebase (see `scripts/migrate_assignment_tracking.py` for an example), are: write a small one-off script that runs an `ALTER TABLE`, or, for local development, just delete `jansarthi.db` and let it recreate from scratch.
 
 ---
 

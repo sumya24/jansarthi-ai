@@ -28,7 +28,7 @@ This project has, deliberately, both ends of that pyramid, using different tools
 pytest tests/ -v
 ```
 
-Every backend test lives in [`tests/`](../tests/), run against an **in-memory SQLite database** created fresh for each test (`conftest.py`'s `db_session` fixture) — so tests never touch the real `janmitra.db` file, never leave stray data behind, and never interfere with each other.
+Every backend test lives in [`tests/`](../tests/), run against an **in-memory SQLite database** created fresh for each test (`conftest.py`'s `db_session` fixture) — so tests never touch the real `jansarthi.db` file, never leave stray data behind, and never interfere with each other.
 
 **Every external AI call (Sarvam speech-to-text, translation, chat completion) is mocked** — replaced with a fake object that returns a predetermined result instead of making a real network call. See, for example, [`tests/test_summary_service.py`](../tests/test_summary_service.py):
 

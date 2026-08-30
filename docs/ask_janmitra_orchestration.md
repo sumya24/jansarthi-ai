@@ -8,6 +8,52 @@ unchanged this phase). Nothing about embeddings, ChromaDB, the metadata schema, 
 threshold was touched — this phase is purely about how a request is *routed* through the
 already-working pieces.
 
+## The real graph, in full
+
+Every node and edge below is real — pulled directly from `build_graph()` in
+`backend/services/orchestration/graph.py`, not simplified. `agent_flow` is the multi-category
+supervisor node (§17); `clarification_flow` is the single shared node several different routes
+fall back to when something's ambiguous or missing.
+
+```mermaid
+flowchart TD
+    START(["Citizen message"]) --> IP["input_processing"]
+    IP --> LD["language_detection"]
+    LD -->|ok| IC["intent_classification"]
+    LD -->|needs clarification| CF["clarification_flow"]
+
+    IC -->|status check| SF["status_flow"]
+    IC -->|out of scope| OSF["out_of_scope_flow"]
+    IC -->|greeting| GF["greeting_flow"]
+    IC -->|"what can you do?"| CapF["capabilities_flow"]
+    IC -->|genuinely unclear| UF["unclear_flow"]
+    IC -->|ambiguous| CF
+    IC -->|complaint or civic Q&A| LR["location_resolution"]
+
+    LR -->|filing a complaint| CompF["complaint_flow"]
+    LR -->|civic question| RF["rag_flow"]
+    LR -->|multi-category / supervisor| AF["agent_flow"]
+    LR -->|location unresolved| CF
+
+    CompF -->|needs more info| CF
+    CompF -->|ready / confirmed| RG["response_generation"]
+
+    RF --> RG
+    AF --> RG
+    SF --> RG
+    CF --> RG
+    OSF --> RG
+    GF --> RG
+    CapF --> RG
+    UF --> RG
+    RG --> END(["Response to citizen"])
+```
+
+Notice the shape: **every single path converges on `response_generation`** — no matter which of
+the 8 possible routes a message took, the response is built in exactly one place, in the
+citizen's own language. That's deliberate, not incidental — see §12/§13 for why response
+generation is centralized rather than duplicated per-node.
+
 ## 1. Why LangGraph
 
 Before this phase, `AskJanMitraService.ask()` was one Python method with nested if/else branches

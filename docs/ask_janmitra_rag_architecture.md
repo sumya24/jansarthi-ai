@@ -196,23 +196,49 @@ during this migration (`Loaded 504 chunks... Upserted 504 chunk(s)... Collection
 
 ## 8. Query pipeline
 
-`backend/services/rag_retriever.py`'s `RagRetriever.retrieve(query, service_category, city, state)`:
+`backend/services/rag_retriever.py`'s `RagRetriever.retrieve(query, service_category, city, state)`.
+
+**UPDATE — this numbered list predates hybrid search and the reranker (see §13); the real current
+order is the diagram + steps below, not the original 5-step version.**
+
+```mermaid
+flowchart TD
+    Q["Citizen's question"] --> Embed["Embed the query<br/>(multilingual-e5-small)"]
+    Embed --> Search["Vector search Chroma<br/>(top_k*3 candidates,<br/>metadata-filtered)"]
+    Search --> Hybrid{"Hybrid search<br/>enabled?"}
+    Hybrid -->|yes| BM25["Widen with BM25<br/>(exact-keyword matches<br/>vector search under-ranked)"]
+    Hybrid -->|no| Thresh
+    BM25 --> Thresh["Relevance threshold<br/>+ VERIFIED cross-lingual rescue"]
+    Thresh -->|nothing clears it| None(["insufficient_knowledge = true<br/>— honest 'I don't know'"])
+    Thresh -->|survives| Rerank{"Reranker<br/>enabled?"}
+    Rerank -->|yes| CE["Cross-encoder reranks<br/>the shortlist<br/>(ms-marco-MiniLM-L-6-v2)"]
+    Rerank -->|no| Heur["Heuristic score-band<br/>ranking (pre-reranker default)"]
+    CE --> Tie["VERIFIED-preference<br/>tie-break"]
+    Heur --> Tie
+    Tie --> Gen["Generate answer,<br/>grounded ONLY in these chunks"]
+```
 
 1. **Build the metadata filter** — `{"service_category": ..., "city": ...}` (or `state` if no
    city was resolved). Both are optional; an unfiltered call (both `None`) is legal but only
    happens if intent classification found no category at all.
 2. **Embed the query** via `embedding_provider.embed_query()` — the `"query: "`-prefixed side of
    the asymmetric E5 model (§3).
-3. **Search Chroma** — `store.search(query_vector, top_k=top_k*3, metadata_filter=...)`. Asking
-   for `3x top_k` candidates gives the rerank step (5) something to work with beyond the raw
-   top-k-by-score.
-4. **Relevance threshold** — candidates scoring below `RAG_EMBEDDING_RELEVANCE_THRESHOLD` are
-   dropped; if nothing survives (or the filter matched zero chunks to begin with),
-   `RetrievalOutcome(insufficient_knowledge=True, reason=...)` is returned — never a forced
-   answer from a low-quality match. See §11 for how this threshold was chosen.
-5. **VERIFIED-preference rerank** — among results within a small score band (`0.03`) of the top
-   result, `VERIFIED` chunks are preferred over `SYNTHETIC` ones. A heuristic tie-break, not a
-   trained reranker — see §13 for why a full cross-encoder reranker was not added.
+3. **Search Chroma** — `store.search(query_vector, top_k=top_k*3, metadata_filter=...)`.
+4. **Hybrid BM25 widening** (`RAG_HYBRID_SEARCH_ENABLED`, on by default) — builds a BM25 index
+   over the same metadata-filtered candidate pool vector search already scoped to, and appends any
+   chunk BM25 surfaces that pure vector similarity under-ranked (an exact department name, say).
+5. **Relevance threshold** — candidates scoring below `RAG_EMBEDDING_RELEVANCE_THRESHOLD` are
+   dropped, with one deliberate exception: a VERIFIED chunk scoring just under that threshold gets
+   rescued at a separate, lower floor (measured specifically for non-English-script queries against
+   this KB's English-authored content) — never applies to SYNTHETIC chunks. If nothing survives
+   either way, `RetrievalOutcome(insufficient_knowledge=True, reason=...)` is returned — never a
+   forced answer from a low-quality match. See §11 for how the main threshold was chosen.
+6. **Reranking** — either a real cross-encoder (`RAG_RERANKER_ENABLED`, opt-in) re-scoring this
+   small already-filtered shortlist, or, unchanged from before the reranker existed, the original
+   lightweight heuristic over raw cosine scores.
+7. **VERIFIED-preference tie-break** — runs either way, after reranking: among results within a
+   small score band (`0.03`) of the top result, `VERIFIED` chunks are preferred over `SYNTHETIC`
+   ones.
 
 ## 9. Location-aware and category-aware filtering
 
@@ -496,8 +522,9 @@ in the production wiring. **There is exactly one production retrieval path: embe
   the ~68ms/query embedding time further, not evaluated here since this project has no GPU
   available; noted as a real, not implemented, optimization opportunity.
 - **Intent classification remains keyword-based** (unchanged this phase) — real-world phrasing
-  this project hasn't anticipated will not always match; see `docs/archive/ask_janmitra_response_behavior.md`
-  for that component's own documented limitations.
+  this project hasn't anticipated will not always match; see
+  [`docs/ask_janmitra_orchestration.md`](ask_janmitra_orchestration.md) for that component's
+  current, real routing behavior.
 
 ## 18. Future scalability
 

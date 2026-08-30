@@ -1,14 +1,58 @@
 # Deployment — Google Cloud (this is the real, live production deployment)
 
-> **UPDATE — this is now the canonical, current production deployment**, not a stopgap. It was
-> originally adopted as a bridge while Oracle Cloud signup was blocked (`docs/DEPLOYMENT.md`'s
-> Always Free tier was the original long-term plan), and stayed live past that point rather than
-> migrating back — Oracle remains a genuinely cheaper long-term option if this ever needs
-> revisiting, but as of today, the real app is running on GCP, not Oracle. Treat `DEPLOYMENT.md`
-> as historical background on the original plan, not the current instructions. Everything in that
-> doc's "What all these files actually are", "How CI/CD works day to day", "Rollback", and most of
-> "Operating notes" sections still applies unchanged here — this doc only covers what's specific
-> to GCP (VM creation, the `deploybot` account, cost).
+> **This is the canonical, current production deployment.** It was originally adopted as a bridge
+> while Oracle Cloud signup was blocked (Oracle's Always Free tier was the original plan — cheaper
+> long-term, up to 24GB RAM), and stayed live past that point rather than migrating back. As of
+> today, **the real app runs on GCP, not Oracle** — Oracle was never actually used for anything
+> beyond a blocked signup attempt. This doc is fully self-contained: nothing below depends on
+> anything Oracle-specific.
+
+## Architecture
+
+Everything runs on a single VM: two Docker containers, one reverse proxy in front.
+
+```mermaid
+flowchart TB
+    Browser["Browser"] -->|":80 / :443"| Caddy
+
+    subgraph VM["GCP e2-medium VM (asia-south1, Mumbai)"]
+        Caddy["caddy container<br/>— serves the built React SPA<br/>— reverse-proxies /auth, /admin, /complaints,<br/>/notifications, /ask-janmitra, /uploads, /health<br/>— auto HTTPS via Let's Encrypt"]
+        Backend["backend container<br/>FastAPI + torch + sentence-transformers<br/>+ ChromaDB + LangGraph<br/>— not exposed outside the VM"]
+        Volume[("backend_state<br/>named Docker volume<br/>SQLite DB + uploaded photos<br/>survives redeploys")]
+
+        Caddy -->|":8000"| Backend
+        Backend --> Volume
+    end
+```
+
+Why one VM instead of splitting the frontend onto Vercel/Netlify: the backend needs a real,
+persistent disk (SQLite DB + uploaded photos) and real RAM for torch/sentence-transformers/
+ChromaDB — that already rules out most serverless "free FastAPI hosting." Given that, putting the
+static frontend on the same box removes an entire second vendor and avoids a cross-origin hop for
+every API call.
+
+## What all these files actually are
+
+A plain-language glossary of every deployment-related file in this repo.
+
+- **`.github/workflows/ci.yml`** — runs on every push/PR: `pytest` for the backend, lint + a real
+  production build (`tsc -b && vite build`) for the frontend. Never touches the VM or deploys
+  anything; only ever runs checks.
+- **`.github/workflows/cd.yml`** — runs only after `ci.yml` succeeds on `main`. Builds both Docker
+  images, pushes them to **GHCR** (GitHub Container Registry), then SSHes into the VM as
+  `deploybot` and tells it to pull the new images and restart. This is the file that makes a
+  `git push` actually end up live — see "How CI/CD works day to day" below.
+- **`backend/Dockerfile`** / **`frontend-react/Dockerfile`** — build instructions for each half of
+  the app. Two separate files because the backend (Python) and frontend (Node → static files
+  served by Caddy) are built completely differently.
+- **`docker-compose.prod.yml`** — how the two built images actually run together on the VM: which
+  network, which persistent volumes, restart policy. `docker compose -f docker-compose.prod.yml up
+  -d` is the real "start/update the live app" command; `cd.yml` just runs it for you automatically.
+- **`deploy/Caddyfile`** — the reverse proxy's config: serve the built React files for normal
+  requests, hand off `/auth`, `/admin`, etc. to the backend container, and get an HTTPS
+  certificate automatically once a real domain (or DuckDNS subdomain) is set.
+- **`.dockerignore`** — keeps `node_modules/`, `.git/`, local `.env` secrets, and the SQLite
+  database out of the built images.
 
 ## Your account status
 
@@ -154,8 +198,15 @@ free -h   # confirm swap shows up
 
 ### 3. Clone the repo and set up secrets
 
-Identical to Oracle's setup — see `docs/DEPLOYMENT.md` step 3. Same `.env.example` → `.env`
-copy, same variables.
+```bash
+git clone https://github.com/<owner>/<repo>.git
+cd <repo>
+cp .env.example .env
+nano .env   # fill in SARVAM_API_KEY, JWT_SECRET_KEY (generate one: openssl rand -hex 32), etc.
+```
+
+Leave `BACKEND_IMAGE` / `FRONTEND_IMAGE` / `SITE_ADDRESS` unset in `.env` for now — the CD
+workflow manages the first two, and `SITE_ADDRESS` only matters once you have a domain (step 6).
 
 ### 4. First deploy
 
@@ -212,9 +263,9 @@ sudo chmod 600 /home/deploybot/.ssh/authorized_keys
 **c) Give `deploybot` its own clone of the repo, with secrets configured:**
 
 ```bash
-sudo -u deploybot git clone https://github.com/<your-username>/janmitra-ai.git /home/deploybot/janmitra-ai
-sudo -u deploybot cp /home/deploybot/janmitra-ai/.env.example /home/deploybot/janmitra-ai/.env
-sudo -u deploybot nano /home/deploybot/janmitra-ai/.env
+sudo -u deploybot git clone https://github.com/<your-username>/jansarthi-ai.git /home/deploybot/jansarthi-ai
+sudo -u deploybot cp /home/deploybot/jansarthi-ai/.env.example /home/deploybot/jansarthi-ai/.env
+sudo -u deploybot nano /home/deploybot/jansarthi-ai/.env
 # fill in SARVAM_API_KEY, set JWT_SECRET_KEY to a fixed value (openssl rand -hex 32), and set
 # ENVIRONMENT=production -- required together: the backend now refuses to start with
 # ENVIRONMENT=production and a blank JWT_SECRET_KEY (see backend/main.py's
@@ -223,9 +274,9 @@ sudo -u deploybot nano /home/deploybot/janmitra-ai/.env
 ```
 
 (If you already have a working `.env` filled in under your own account's clone, it's simpler to
-copy that instead of retyping everything: `sudo cp /home/<you>/janmitra-ai/.env
-/home/deploybot/janmitra-ai/.env && sudo chown deploybot:deploybot
-/home/deploybot/janmitra-ai/.env`.)
+copy that instead of retyping everything: `sudo cp /home/<you>/jansarthi-ai/.env
+/home/deploybot/jansarthi-ai/.env && sudo chown deploybot:deploybot
+/home/deploybot/jansarthi-ai/.env`.)
 
 **d) Get the VM's external IP** — either from the Console (Compute Engine → VM instances →
 External IP column), or by running this on the VM:
@@ -242,7 +293,7 @@ it installed and authenticated:
 gh secret set SSH_HOST --body "<the VM's external IP from step d>"
 gh secret set SSH_USER --body "deploybot"
 gh secret set SSH_PRIVATE_KEY < ~/.ssh/janmitra_deploy_key
-gh secret set SSH_DEPLOY_PATH --body "/home/deploybot/janmitra-ai"
+gh secret set SSH_DEPLOY_PATH --body "/home/deploybot/jansarthi-ai"
 ```
 
 `SSH_PORT` is optional — the workflow defaults to `22` if you don't set it. **On Windows/Git
@@ -267,7 +318,7 @@ distinct failure modes that look similar on the surface but have different fixes
 
 ### 6. Domain/HTTPS (optional)
 
-If you own a real domain: identical to Oracle's step 5 in `docs/DEPLOYMENT.md` — set
+If you own a real domain: add an A record pointing at the VM's external IP, then set
 `SITE_ADDRESS=your-domain.com` in the VM's `.env` once the domain points at its IP, then
 `docker compose -f docker-compose.prod.yml up -d` to pick up the change. Caddy handles the Let's
 Encrypt certificate automatically from there.
@@ -283,13 +334,70 @@ issues certificates for it identically.
 4. Test `http://your-name.duckdns.org` loads the app before proceeding.
 5. Point Caddy at it:
    ```bash
-   sudo -u deploybot bash -c 'cd /home/deploybot/janmitra-ai && echo "SITE_ADDRESS=your-name.duckdns.org" >> .env && docker compose -f docker-compose.prod.yml up -d'
+   sudo -u deploybot bash -c 'cd /home/deploybot/jansarthi-ai && echo "SITE_ADDRESS=your-name.duckdns.org" >> .env && docker compose -f docker-compose.prod.yml up -d'
    ```
 6. Wait ~10-30s, then `https://your-name.duckdns.org` should load with a valid certificate.
 
 One thing to remember: DuckDNS doesn't track the VM's IP automatically — if the VM's external IP
 ever changes (e.g. after a machine-type resize, which gives it a new ephemeral IP), go back to the
 DuckDNS page and update the IP there too, or the domain will silently point at the old address.
+
+## How CI/CD works day to day
+
+*Summary below — for the full job-by-job breakdown (why each step exists, real incidents like the
+disk-filling-up prune bug, the secrets table), see [`docs/CI_CD_GITHUB_ACTIONS.md`](CI_CD_GITHUB_ACTIONS.md).*
+
+1. Push / open a PR against `main` → **CI** (`.github/workflows/ci.yml`) runs `pytest` and the
+   frontend build+lint. Nothing deploys yet.
+2. Merge to `main` → CI runs again on `main`, and once it succeeds, **CD**
+   (`.github/workflows/cd.yml`) fires automatically: builds both Docker images, pushes them to
+   GHCR tagged `latest` and `<git-sha>`, then SSHes into the VM as `deploybot`, `git pull`s the
+   repo (so any change to `docker-compose.prod.yml`/`deploy/Caddyfile` themselves also lands),
+   pulls the new images, and restarts the containers.
+3. Nothing deploys from a branch or PR — only from `main`, and only after tests pass.
+
+```mermaid
+flowchart LR
+    subgraph PR["Any push / PR"]
+        Push["git push"] --> CI["ci.yml — pytest +<br/>frontend build/lint"]
+        CI -->|fails| Red["❌ shown on the<br/>commit / PR — stops here"]
+    end
+
+    subgraph Main["Only after a merge to main"]
+        CI -->|passes on main| CD["cd.yml triggers<br/>(workflow_run: ci.yml succeeded)"]
+        CD --> Build["Build backend + frontend<br/>Docker images"]
+        Build --> Push2["Push images to GHCR<br/>tagged latest + &lt;git-sha&gt;"]
+        Push2 --> SSH["SSH into the VM as deploybot"]
+        SSH --> Pull["git pull<br/>(picks up compose/Caddyfile changes)"]
+        Pull --> Restart["docker compose pull + up -d<br/>— containers restart on new images"]
+    end
+```
+
+## Rollback
+
+Every image is also tagged with its commit SHA. To roll back to a known-good commit on the VM:
+
+```bash
+sudo -u deploybot bash -c 'cd /home/deploybot/jansarthi-ai && \
+  sed -i "s/^BACKEND_IMAGE=.*/BACKEND_IMAGE=ghcr.io\/<owner>\/<repo>-backend:<good-sha>/" .env && \
+  sed -i "s/^FRONTEND_IMAGE=.*/FRONTEND_IMAGE=ghcr.io\/<owner>\/<repo>-frontend:<good-sha>/" .env && \
+  docker compose -f docker-compose.prod.yml pull && \
+  docker compose -f docker-compose.prod.yml up -d'
+```
+
+## Operating notes
+
+- **Logs**: `sudo -u deploybot bash -c 'cd /home/deploybot/jansarthi-ai && docker compose -f docker-compose.prod.yml logs -f backend'` (or `caddy`).
+- **Disk**: the RAG stack's images are large (torch + sentence-transformers + chromadb baked in)
+  — expect several GB per image. The 30GB boot disk from step 1 has headroom; periodically
+  `docker image prune -f` (the CD workflow already does this after every deploy).
+- **Backups**: the SQLite DB and uploaded photos live in the `backend_state` named Docker volume,
+  which GCP does not back up for you. A simple periodic snapshot:
+  ```bash
+  sudo -u deploybot docker run --rm -v janmitra-ai_backend_state:/state -v ~/backups:/backup alpine \
+    tar czf /backup/state-$(date +%F).tar.gz -C /state .
+  ```
+  Wire that into a cron job on the VM if this ever holds real user data at scale.
 
 ## Understanding the `deploybot` account
 
@@ -334,7 +442,7 @@ permanent from Google's point of view because Google doesn't manage it at all.
 
 - Created with: `sudo useradd -m -s /bin/bash deploybot` (see step 5b above for the full sequence).
 - In the `docker` group, so it can run `docker compose` without needing root for every command.
-- Owns its own clone of the repo at `/home/deploybot/janmitra-ai`, with its own `.env`.
+- Owns its own clone of the repo at `/home/deploybot/jansarthi-ai`, with its own `.env`.
 - Its home directory is locked to `700` (only `deploybot` can enter it) — this is normal Linux
   account isolation, not something specific to this setup.
 
@@ -348,7 +456,7 @@ Because of that `700` permission, your own account can't `cd` into `/home/deploy
 sudo -u deploybot docker ps
 
 # Multiple commands (needs bash -c so cd/&&/env changes apply together):
-sudo -u deploybot bash -c 'cd /home/deploybot/janmitra-ai && git log --oneline -3'
+sudo -u deploybot bash -c 'cd /home/deploybot/jansarthi-ai && git log --oneline -3'
 
 # Full interactive shell as deploybot, if you want to poke around:
 sudo -u deploybot -i
@@ -370,13 +478,13 @@ not a hypothetical:
 2. **`cd: <path>: No such file or directory`** (secret shows masked as `***` in logs) — usually
    means `SSH_DEPLOY_PATH` doesn't match where the repo actually is, but if you've verified the
    path is correct by testing it directly (see below), suspect the secret's stored *value* instead
-   — re-set it via `printf '%s' "/home/deploybot/janmitra-ai" | gh secret set SSH_DEPLOY_PATH`
+   — re-set it via `printf '%s' "/home/deploybot/jansarthi-ai" | gh secret set SSH_DEPLOY_PATH`
    rather than `--body`, which has caused this exact symptom on Windows/Git Bash.
 3. **Test the SSH connection directly, bypassing GitHub Actions entirely**, to isolate whether the
    problem is the VM side or the GitHub Actions side — from a machine with the private key file
    and network access to the VM:
    ```bash
-   ssh -i ~/.ssh/janmitra_deploy_key deploybot@<VM_IP> "cd /home/deploybot/janmitra-ai && pwd && docker ps"
+   ssh -i ~/.ssh/janmitra_deploy_key deploybot@<VM_IP> "cd /home/deploybot/jansarthi-ai && pwd && docker ps"
    ```
    If this works but the GitHub Actions run still fails the same way, the problem is specifically
    in what GitHub Actions is sending (stale/malformed secret) — re-set the relevant secret and
@@ -401,9 +509,10 @@ Pick one, don't let it default to "do nothing":
 Whatever you pick, do it *before* 11 November, not after — that's the date billing stops being
 covered by credit and starts being covered by your card.
 
-## Migrating to Oracle (or anywhere else) later
+## Migrating elsewhere later
 
-Nothing about the app or its containers is GCP-specific. To move: stand up the new VM per
-`docs/DEPLOYMENT.md`, restore the `backend_state` volume's contents (the backup command in that
-doc's "Operating notes" section) onto it, point the domain's DNS at the new IP, and update the
-`SSH_HOST`/`SSH_DEPLOY_PATH` GitHub secrets. No code or Docker config changes needed either way.
+Nothing about the app or its containers is GCP-specific. To move: stand up the new VM (the Docker
+install, `deploybot` account, and CD secrets steps above carry over unchanged, whatever the
+provider), restore the `backend_state` volume's contents (the backup command in "Operating notes"
+above) onto it, point the domain's DNS at the new IP, and update the `SSH_HOST`/`SSH_DEPLOY_PATH`
+GitHub secrets. No code or Docker config changes needed either way.

@@ -25,10 +25,9 @@ This README is a quick reference and setup guide. Full depth — written so it m
 | Testing strategy: pytest, mocking, Playwright end-to-end tests | **[`docs/TESTING.md`](docs/TESTING.md)** |
 | Tracing (LangSmith + Phoenix), real ₹ cost tracking, Admin AI Monitoring | **[`docs/ask_janmitra_langsmith_observability.md`](docs/ask_janmitra_langsmith_observability.md)** + **[`docs/OBSERVABILITY.md`](docs/OBSERVABILITY.md)** |
 | Error monitoring (Sentry): concepts, then technical reference | **[`docs/ERROR_MONITORING_GUIDE.md`](docs/ERROR_MONITORING_GUIDE.md)** + **[`docs/ERROR_MONITORING.md`](docs/ERROR_MONITORING.md)** |
-| CI/CD and the live production deployment (GCP) | **[`docs/DEPLOYMENT_GCP.md`](docs/DEPLOYMENT_GCP.md)** |
-| What's deliberately out of scope so far | **[`future_work.md`](future_work.md)** |
-
-Historical/superseded docs (kept for context, not current-state reference) live in **[`docs/archive/`](docs/archive/)**.
+| Where LangChain is (and deliberately isn't) used, with the live evidence behind each call | **[`docs/LANGCHAIN_INTEGRATION.md`](docs/LANGCHAIN_INTEGRATION.md)** |
+| CI/CD: the two GitHub Actions workflows, job by job | **[`docs/CI_CD_GITHUB_ACTIONS.md`](docs/CI_CD_GITHUB_ACTIONS.md)** |
+| The live production deployment (GCP): VM setup, secrets, `deploybot` | **[`docs/DEPLOYMENT_GCP.md`](docs/DEPLOYMENT_GCP.md)** |
 
 ## Current status
 
@@ -181,8 +180,8 @@ The manual steps it automates, if you'd rather do them yourself or aren't on Win
 1. **Clone and install backend dependencies**
 
    ```bash
-   git clone https://github.com/sumya24/janmitra-ai
-   cd janmitra-ai
+   git clone https://github.com/sumya24/jansarthi-ai
+   cd jansarthi-ai
    python -m venv .venv
    .venv\Scripts\activate        # Windows; on macOS/Linux: source .venv/bin/activate
    pip install -r requirements.txt
@@ -301,6 +300,10 @@ npx playwright test
 - **AI steps have real, measured limits** — a 30-second-per-request cap on voice input (worked around via chunking), and prompt-injection guardrails are pattern-based (a real floor against known attack shapes, not a semantic guarantee). Full detail: [`docs/AI_AGENT.md`](docs/AI_AGENT.md), [`docs/ask_janmitra_rag_architecture.md`](docs/ask_janmitra_rag_architecture.md).
 - **Single-server deployment, brief downtime on deploy** — a deploy stops and restarts the backend container, a genuine few-second gap. True zero-downtime would need a second server or an orchestrator. See [`docs/DEPLOYMENT_GCP.md`](docs/DEPLOYMENT_GCP.md).
 
-## Roadmap
+## License
 
-See [`future_work.md`](future_work.md) for the full list.
+This repository is public for viewing and evaluation only — it is **not** open source. No
+permission is granted to copy, modify, distribute, or reuse this code or the JanSarthi AI concept
+without prior written permission from the copyright holder. See [`LICENSE`](LICENSE) for the full
+notice.
+
