@@ -182,5 +182,71 @@
     "last_updated": null,
     "retrieved_at": "2026-08-28T23:36:47.433036Z",
     "created_at": "2026-08-28T23:36:47.433036Z"
+  },
+  {
+    "record_id": "MH_PMC_WATER_NEW_CONNECTION",
+    "service_id": "WATER_NEW_CONNECTION_PUNE",
+    "service_name": "New Water Connection",
+    "sub_service": "Application for a new water/drainage connection via PMC's Enterprise GIS (EGIS) Portal",
+    "problem_type": "Need to apply for a new water supply connection to a property in Pune",
+    "service_category": "WATER_DRAINAGE",
+    "state": "Maharashtra",
+    "district": null,
+    "city": "Pune",
+    "municipality": "Pune Municipal Corporation (PMC)",
+    "zone": null,
+    "ward": null,
+    "area": null,
+    "geographic_scope": "CITY",
+    "department": "Pune Municipal Corporation -- Water Supply Department (via the Enterprise GIS / EGIS Portal)",
+    "authority": "Junior Engineer (JE) assessment, Deputy Engineer (DE) approval",
+    "description": "This is a distinct service from reporting a problem with an EXISTING water/drainage connection (see MH_PMC_GENERAL_GRIEVANCE_CHANNEL_WATER_DRAINAGE) -- this one is for applying for a brand new connection. Confirmed via a direct fetch and full read of PMC's own official Enterprise GIS Portal help document ('Steps to Apply for Water Connection', gis.pmc.gov.in), which lays out the real citizen-facing workflow end to end: apply through the EGIS Portal (registration required), identify and get sign-off from a PMC-authorized plumber, attach the mandatory documents, and the application then moves through Junior Engineer assessment, Deputy Engineer approval, a system-generated Demand Note, payment, and finally connection completion.",
+    "procedure": "1) Register for an account on PMC's EGIS Portal (gis.pmc.gov.in) if you don't already have one. 2) Go to City Map > Online Services > Water/Drainage Connection and open the application form. 3) Identify a PMC-authorized plumber near your property from the list on the form -- the plumber visits to confirm feasibility and fills out a Licensed Plumber Consent Letter. 4) Fill in all mandatory fields and attach the mandatory documents, then submit. 5) A Junior Engineer (JE) conducts an internal assessment and records the amount payable; status shows 'Junior Engineer Approved'. 6) A Deputy Engineer (DE) verifies and approves; status shows 'Deputy Engineer Approved'. 7) A Demand Note is generated automatically. 8) Pay the amount shown -- either online (redirects to Bill Desk) or offline (pay at your nearest CFC/payment centre and upload the receipt/challan). 9) Track progress any time via the portal's 'Track Status' utility; status shows 'Connection Completed' once the physical connection work is done.",
+    "required_information": [
+      "A registered account on PMC's EGIS Portal (gis.pmc.gov.in)",
+      "Property details for the connection location"
+    ],
+    "required_documents": [
+      "Site Plan of Property",
+      "Completion Certificate",
+      "Commencement Certificate",
+      "Occupancy Certificate",
+      "Licensed Plumber Consent Letter (from a PMC-authorized plumber)",
+      "Owner's Consent Letter (only if the applicant is not the property owner)"
+    ],
+    "sla": "NOT FOUND IN OFFICIAL SOURCE -- this document describes the full workflow (JE assessment -> DE approval -> demand note -> payment -> connection) but does not state a day-based turnaround time for any individual step or for the process overall.",
+    "expected_response_time": null,
+    "expected_resolution_time": "NOT FOUND IN OFFICIAL SOURCE",
+    "complaint_channel": [
+      "PMC Enterprise GIS (EGIS) Portal -- https://gis.pmc.gov.in, under Online Services > Water/Drainage Connection"
+    ],
+    "contact_information": "No dedicated phone/email is stated for this specific service in the source document -- apply directly via the EGIS portal. PMC's general toll-free helpline (1800-233-4040) may be able to redirect you if you get stuck.",
+    "escalation_procedure": "NOT FOUND IN OFFICIAL SOURCE.",
+    "escalation_authority": null,
+    "faq": [
+      {
+        "question": "What documents do I need for a new water connection in Pune?",
+        "answer": "Site Plan, Completion Certificate, Commencement Certificate, Occupancy Certificate, and a Licensed Plumber Consent Letter from a PMC-authorized plumber -- plus an Owner's Consent Letter if you're not the property owner yourself."
+      },
+      {
+        "question": "How much does a new water connection cost in Pune?",
+        "answer": "The source document doesn't publish a fixed fee -- the amount is calculated per application by a Junior Engineer and shown to you as a 'Demand Note' after you submit your application, payable online or at a nearby CFC/payment centre."
+      },
+      {
+        "question": "Do I need to arrange a plumber myself?",
+        "answer": "Yes -- you must pick one from PMC's own list of authorized plumbers on the application form. They visit your property to confirm feasibility and sign a consent letter you upload with your application."
+      }
+    ],
+    "citizen_guidance": "Apply only through PMC's official EGIS portal (gis.pmc.gov.in) -- Online Services > Water/Drainage Connection. You'll need to register for a portal account first if you don't have one.",
+    "source_id": "MH_PMC_EGIS_WATER_CONNECTION_HELP",
+    "source_title": "Steps to Apply for Water Connection -- Pune Municipal Corporation Enterprise GIS (EGIS) Portal",
+    "source_organization": "Pune Municipal Corporation (PMC)",
+    "source_url": "https://gis.pmc.gov.in/PDFFiles/WaterConnection.pdf",
+    "source_type": "OFFICIAL_GOVERNMENT_PDF",
+    "verification_status": "VERIFIED",
+    "publication_date": null,
+    "last_updated": null,
+    "retrieved_at": "2026-08-29T11:39:35+00:00",
+    "created_at": "2026-08-29T11:39:35+00:00"
   }
 ]
