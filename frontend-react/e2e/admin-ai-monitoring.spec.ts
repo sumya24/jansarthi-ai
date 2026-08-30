@@ -28,7 +28,7 @@ test.beforeAll(() => {
 test("admin can view AI Monitoring: real request stats, breakdown, and a recent-requests table", async ({ page }) => {
   await page.goto("/login");
   await page.getByLabel("Phone number").fill(ADMIN_PHONE);
-  await page.getByLabel("Password").fill(ADMIN_PASSWORD);
+  await page.getByLabel("Password", { exact: true }).fill(ADMIN_PASSWORD);
   await page.getByRole("button", { name: "Log in" }).click();
   await expect(page).toHaveURL(/\/admin$/);
 

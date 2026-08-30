@@ -102,7 +102,7 @@ test("login still works with the phone number after the identifier field is rela
 
   await page.goto("/login");
   await page.getByLabel("Phone number or email").fill(phone);
-  await page.getByLabel("Password").fill("otptest12345!");
+  await page.getByLabel("Password", { exact: true }).fill("otptest12345!");
   await page.getByRole("button", { name: "Log in" }).click();
   await expect(page).toHaveURL(/\/citizen$/);
 });

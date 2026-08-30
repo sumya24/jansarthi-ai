@@ -38,7 +38,7 @@ test("super admin creates a worker, who can then log in and see their (empty) qu
 
   await page.goto("/login");
   await page.getByLabel("Phone number").fill(ADMIN_PHONE);
-  await page.getByLabel("Password").fill(ADMIN_PASSWORD);
+  await page.getByLabel("Password", { exact: true }).fill(ADMIN_PASSWORD);
   await page.getByRole("button", { name: "Log in" }).click();
   await expect(page).toHaveURL(/\/admin$/);
   await expect(page.getByText("Super Admin", { exact: true })).toBeVisible();
@@ -74,7 +74,7 @@ test("super admin creates a worker, who can then log in and see their (empty) qu
 
   await page.goto("/login");
   await page.getByLabel("Phone number").fill(workerPhone);
-  await page.getByLabel("Password").fill("workerpass123");
+  await page.getByLabel("Password", { exact: true }).fill("workerpass123");
   await page.getByRole("button", { name: "Log in" }).click();
 
   await expect(page).toHaveURL(/\/worker$/);

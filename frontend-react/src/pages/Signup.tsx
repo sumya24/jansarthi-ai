@@ -9,6 +9,7 @@ import AuthPanel from "../components/AuthPanel";
 import AuthFormBrand from "../components/AuthFormBrand";
 import HomeLocationPicker, { type HomeLocationValue } from "../components/HomeLocationPicker";
 import EmailVerifyField, { type EmailVerifyValue } from "../components/EmailVerifyField";
+import PasswordInput from "../components/PasswordInput";
 import "./Auth.css";
 
 const EMAIL_PATTERN = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
@@ -119,7 +120,10 @@ export default function Signup() {
 
           <form onSubmit={handleSubmit} noValidate>
             <div className={`field ${fieldErrors.fullName ? "has-error" : ""}`}>
-              <label htmlFor="signup-name">{t(lang, "auth.field.name")}</label>
+              <label htmlFor="signup-name">
+                {t(lang, "auth.field.name")}
+                <span className="field-required-mark" aria-hidden="true">*</span>
+              </label>
               <input
                 id="signup-name"
                 type="text"
@@ -135,7 +139,10 @@ export default function Signup() {
               )}
             </div>
             <div className={`field ${fieldErrors.phone ? "has-error" : ""}`}>
-              <label htmlFor="signup-phone">{t(lang, "auth.field.phone")}</label>
+              <label htmlFor="signup-phone">
+                {t(lang, "auth.field.phone")}
+                <span className="field-required-mark" aria-hidden="true">*</span>
+              </label>
               <input
                 id="signup-phone"
                 type="tel"
@@ -155,6 +162,7 @@ export default function Signup() {
             <EmailVerifyField
               lang={lang}
               idPrefix="signup"
+              required
               onChange={setEmailValue}
               hasError={fieldErrors.email}
               sendCode={(email) => api.sendSignupEmailCode({ email })}
@@ -163,10 +171,13 @@ export default function Signup() {
             {fieldErrors.email && <div className="field-error home-location-error">{t(lang, "common.fieldRequired")}</div>}
 
             <div className={`field ${fieldErrors.password ? "has-error" : ""}`}>
-              <label htmlFor="signup-password">{t(lang, "auth.field.password")}</label>
-              <input
+              <label htmlFor="signup-password">
+                {t(lang, "auth.field.password")}
+                <span className="field-required-mark" aria-hidden="true">*</span>
+              </label>
+              <PasswordInput
+                lang={lang}
                 id="signup-password"
-                type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 aria-invalid={fieldErrors.password || undefined}
@@ -183,10 +194,13 @@ export default function Signup() {
               )}
             </div>
             <div className={`field ${fieldErrors.confirmPassword ? "has-error" : ""}`}>
-              <label htmlFor="signup-confirm-password">{t(lang, "auth.field.confirmPassword")}</label>
-              <input
+              <label htmlFor="signup-confirm-password">
+                {t(lang, "auth.field.confirmPassword")}
+                <span className="field-required-mark" aria-hidden="true">*</span>
+              </label>
+              <PasswordInput
+                lang={lang}
                 id="signup-confirm-password"
-                type="password"
                 value={confirmPassword}
                 onChange={(e) => setConfirmPassword(e.target.value)}
                 aria-invalid={fieldErrors.confirmPassword || undefined}

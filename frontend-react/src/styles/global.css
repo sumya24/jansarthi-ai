@@ -457,6 +457,20 @@ h1, h2, h3 { text-wrap: balance; margin: 0; }
    error state, not after one. */
 .field-hint { color: var(--ink-3); font-size: 11.5px; margin-top: 5px; }
 
+/* PasswordInput.tsx -- wraps a password <input> with its show/hide toggle button. The input
+   itself still matches ".field input" above (a descendant selector, so this extra wrapper div
+   doesn't break that rule) -- this just makes room on the right for the button and positions it. */
+.password-input-wrap { position: relative; }
+.password-input-wrap input { padding-right: 40px; }
+.password-toggle-btn {
+  position: absolute; top: 0; right: 0; bottom: 0; width: 40px;
+  display: flex; align-items: center; justify-content: center;
+  border: none; background: transparent; color: var(--ink-3); cursor: pointer;
+  transition: color var(--dur-fast) var(--ease);
+}
+.password-toggle-btn:hover { color: var(--ink); }
+.password-toggle-btn:focus-visible { outline: 2px solid var(--accent-fg); outline-offset: -2px; border-radius: 6px; }
+
 /* Native <select> keeps browser chrome by default, which clashes with everything else here —
    flatten it and draw our own chevron so it matches text inputs exactly. */
 .field select {
@@ -545,6 +559,35 @@ h1, h2, h3 { text-wrap: balance; margin: 0; }
   background: var(--status-progress-bg); border-radius: 6px; padding: 3px 8px;
 }
 
+/* ============ Location-detected badge (LocationPicker.tsx) ============
+   Deliberately its OWN style, not a reuse of .dev-badge above -- that class means "this is
+   placeholder/not-real-yet data", but a GPS-resolved address is genuinely real. Normal
+   sentence case (a real place name reads oddly SHOUTED IN CAPS) and its own blue tone. */
+.location-detected-badge {
+  display: flex; align-items: flex-start; gap: 9px; font-size: 12.5px;
+  color: var(--status-progress); background: var(--status-progress-bg);
+  border-radius: 10px; padding: 11px 13px; line-height: 1.45; margin-bottom: 10px;
+}
+.location-detected-badge .location-detected-icon { flex-shrink: 0; margin-top: 3px; }
+/* Two-line layout once a real resolved address is shown (label, then the address itself) --
+   a long address reads far easier broken this way than as one run-on sentence starting with a
+   bold label. The label stays the small bold "eyebrow"; the address is normal weight and can
+   wrap across as many lines as it needs, never truncated or clipped. */
+.location-detected-text { display: flex; flex-direction: column; gap: 2px; overflow-wrap: anywhere; }
+.location-detected-label { font-weight: 700; font-size: 11px; text-transform: uppercase; letter-spacing: 0.03em; }
+.location-detected-address { font-weight: 500; }
+
+/* Honest, permanent-limitation notice (not "coming soon") -- ward-level detail is never resolved
+   from GPS alone (see backend/services/location_resolver.py's own documented hard limit), so this
+   tells the citizen plainly to pick their ward from the list below instead of implying the app
+   will "figure it out" on its own. */
+.location-detected-notice {
+  display: flex; align-items: flex-start; gap: 9px; font-size: 12px; font-weight: 500;
+  color: var(--status-pending); background: var(--status-pending-bg);
+  border-radius: 10px; padding: 10px 13px; line-height: 1.45; margin-bottom: 16px;
+}
+.location-detected-notice .location-detected-icon { flex-shrink: 0; margin-top: 3px; }
+
 /* ============ Citizen Home hero ============ */
 .home-hero {
   border-radius: 16px; padding: 34px 28px; margin-bottom: 26px;
@@ -612,15 +655,23 @@ h1, h2, h3 { text-wrap: balance; margin: 0; }
 .ask-chat-messages { flex: 1; min-height: 0; min-width: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 18px; padding: 4px 2px 12px; }
 
 .ask-chat-empty { display: flex; flex-direction: column; align-items: center; text-align: center; margin: auto 0; padding: 40px 16px; }
-/* The -130px upward nudge only makes sense against .ask-page-viewport's real 100dvh height (see
-   its own comment above) -- it visually re-centers the block against that taller viewport once
-   the fixed-position composer's own height is accounted for. AskJanMitraWidget.tsx's panel never
-   gets that wrapper (its own comment: "AskJanMitraWidget's own panel already manages its own
-   height/scroll"), so this same fixed -130px was shoving the mascot up past the scrollable
-   panel's own top edge -- scroll position can't go negative to compensate, so the top of the
-   mascot rendered clipped off-screen instead of just re-centered. Scoped to the standalone route
-   only; the widget panel keeps the plain `margin: auto 0` centering, no offset. */
-.ask-page-viewport .ask-chat-empty { transform: translateY(-130px); }
+/* The upward nudge only makes sense against .ask-page-viewport's real 100dvh height (see its own
+   comment above) -- it visually re-centers the block against that taller viewport once the
+   fixed-position composer's own height is accounted for. AskJanMitraWidget.tsx's panel never gets
+   that wrapper (its own comment: "AskJanMitraWidget's own panel already manages its own
+   height/scroll"), so this same nudge was shoving the mascot up past the scrollable panel's own
+   top edge -- scroll position can't go negative to compensate, so the top of the mascot rendered
+   clipped off-screen instead of just re-centered. Scoped to the standalone route only; the widget
+   panel keeps the plain `margin: auto 0` centering, no offset.
+
+   LIVE-REPORTED BUG: a flat -130px had the exact same problem the paragraph above already
+   describes, just triggered a different way -- on a genuinely SHORT viewport (a small window, a
+   phone in a cramped browser chrome), -130px alone still exceeded the actual slack available in
+   .ask-chat-messages' own scrollable box, clipping the mascot's head/torso off the top with only
+   its legs visible, same "can't scroll negative" mechanism. max(-130px, -12vh) keeps the full
+   -130px on a tall viewport (unchanged from before) but automatically eases off toward 0 as the
+   viewport gets shorter, so the shift can never exceed what a given screen actually has room for. */
+.ask-page-viewport .ask-chat-empty { transform: translateY(max(-130px, -12vh)); }
 
 /* Crossfade wrapper for the welcome-screen mascot's idle<->greeting loop (WelcomeMascot in
    AskJanMitra.tsx) -- the outgoing pose fades+settles out while the incoming one fades+eases in,
@@ -957,3 +1008,10 @@ h1, h2, h3 { text-wrap: balance; margin: 0; }
 .nav-drawer a:hover { color: var(--ink); background: var(--surface-2); }
 .nav-drawer a.active { color: var(--accent-fg); background: color-mix(in srgb, var(--accent-fg) 12%, var(--surface)); }
 @media (prefers-reduced-motion: reduce) { .nav-drawer { transition: none; } }
+
+/* Required-field asterisk / optional-field marker, shared across every form/modal in the app
+   (Login, Signup, Settings, worker/admin modals, Report Issue, etc.) -- one shared pair of
+   classes so a citizen/worker/admin sees the exact same visual language for "required" vs
+   "optional" no matter which form they're on. */
+.field-required-mark { color: var(--status-critical); margin-left: 2px; }
+.field-optional-mark { color: var(--ink-2); font-weight: 400; font-size: 11px; margin-left: 5px; }

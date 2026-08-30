@@ -7,6 +7,7 @@ import { api, ApiError } from "../lib/api";
 import ThemeToggle from "../components/ThemeToggle";
 import AuthPanel from "../components/AuthPanel";
 import AuthFormBrand from "../components/AuthFormBrand";
+import PasswordInput from "../components/PasswordInput";
 import "./Auth.css";
 
 export default function Login() {
@@ -72,7 +73,10 @@ export default function Login() {
 
           <form onSubmit={handleSubmit} noValidate>
             <div className={`field ${fieldErrors.identifier ? "has-error" : ""}`}>
-              <label htmlFor="login-identifier">{t(lang, "auth.field.identifier")}</label>
+              <label htmlFor="login-identifier">
+                {t(lang, "auth.field.identifier")}
+                <span className="field-required-mark" aria-hidden="true">*</span>
+              </label>
               <input
                 id="login-identifier"
                 type="text"
@@ -89,10 +93,13 @@ export default function Login() {
               )}
             </div>
             <div className={`field ${fieldErrors.password ? "has-error" : ""}`}>
-              <label htmlFor="login-password">{t(lang, "auth.field.password")}</label>
-              <input
+              <label htmlFor="login-password">
+                {t(lang, "auth.field.password")}
+                <span className="field-required-mark" aria-hidden="true">*</span>
+              </label>
+              <PasswordInput
+                lang={lang}
                 id="login-password"
-                type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 aria-invalid={fieldErrors.password || undefined}

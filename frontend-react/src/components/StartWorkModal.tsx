@@ -64,7 +64,10 @@ export default function StartWorkModal({
 
         <form onSubmit={handleSubmit} noValidate>
           <div className={`field ${fieldError ? "has-error" : ""}`}>
-            <label htmlFor="start-assessment">{t(lang, "worker.start.assessmentLabel")}</label>
+            <label htmlFor="start-assessment">
+              {t(lang, "worker.start.assessmentLabel")}
+              <span className="field-required-mark" aria-hidden="true">*</span>
+            </label>
             <textarea
               id="start-assessment"
               rows={4}
@@ -78,7 +81,10 @@ export default function StartWorkModal({
             {fieldError && <div className="field-error">{t(lang, "worker.start.assessmentRequired")}</div>}
           </div>
           <div className="field">
-            <label>{t(lang, "worker.start.photoLabel")}</label>
+            <label>
+              {t(lang, "worker.start.photoLabel")}
+              <span className="field-optional-mark">{t(lang, "signup.homeLocation.optional")}</span>
+            </label>
             <MultiPhotoUpload photos={photos} onChange={setPhotos} />
           </div>
 

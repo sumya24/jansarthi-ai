@@ -65,7 +65,10 @@ export default function CompleteComplaintModal({
 
         <form onSubmit={handleSubmit} noValidate>
           <div className={`field ${fieldError ? "has-error" : ""}`}>
-            <label htmlFor="completion-status">{t(lang, "worker.complete.statusLabel")}</label>
+            <label htmlFor="completion-status">
+              {t(lang, "worker.complete.statusLabel")}
+              <span className="field-required-mark" aria-hidden="true">*</span>
+            </label>
             <textarea
               id="completion-status"
               rows={4}
@@ -79,7 +82,10 @@ export default function CompleteComplaintModal({
             {fieldError && <div className="field-error">{t(lang, "worker.complete.statusRequired")}</div>}
           </div>
           <div className="field">
-            <label>{t(lang, "worker.complete.photoLabel")}</label>
+            <label>
+              {t(lang, "worker.complete.photoLabel")}
+              <span className="field-optional-mark">{t(lang, "signup.homeLocation.optional")}</span>
+            </label>
             <MultiPhotoUpload photos={photos} onChange={setPhotos} />
           </div>
 

@@ -153,6 +153,7 @@
 .home-location-row-last { margin-bottom: 12px; }
 .home-location-row select:disabled { opacity: 0.45; cursor: not-allowed; background: var(--surface-2); }
 .home-location-note { font-size: 10.5px; color: var(--ink-2); margin-top: 3px; }
+/* .field-required-mark / .field-optional-mark now live in styles/global.css, shared app-wide. */
 /* Inline email verification on Signup -- a "Send code" button next to the email field itself
    (not a separate page/step), mirroring the same send-code-then-confirm pattern Settings' own
    add-email section already uses, just surfaced during signup and gating the "Create account"
