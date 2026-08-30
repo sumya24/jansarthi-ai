@@ -80,18 +80,26 @@ export default function AddWorkerModal({ onClose, onCreated }: { onClose: () => 
         // (a 4-level cascading location picker reads as cramped at the base .modal 420px) but
         // this modal, which grew the same WorkerLocationPicker, was never given the same
         // treatment -- same fix, same width, for the same underlying component.
-        style={{ maxWidth: 560 }}
+        //
+        // LIVE-REPORTED: plain overflow-y:auto on this rounded-corner box (the base .modal
+        // class's own default) let the browser's native scrollbar sit flush against the right
+        // edge, squaring off the top/bottom-right corners even though the CSS radius still
+        // applies on all four -- same bug/fix as SummaryModal.tsx/SettingsModal.tsx: padding:0 +
+        // overflow:hidden here, scrolling moved to an inner wrapper below.
+        style={{ maxWidth: 560, padding: 0, overflow: "hidden", display: "flex", flexDirection: "column" }}
         role="dialog"
         aria-modal="true"
         aria-labelledby="jm-modal-title"
         tabIndex={-1}
       >
-        <div className="modal-head">
+        <div className="modal-head" style={{ margin: 0, padding: "26px 26px 0" }}>
           <h3 className="display" id="jm-modal-title">{t(lang, "addWorker.title")}</h3>
           <button className="x" aria-label={t(lang, "common.close")} onClick={onClose}>
             ✕
           </button>
         </div>
+
+        <div style={{ overflowY: "auto", padding: "18px 26px 22px" }}>
         <div className="modal-note">
           {t(lang, "addWorker.note")}
         </div>
@@ -100,22 +108,34 @@ export default function AddWorkerModal({ onClose, onCreated }: { onClose: () => 
 
         <form onSubmit={handleSubmit} noValidate>
           <div className={`field ${fieldErrors.fullName ? "has-error" : ""}`}>
-            <label htmlFor="worker-name">{t(lang, "addWorker.fullName")}</label>
+            <label htmlFor="worker-name">
+              {t(lang, "addWorker.fullName")}
+              <span className="field-required-mark" aria-hidden="true">*</span>
+            </label>
             <input id="worker-name" type="text" value={fullName} onChange={(e) => setFullName(e.target.value)} placeholder={t(lang, "addWorker.fullNamePlaceholder")} />
             {fieldErrors.fullName && <div className="field-error">{t(lang, "common.fieldRequired")}</div>}
           </div>
           <div className={`field ${fieldErrors.phone ? "has-error" : ""}`}>
-            <label htmlFor="worker-phone">{t(lang, "addWorker.phone")}</label>
+            <label htmlFor="worker-phone">
+              {t(lang, "addWorker.phone")}
+              <span className="field-required-mark" aria-hidden="true">*</span>
+            </label>
             <input id="worker-phone" type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="98xxxxxxxx" />
             {fieldErrors.phone && <div className="field-error">{t(lang, "common.fieldRequired")}</div>}
           </div>
           <div className={`field ${fieldErrors.password ? "has-error" : ""}`}>
-            <label htmlFor="worker-password">{t(lang, "addWorker.tempPassword")}</label>
+            <label htmlFor="worker-password">
+              {t(lang, "addWorker.tempPassword")}
+              <span className="field-required-mark" aria-hidden="true">*</span>
+            </label>
             <input id="worker-password" type="text" value={password} onChange={(e) => setPassword(e.target.value)} />
             {fieldErrors.password && <div className="field-error">{t(lang, "common.fieldRequired")}</div>}
           </div>
           <div className={`field ${fieldErrors.confirmPassword ? "has-error" : ""}`}>
-            <label htmlFor="worker-confirm-password">{t(lang, "auth.field.confirmPassword")}</label>
+            <label htmlFor="worker-confirm-password">
+              {t(lang, "auth.field.confirmPassword")}
+              <span className="field-required-mark" aria-hidden="true">*</span>
+            </label>
             <input
               id="worker-confirm-password"
               type="text"
@@ -136,7 +156,10 @@ export default function AddWorkerModal({ onClose, onCreated }: { onClose: () => 
           />
           {fieldErrors.email && <div className="field-error">{t(lang, "auth.signup.verifyEmailFirst")}</div>}
           <div className={`field ${fieldErrors.ward ? "has-error" : ""}`}>
-            <label>{t(lang, "addWorker.ward")}</label>
+            <label>
+              {t(lang, "addWorker.ward")}
+              <span className="field-required-mark" aria-hidden="true">*</span>
+            </label>
             <WorkerLocationPicker lang={lang} onChange={setLocation} hasError={fieldErrors.ward} />
             {fieldErrors.ward && <div className="field-error">{t(lang, "common.fieldRequired")}</div>}
           </div>
@@ -165,6 +188,7 @@ export default function AddWorkerModal({ onClose, onCreated }: { onClose: () => 
             </button>
           </div>
         </form>
+        </div>
       </div>
     </div>
   );

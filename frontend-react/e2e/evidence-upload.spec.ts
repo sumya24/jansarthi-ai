@@ -33,7 +33,7 @@ test.beforeAll(() => {
 async function login(page: import("@playwright/test").Page, phone: string, password: string) {
   await page.goto("/login");
   await page.getByLabel("Phone number").fill(phone);
-  await page.getByLabel("Password").fill(password);
+  await page.getByLabel("Password", { exact: true }).fill(password);
   await page.getByRole("button", { name: "Log in" }).click();
   // Wait for the login itself to actually complete (token stored, redirected off /login) before
   // returning -- a caller that immediately does page.goto() right after this would otherwise

@@ -6,6 +6,7 @@ import { api, ApiError } from "../lib/api";
 import ThemeToggle from "../components/ThemeToggle";
 import AuthPanel from "../components/AuthPanel";
 import AuthFormBrand from "../components/AuthFormBrand";
+import PasswordInput from "../components/PasswordInput";
 import "./Auth.css";
 
 // Two-step form: (1) email -> request code -- a clear error if the email isn't a registered,
@@ -92,7 +93,10 @@ export default function ForgotPassword() {
             <form onSubmit={handleRequestCode} noValidate>
               <p className="field-hint">{t(lang, "auth.forgotPassword.emailHint")}</p>
               <div className={`field ${fieldErrors.email ? "has-error" : ""}`}>
-                <label htmlFor="forgot-email">{t(lang, "auth.email.label")}</label>
+                <label htmlFor="forgot-email">
+                  {t(lang, "auth.email.label")}
+                  <span className="field-required-mark" aria-hidden="true">*</span>
+                </label>
                 <input
                   id="forgot-email"
                   type="email"
@@ -116,7 +120,10 @@ export default function ForgotPassword() {
               <div className="banner-success">{t(lang, "auth.forgotPassword.sentNotice")}</div>
               <p className="field-hint">{t(lang, "auth.forgotPassword.codeHint")}</p>
               <div className={`field ${fieldErrors.code ? "has-error" : ""}`}>
-                <label htmlFor="forgot-code">{t(lang, "auth.field.otpCode")}</label>
+                <label htmlFor="forgot-code">
+                  {t(lang, "auth.field.otpCode")}
+                  <span className="field-required-mark" aria-hidden="true">*</span>
+                </label>
                 <input
                   id="forgot-code"
                   type="text"
@@ -133,10 +140,13 @@ export default function ForgotPassword() {
                 )}
               </div>
               <div className={`field ${fieldErrors.newPassword ? "has-error" : ""}`}>
-                <label htmlFor="forgot-new-password">{t(lang, "auth.changePassword.new")}</label>
-                <input
+                <label htmlFor="forgot-new-password">
+                  {t(lang, "auth.changePassword.new")}
+                  <span className="field-required-mark" aria-hidden="true">*</span>
+                </label>
+                <PasswordInput
+                  lang={lang}
                   id="forgot-new-password"
-                  type="password"
                   value={newPassword}
                   onChange={(e) => setNewPassword(e.target.value)}
                   aria-invalid={fieldErrors.newPassword || undefined}

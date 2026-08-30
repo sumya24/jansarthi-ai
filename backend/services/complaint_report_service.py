@@ -762,12 +762,18 @@ def _draw_header(c: pdfcanvas.Canvas, _doc, display_language: str = "en") -> Non
             width=mark_size, height=mark_size, mask="auto", preserveAspectRatio=True,
         )
 
-    # Wordmark in the source logo's own "Jan"/"Mitra"/"AI" colors, unmodified -- navy/green/blue
+    # Wordmark in the source logo's own "Jan"/"Sarthi"/"AI" colors, unmodified -- navy/green/blue
     # all read correctly on this light surface, the same three brand colors (--accent, --primary,
     # --accent-fg) used everywhere else in the app on light surfaces. The brand name itself is
     # never translated (matches the frontend, which also always renders "JanSarthi AI" as-is).
+    #
+    # LIVE-REPORTED: this said "Mitra" instead of "Sarthi" -- a leftover from the app's old name
+    # (JanMitra AI), never updated when the header wordmark was written, even though the footer a
+    # few hundred lines below (and every other user-facing string in this file/the frontend)
+    # already correctly says "JanSarthi AI". Every downloaded report's header literally
+    # contradicted its own footer until this was caught.
     c.setFont("Helvetica-Bold", 19)
-    segments = [("Jan", _NAVY), ("Mitra", colors.HexColor("#16A34A")), (" AI", colors.HexColor("#0284C7"))]
+    segments = [("Jan", _NAVY), ("Sarthi", colors.HexColor("#16A34A")), (" AI", colors.HexColor("#0284C7"))]
     total_w = sum(c.stringWidth(text, "Helvetica-Bold", 19) for text, _ in segments)
     text_x = _PAGE_W - _MARGIN - total_w  # right-align the wordmark's right edge to the margin
     cx = text_x

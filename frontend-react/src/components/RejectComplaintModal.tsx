@@ -62,7 +62,10 @@ export default function RejectComplaintModal({
 
         <form onSubmit={handleSubmit} noValidate>
           <div className={`field ${fieldError ? "has-error" : ""}`}>
-            <label htmlFor="reject-reason">{t(lang, "worker.reject.reasonLabel")}</label>
+            <label htmlFor="reject-reason">
+              {t(lang, "worker.reject.reasonLabel")}
+              <span className="field-required-mark" aria-hidden="true">*</span>
+            </label>
             <textarea
               id="reject-reason"
               rows={3}

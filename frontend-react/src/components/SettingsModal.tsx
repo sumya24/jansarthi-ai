@@ -5,6 +5,7 @@ import { SUPPORTED_LANGUAGES, t, type LangCode } from "../lib/i18n";
 import { api, ApiError } from "../lib/api";
 import { useModalA11y } from "../lib/useModalA11y";
 import HomeLocationPicker, { type HomeLocationValue } from "./HomeLocationPicker";
+import PasswordInput from "./PasswordInput";
 
 export default function SettingsModal({ onClose, onLogout }: { onClose: () => void; onLogout: () => void }) {
   const { user, token, updateUser } = useAuth();
@@ -13,6 +14,11 @@ export default function SettingsModal({ onClose, onLogout }: { onClose: () => vo
   const [language, setLanguage] = useState<LangCode>((user?.preferred_language as LangCode) ?? "en");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  // LIVE-REPORTED GAP: unlike every other Full Name field in this app (Signup, Add/Edit Worker),
+  // this one had no client-side required check at all -- a blank name only ever surfaced as a
+  // generic banner error from the backend, if the backend even rejects it, rather than the same
+  // inline "this field is required" pattern used everywhere else. Fixed to match.
+  const [profileFieldErrors, setProfileFieldErrors] = useState<Record<string, boolean>>({});
 
   // Citizen-only -- see HomeLocationPicker.tsx's own docstring; workers/admins have no residence
   // to edit (a worker's `ward` is their operational area, a different concept -- see User.ward's
@@ -25,6 +31,11 @@ export default function SettingsModal({ onClose, onLogout }: { onClose: () => vo
 
   async function handleSave() {
     if (!token) return;
+    if (!fullName.trim()) {
+      setProfileFieldErrors({ fullName: true });
+      return;
+    }
+    setProfileFieldErrors({});
     setSaving(true);
     setError(null);
     try {
@@ -164,24 +175,45 @@ export default function SettingsModal({ onClose, onLogout }: { onClose: () => vo
         // 4-level cascading location picker (see HomeLocationPicker below) that reads as cramped,
         // wrapping-heavy, and easy to misread at the base width; every other field here still
         // reads comfortably wider too.
-        style={{ maxWidth: 560 }}
+        //
+        // LIVE-REPORTED: plain overflow-y:auto on this rounded-corner box (the base .modal
+        // class's own default) let the browser's native scrollbar sit flush against the right
+        // edge, which visually squares off the top/bottom-right corners even though the CSS
+        // radius is still applied on all four -- same bug, same fix already used by
+        // SummaryModal.tsx/ReportModal.tsx: padding:0 + overflow:hidden here, with scrolling
+        // moved to an inner wrapper below.
+        style={{ maxWidth: 560, padding: 0, overflow: "hidden", display: "flex", flexDirection: "column" }}
         role="dialog"
         aria-modal="true"
         aria-labelledby="jm-modal-title"
         tabIndex={-1}
       >
-        <div className="modal-head">
+        <div className="modal-head" style={{ margin: 0, padding: "26px 26px 0" }}>
           <h3 className="display" id="jm-modal-title">{t(lang, "settings.title")}</h3>
           <button className="x" aria-label={t(lang, "common.close")} onClick={onClose}>
             ✕
           </button>
         </div>
 
+        <div style={{ overflowY: "auto", padding: "18px 26px 22px" }}>
         {error && <div className="banner-error">{error}</div>}
 
-        <div className="field">
-          <label htmlFor="settings-name">{t(lang, "settings.fullName")}</label>
-          <input id="settings-name" type="text" value={fullName} onChange={(e) => setFullName(e.target.value)} />
+        <div className={`field ${profileFieldErrors.fullName ? "has-error" : ""}`}>
+          <label htmlFor="settings-name">
+            {t(lang, "settings.fullName")}
+            <span className="field-required-mark" aria-hidden="true">*</span>
+          </label>
+          <input
+            id="settings-name"
+            type="text"
+            value={fullName}
+            onChange={(e) => setFullName(e.target.value)}
+            aria-invalid={profileFieldErrors.fullName || undefined}
+            aria-describedby={profileFieldErrors.fullName ? "settings-name-error" : undefined}
+          />
+          {profileFieldErrors.fullName && (
+            <div className="field-error" id="settings-name-error">{t(lang, "common.fieldRequired")}</div>
+          )}
         </div>
         <div className="field">
           <label htmlFor="settings-phone">{t(lang, "settings.phone")}</label>
@@ -253,10 +285,13 @@ export default function SettingsModal({ onClose, onLogout }: { onClose: () => vo
             {passwordError && <div className="banner-error">{passwordError}</div>}
             {passwordSuccess && <div className="banner-success">{t(lang, "auth.changePassword.success")}</div>}
             <div className={`field ${passwordFieldErrors.currentPassword ? "has-error" : ""}`}>
-              <label htmlFor="settings-current-password">{t(lang, "auth.changePassword.current")}</label>
-              <input
+              <label htmlFor="settings-current-password">
+                {t(lang, "auth.changePassword.current")}
+                <span className="field-required-mark" aria-hidden="true">*</span>
+              </label>
+              <PasswordInput
+                lang={lang}
                 id="settings-current-password"
-                type="password"
                 value={currentPassword}
                 onChange={(e) => setCurrentPassword(e.target.value)}
                 aria-invalid={passwordFieldErrors.currentPassword || undefined}
@@ -266,10 +301,13 @@ export default function SettingsModal({ onClose, onLogout }: { onClose: () => vo
               )}
             </div>
             <div className={`field ${passwordFieldErrors.newPassword ? "has-error" : ""}`}>
-              <label htmlFor="settings-new-password">{t(lang, "auth.changePassword.new")}</label>
-              <input
+              <label htmlFor="settings-new-password">
+                {t(lang, "auth.changePassword.new")}
+                <span className="field-required-mark" aria-hidden="true">*</span>
+              </label>
+              <PasswordInput
+                lang={lang}
                 id="settings-new-password"
-                type="password"
                 value={newPassword}
                 onChange={(e) => setNewPassword(e.target.value)}
                 aria-invalid={passwordFieldErrors.newPassword || undefined}
@@ -281,10 +319,13 @@ export default function SettingsModal({ onClose, onLogout }: { onClose: () => vo
               )}
             </div>
             <div className={`field ${passwordFieldErrors.confirmNewPassword ? "has-error" : ""}`}>
-              <label htmlFor="settings-confirm-new-password">{t(lang, "auth.changePassword.confirmNew")}</label>
-              <input
+              <label htmlFor="settings-confirm-new-password">
+                {t(lang, "auth.changePassword.confirmNew")}
+                <span className="field-required-mark" aria-hidden="true">*</span>
+              </label>
+              <PasswordInput
+                lang={lang}
                 id="settings-confirm-new-password"
-                type="password"
                 value={confirmNewPassword}
                 onChange={(e) => setConfirmNewPassword(e.target.value)}
                 aria-invalid={passwordFieldErrors.confirmNewPassword || undefined}
@@ -314,7 +355,10 @@ export default function SettingsModal({ onClose, onLogout }: { onClose: () => vo
                 {emailError && <div className="banner-error">{emailError}</div>}
                 {emailSuccess && <div className="banner-success">{t(lang, "auth.email.success")}</div>}
                 <div className={`field ${emailFieldErrors.newEmail ? "has-error" : ""}`}>
-                  <label htmlFor="settings-new-email">{t(lang, "auth.email.label")}</label>
+                  <label htmlFor="settings-new-email">
+                    {t(lang, "auth.email.label")}
+                    <span className="field-required-mark" aria-hidden="true">*</span>
+                  </label>
                   <input
                     id="settings-new-email"
                     type="email"
@@ -333,7 +377,10 @@ export default function SettingsModal({ onClose, onLogout }: { onClose: () => vo
                   <>
                     <div className="field-hint">{t(lang, "auth.email.sent")}</div>
                     <div className={`field ${emailFieldErrors.emailCode ? "has-error" : ""}`}>
-                      <label htmlFor="settings-email-code">{t(lang, "auth.field.otpCode")}</label>
+                      <label htmlFor="settings-email-code">
+                        {t(lang, "auth.field.otpCode")}
+                        <span className="field-required-mark" aria-hidden="true">*</span>
+                      </label>
                       <input
                         id="settings-email-code"
                         type="text"
@@ -364,6 +411,7 @@ export default function SettingsModal({ onClose, onLogout }: { onClose: () => vo
           <button className="btn btn-primary" onClick={handleSave} disabled={saving}>
             {saving ? t(lang, "settings.saving") : t(lang, "settings.save")}
           </button>
+        </div>
         </div>
       </div>
     </div>

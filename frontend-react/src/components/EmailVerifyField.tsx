@@ -41,13 +41,19 @@ export interface EmailVerifyValue {
  * Force-fitting it into this component's token-shaped API would add branching, not remove
  * duplication. */
 export default function EmailVerifyField({
-  lang, idPrefix, onChange, hasError, initialEmail, initialVerified,
+  lang, idPrefix, onChange, hasError, initialEmail, initialVerified, required,
   sendCode, verifyCode,
 }: {
   lang: LangCode;
   idPrefix: string;
   onChange: (value: EmailVerifyValue) => void;
   hasError?: boolean;
+  // Signup's email is mandatory (an account can't exist without one); the admin's Add/Edit
+  // Worker forms treat it as genuinely optional (a worker record can be created with none at
+  // all -- see AddWorkerModal.tsx's own validation, which only requires verification once an
+  // email is actually typed). Defaults to false (optional) rather than true, since the two
+  // worker-form callers outnumber Signup's one -- Signup passes required explicitly.
+  required?: boolean;
   // Pre-fills from an existing, already-verified email (editing a worker who already has one) --
   // starts straight in the "verified" display state, same as a freshly-verified address, with the
   // same "Change email" escape hatch to replace it (which then requires a fresh OTP for whatever
@@ -138,7 +144,14 @@ export default function EmailVerifyField({
   return (
     <div className="email-verify-block">
       <div className={`field ${hasError ? "has-error" : ""}`}>
-        <label htmlFor={`${idPrefix}-email`}>{t(lang, "auth.email.label")}</label>
+        <label htmlFor={`${idPrefix}-email`}>
+          {t(lang, "auth.email.label")}
+          {required ? (
+            <span className="field-required-mark" aria-hidden="true">*</span>
+          ) : (
+            <span className="field-optional-mark">{t(lang, "signup.homeLocation.optional")}</span>
+          )}
+        </label>
         <div className="email-verify-row">
           <input
             id={`${idPrefix}-email`}

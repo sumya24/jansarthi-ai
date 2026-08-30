@@ -140,3 +140,46 @@ def resolve_ward(text: str, db: Session = Depends(get_db)) -> Ward | None:
     expected, ordinary answer for this lookup (e.g. any ward a citizen typed as free text because
     their own city has none seeded), not an error."""
     return _location_resolver.resolve_ward_by_text(db, text)
+
+
+class ResolvedCoordinates(BaseModel):
+    """What LocationResolver.resolve_coordinates() could determine from a raw GPS fix -- see that
+    method's own docstring for why there is deliberately no ward/locality field here (OSM/
+    Nominatim's ward-level coverage in India is inconsistent-to-absent, so this never claims
+    ward-level precision). Every field is None if it couldn't be determined; that's an honest
+    "don't know", never a guess."""
+
+    formatted_address: str | None
+    city_name: str | None
+    district_name: str | None
+    state_name: str | None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+@router.get("/resolve-coordinates", response_model=ResolvedCoordinates)
+def resolve_coordinates(lat: float, lng: float) -> ResolvedCoordinates:
+    """LIVE-REPORTED GAP: Report an Issue's "Use current location" step used to attach raw GPS
+    coordinates and show a generic "location detected" badge with no indication of WHERE was
+    actually detected -- the ward shown alongside it is always just the citizen's own pre-filled
+    home ward (see ReportIssue.tsx), never anything derived from the GPS fix, since ward-level
+    reverse geocoding wasn't available until a citizen actually submitted the complaint (see
+    routes/complaints.py's create_complaint, which already calls this exact resolver, just too
+    late for the wizard to show anything back to the citizen in the moment).
+
+    This endpoint exposes that same resolution live, during the wizard, purely so the citizen can
+    see and confirm an honest, human-readable version of what was actually detected (e.g. "Koramangala,
+    Bengaluru, Karnataka") instead of a vague "detected" message -- LocationPicker.tsx's badge now
+    shows `formatted_address` when this resolves, and falls back to the raw coordinates themselves
+    if it doesn't (Nominatim being unreachable, or genuinely nothing resolvable for this point) --
+    never blocking the flow either way, same as every other geolocation failure in that component.
+    Deliberately unauthenticated, matching every other lookup in this file -- resolving an
+    arbitrary public lat/lng pair carries no citizen data and no more exposure than calling
+    Nominatim directly would."""
+    resolved = _location_resolver.resolve_coordinates(lat, lng)
+    return ResolvedCoordinates(
+        formatted_address=resolved.formatted_address,
+        city_name=resolved.city_name,
+        district_name=resolved.district_name,
+        state_name=resolved.state_name,
+    )

@@ -63,7 +63,10 @@ export default function ProgressUpdateModal({
 
         <form onSubmit={handleSubmit} noValidate>
           <div className={`field ${fieldError ? "has-error" : ""}`}>
-            <label htmlFor="progress-update-text">{t(lang, "worker.update.textLabel")}</label>
+            <label htmlFor="progress-update-text">
+              {t(lang, "worker.update.textLabel")}
+              <span className="field-required-mark" aria-hidden="true">*</span>
+            </label>
             <textarea
               id="progress-update-text"
               rows={3}
@@ -77,7 +80,10 @@ export default function ProgressUpdateModal({
             {fieldError && <div className="field-error">{t(lang, "worker.update.textRequired")}</div>}
           </div>
           <div className="field">
-            <label>{t(lang, "worker.update.photoLabel")}</label>
+            <label>
+              {t(lang, "worker.update.photoLabel")}
+              <span className="field-optional-mark">{t(lang, "signup.homeLocation.optional")}</span>
+            </label>
             <MultiPhotoUpload photos={photos} onChange={setPhotos} />
           </div>
 

@@ -74,13 +74,38 @@ class NominatimGeocoder:
     """
 
     def reverse(self, latitude: float, longitude: float) -> dict | None:
-        """Returns the raw Nominatim JSON response's `address` dict, or None on any failure
-        (timeout, non-200, malformed response, no network). Never raises -- a geocoding failure
-        must never break complaint submission (see LocationResolver.resolve_coordinates)."""
+        """Returns the raw Nominatim JSON response IN FULL (both its top-level `display_name` --
+        the one human-readable formatted address string -- and its nested `address` dict of
+        structured components), or None on any failure (timeout, non-200, malformed response, no
+        network). Never raises -- a geocoding failure must never break complaint submission (see
+        LocationResolver.resolve_coordinates).
+
+        LIVE-REPORTED BUG (found alongside the zoom fix below): this used to return only
+        `data.get("address")` -- the nested structured-component dict -- discarding the
+        response's OWN top-level `display_name` entirely. resolve_coordinates() below then read
+        `address.get("display_name")`, which can never exist on that nested dict (display_name is
+        a SIBLING key of "address" in Nominatim's real response shape, not a child of it) -- so
+        `formatted_address` silently evaluated to None on every single call, forcing every caller
+        (including the citizen-facing "location detected" preview) to fall back to the coarser
+        city/district/state join, no matter how much real detail Nominatim actually returned.
+
+        LIVE-REPORTED GAP: `zoom` previously requested 10 -- Nominatim's own reverse-geocode
+        "zoom" parameter is a request for how FINE-GRAINED a result to prioritize (its scale
+        roughly: 3=country, 8=county, 10=city, 14=suburb, 16-18=street/building), not just a
+        map-display zoom level -- and 10 capped `display_name`/formatted_address at city level,
+        so the citizen-facing "location detected" preview (routes/locations.py's
+        resolve-coordinates) never showed anything more specific than "City, District, State"
+        even when the underlying GPS fix was itself precise to a few meters. Bumped to 18 (the
+        finest Nominatim offers) so `formatted_address` carries real street/neighborhood detail
+        when OSM has it. Does NOT affect this module's own "never claim ward-level precision"
+        rule -- the `address` dict's city/state_district/state keys (all this resolver ever
+        extracts into ResolvedLocation) are still returned at any zoom; a higher zoom only adds
+        FINER keys (road, house_number, suburb) this code still never reads for ward matching.
+        """
         try:
             resp = requests.get(
                 NOMINATIM_REVERSE_URL,
-                params={"lat": latitude, "lon": longitude, "format": "jsonv2", "zoom": 10, "addressdetails": 1},
+                params={"lat": latitude, "lon": longitude, "format": "jsonv2", "zoom": 18, "addressdetails": 1},
                 headers={"User-Agent": _USER_AGENT},
                 timeout=_REQUEST_TIMEOUT_SECONDS,
             )
@@ -89,7 +114,7 @@ class NominatimGeocoder:
         except (requests.exceptions.RequestException, ValueError) as exc:
             logger.warning("Nominatim reverse geocode failed for (%s, %s): %s", latitude, longitude, exc)
             return None
-        return data.get("address")
+        return data
 
 
 class LocationResolver:
@@ -192,14 +217,20 @@ class LocationResolver:
         """Best-effort reverse geocode. Always returns a ResolvedLocation (never raises, never
         returns None) so a caller can always at least keep the raw coordinates -- a geocoding
         failure must never block complaint submission (see routes/complaints.py)."""
-        address = self._geocoder.reverse(latitude, longitude)
-        if address is None:
+        data = self._geocoder.reverse(latitude, longitude)
+        if data is None:
             return ResolvedLocation(
                 latitude=latitude,
                 longitude=longitude,
                 resolver_name="nominatim (unavailable)",
                 warnings=["Reverse geocoding failed or timed out; only raw coordinates are available."],
             )
+
+        # `display_name` (the one human-readable formatted string) is a TOP-LEVEL key of
+        # Nominatim's response; `address` (structured components) is a separate, nested dict --
+        # the two are siblings, not parent/child (see NominatimGeocoder.reverse's own docstring
+        # for the real bug this fixes: reading display_name off the nested dict instead).
+        address = data.get("address") or {}
 
         # Nominatim's address dict uses varying keys for "city" depending on place type
         # (city/town/village/municipality/county) -- take the first that's present, in that
@@ -222,7 +253,7 @@ class LocationResolver:
             state_name=state,
             district_name=district,
             city_name=city,
-            formatted_address=address.get("display_name") if isinstance(address, dict) else None,
+            formatted_address=data.get("display_name"),
             resolver_name="nominatim (OpenStreetMap, community-maintained -- not an official government source)",
             warnings=warnings,
         )

@@ -167,12 +167,20 @@
    sat AFTER the text -- that pushed it to the row's far right, easy to miss. Now the dot leads
    the row (see the JSX in CitizenHome.tsx), so plain flex-start + the existing `gap` is what
    actually produces "dot, then text" instead of "text ... dot" with a stretched gap between. */
-.home-attn-row { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--line); cursor: pointer; background: none; border-left: none; border-right: none; border-top: none; width: 100%; text-align: left; font-family: inherit; }
+/* LIVE-REPORTED: was `align-items: center`, which centered the dot against the whole two-line
+   title+message block -- looked fine with a short message but drifted visibly out of line with
+   the title as soon as the message wrapped, and didn't match .home-feed-row below (which
+   deliberately top-aligns its own dot to sit level with its first text line). flex-start +
+   the dot's own margin-top does the same thing here, for the same reason. */
+.home-attn-row { display: flex; align-items: flex-start; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--line); cursor: pointer; background: none; border-left: none; border-right: none; border-top: none; width: 100%; text-align: left; font-family: inherit; }
 .home-attn-row:last-child { border-bottom: none; }
 .home-attn-row:hover .home-attn-title { color: var(--accent-fg); }
 .home-attn-title { font-size: 13px; font-weight: 600; color: var(--ink); transition: color var(--dur-fast) var(--ease); }
 .home-attn-msg { font-size: 11.5px; color: var(--ink-3); margin-top: 2px; }
-.home-attn-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent-fg); flex-shrink: 0; }
+/* LIVE-REPORTED: was 7px -- read as barely-there next to the 13px title text it sits beside,
+   especially once the glow (below) had faded to its dim end of the cycle. Sized up together with
+   .home-feed-dot so both stay visually consistent with each other. */
+.home-attn-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--accent-fg); margin-top: 4px; flex-shrink: 0; }
 .home-attn-dot.read { background: var(--ink-3); opacity: 0.5; }
 
 /* Unread notification glow -- an expanding-and-fading ring, same technical pattern as the
@@ -180,17 +188,17 @@
    since this one is deliberately used for "new activity" emphasis, not AI activity. */
 @keyframes notif-dot-glow {
   0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent-fg) 55%, transparent); }
-  50% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent-fg) 0%, transparent); }
+  50% { box-shadow: 0 0 0 7px color-mix(in srgb, var(--accent-fg) 0%, transparent); }
 }
 .home-attn-dot, .home-feed-dot.unread { animation: notif-dot-glow 1.8s ease-in-out infinite; }
 @media (prefers-reduced-motion: reduce) {
-  .home-attn-dot, .home-feed-dot.unread { animation: none; box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-fg) 25%, transparent); }
+  .home-attn-dot, .home-feed-dot.unread { animation: none; box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent-fg) 25%, transparent); }
 }
 
 .home-feed-row { display: flex; gap: 10px; align-items: flex-start; padding: 9px 0; border-bottom: 1px solid var(--line); cursor: pointer; background: none; border-left: none; border-right: none; border-top: none; width: 100%; text-align: left; font-family: inherit; }
 .home-feed-row:last-child { border-bottom: none; }
 .home-feed-row:hover .home-feed-text { color: var(--accent-fg); }
-.home-feed-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent-fg); margin-top: 5px; flex-shrink: 0; }
+.home-feed-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent-fg); margin-top: 4px; flex-shrink: 0; }
 .home-feed-dot.read { background: var(--ink-3); opacity: 0.5; }
 .home-feed-text { font-size: 12.5px; color: var(--ink); transition: color var(--dur-fast) var(--ease); }
 

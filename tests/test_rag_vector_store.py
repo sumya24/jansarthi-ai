@@ -157,7 +157,13 @@ def test_chroma_collection_opens_and_reports_expected_size():
     # vadodara,maharashtra/pune,karnataka/mangaluru,tamil_nadu/madurai,uttar_pradesh/kanpur,
     # west_bengal/asansol}.json and karnataka/bengaluru.json (now 4 records), plus
     # sources/inventory.json's corresponding entries.
-    assert store.size == 1053
+    # 1057, not the earlier 1053 -- Pune had no VERIFIED knowledge covering how to apply for a new
+    # water connection, a real gap surfaced while auditing the manual test script's city/RAG-
+    # coverage table. Sourced directly from PMC's own EGIS Portal (a real government page), added
+    # as one new VERIFIED record (4 chunks). See
+    # knowledge_records/verified/maharashtra/pune.json (now 6 records) and
+    # sources/inventory.json's corresponding entry.
+    assert store.size == 1057
 
 
 def test_chroma_persist_dir_is_configurable_not_hardcoded():

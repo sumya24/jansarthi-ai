@@ -84,29 +84,42 @@ export default function EditWorkerModal({
         // (a 4-level cascading location picker reads as cramped at the base .modal 420px) but
         // this modal, which has the same WorkerLocationPicker, was never given the same
         // treatment -- same fix, same width, for the same underlying component.
-        style={{ maxWidth: 560 }}
+        //
+        // LIVE-REPORTED: plain overflow-y:auto on this rounded-corner box (the base .modal
+        // class's own default) let the browser's native scrollbar sit flush against the right
+        // edge, squaring off the top/bottom-right corners even though the CSS radius still
+        // applies on all four -- same bug/fix as SummaryModal.tsx/SettingsModal.tsx: padding:0 +
+        // overflow:hidden here, scrolling moved to an inner wrapper below.
+        style={{ maxWidth: 560, padding: 0, overflow: "hidden", display: "flex", flexDirection: "column" }}
         role="dialog"
         aria-modal="true"
         aria-labelledby="jm-modal-title"
         tabIndex={-1}
       >
-        <div className="modal-head">
+        <div className="modal-head" style={{ margin: 0, padding: "26px 26px 0" }}>
           <h3 className="display" id="jm-modal-title">{t(lang, "admin.editWorkerTitle")}</h3>
           <button className="x" aria-label={t(lang, "common.close")} onClick={onClose} disabled={saving}>
             ✕
           </button>
         </div>
 
+        <div style={{ overflowY: "auto", padding: "18px 26px 22px" }}>
         {error && <div className="banner-error">{error}</div>}
 
         <form onSubmit={handleSubmit} noValidate>
           <div className={`field ${fieldErrors.fullName ? "has-error" : ""}`}>
-            <label htmlFor="edit-worker-name">{t(lang, "addWorker.fullName")}</label>
+            <label htmlFor="edit-worker-name">
+              {t(lang, "addWorker.fullName")}
+              <span className="field-required-mark" aria-hidden="true">*</span>
+            </label>
             <input id="edit-worker-name" type="text" value={fullName} onChange={(e) => setFullName(e.target.value)} />
             {fieldErrors.fullName && <div className="field-error">{t(lang, "common.fieldRequired")}</div>}
           </div>
           <div className={`field ${fieldErrors.ward ? "has-error" : ""}`}>
-            <label>{t(lang, "addWorker.ward")}</label>
+            <label>
+              {t(lang, "addWorker.ward")}
+              <span className="field-required-mark" aria-hidden="true">*</span>
+            </label>
             <WorkerLocationPicker
               lang={lang}
               onChange={setLocation}
@@ -147,7 +160,10 @@ export default function EditWorkerModal({
             </div>
           </div>
           <div className={`field ${fieldErrors.newPassword ? "has-error" : ""}`}>
-            <label htmlFor="edit-worker-password">{t(lang, "admin.editWorkerNewPassword")}</label>
+            <label htmlFor="edit-worker-password">
+              {t(lang, "admin.editWorkerNewPassword")}
+              <span className="field-optional-mark">{t(lang, "signup.homeLocation.optional")}</span>
+            </label>
             <input
               id="edit-worker-password"
               type="text"
@@ -163,7 +179,10 @@ export default function EditWorkerModal({
           </div>
           {newPassword && (
             <div className={`field ${fieldErrors.confirmNewPassword ? "has-error" : ""}`}>
-              <label htmlFor="edit-worker-confirm-password">{t(lang, "auth.field.confirmPassword")}</label>
+              <label htmlFor="edit-worker-confirm-password">
+                {t(lang, "auth.field.confirmPassword")}
+                <span className="field-required-mark" aria-hidden="true">*</span>
+              </label>
               <input
                 id="edit-worker-confirm-password"
                 type="text"
@@ -187,6 +206,7 @@ export default function EditWorkerModal({
             </button>
           </div>
         </form>
+        </div>
       </div>
     </div>
   );

@@ -1064,5 +1064,18 @@
     "retrieved_at": "2026-08-29T00:00:00Z",
     "geographic_scope": "CITY",
     "notes": "NOT independently re-confirmed by a direct fetch in this session -- site.bbmp.gov.in was unreachable (ECONNREFUSED) from the fetch tool available at research time. Contact details (toll-free 1533, control room 080-22660000, WhatsApp 9480685700 for potholes; customer care 080-22660000/22221188 for streetlights, plus the Sahaaya portal bbmp.sahaaya.in) were confirmed via a search-engine index of this exact URL and a BESCOM public post independently confirming the same BBMP number for streetlight routing. Treat as sourced from the official page, but re-verify with a direct fetch before relying on this for anything beyond a citizen-facing suggestion."
+  },
+  {
+    "source_id": "MH_PMC_EGIS_WATER_CONNECTION_HELP",
+    "source_title": "Steps to Apply for Water Connection -- Pune Municipal Corporation Enterprise GIS (EGIS) Portal",
+    "source_organization": "Pune Municipal Corporation (PMC)",
+    "source_url": "https://gis.pmc.gov.in/PDFFiles/WaterConnection.pdf",
+    "source_type": "OFFICIAL_GOVERNMENT_PDF",
+    "verification_status": "VERIFIED",
+    "publication_date": null,
+    "last_updated": null,
+    "retrieved_at": "2026-08-29T11:39:35+00:00",
+    "geographic_scope": "CITY",
+    "notes": "PDF fetched and text-extracted directly this session (2026-08-29), confirmed live. A 9-page official 'Help' document from PMC's own Enterprise GIS Portal (gis.pmc.gov.in) describing the real step-by-step new water/drainage connection workflow: apply via the EGIS Portal's Online Services > Water/Drainage Connection form (registration required), attach 5 mandatory documents (Site Plan, Completion Certificate, Commencement Certificate, Occupancy Certificate, Licensed Plumber Consent Letter -- the plumber must be from PMC's own authorized list and visits the property to confirm feasibility), then a Junior Engineer assessment -> Deputy Engineer approval -> system-generated Demand Note -> payment (online via Bill Desk, or offline at a CFC/payment centre) -> connection completion. No day-based SLA or fixed fee amount is stated anywhere in this document -- the fee is calculated per application and shown only in the Demand Note after JE assessment; this is reported honestly as NOT FOUND rather than estimated. Screenshot timestamps inside the document are dated 2018, so the underlying portal UI may have changed since, though the department/PMC-run process itself is current."
   }
 ]

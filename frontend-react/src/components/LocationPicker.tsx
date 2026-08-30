@@ -40,6 +40,13 @@ export default function LocationPicker({
   const [mode, setMode] = useState<"choose" | "manual">("choose");
   const [locating, setLocating] = useState(false);
   const [geoError, setGeoError] = useState<string | null>(null);
+  // LIVE-REPORTED GAP: the "location detected" badge used to be a static, generic message with no
+  // indication of WHERE was actually detected -- the ward shown below it is always the citizen's
+  // own pre-filled home ward, never anything derived from GPS (ward-level reverse geocoding only
+  // ever ran server-side, after final submission). Resolved live via api.resolveCoordinates the
+  // moment GPS succeeds, purely for this honest confirmation message -- never blocks the flow and
+  // is never sent to the backend itself (the raw coordinates already are, unchanged).
+  const [resolvedAddress, setResolvedAddress] = useState<string | null>(null);
   // Real, already-known localities for whichever ward is currently picked (e.g. "Indiranagar",
   // "Koramangala") -- offered as suggestions on the Area/Address field below, never a forced
   // choice: it stays the same plain free-text input regardless, this only adds a browser-native
@@ -78,14 +85,31 @@ export default function LocationPicker({
     }
     setLocating(true);
     setGeoError(null);
+    setResolvedAddress(null);
     navigator.geolocation.getCurrentPosition(
       (pos) => {
         setLocating(false);
-        onChange({
-          ...value,
-          coords: { lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy },
-        });
+        const { latitude, longitude, accuracy } = pos.coords;
+        onChange({ ...value, coords: { lat: latitude, lng: longitude, accuracy } });
         setMode("manual"); // still let them confirm/pick the ward — coords alone don't map to a ward name
+        // Best-effort, purely informational -- a failed/slow resolve leaves resolvedAddress null,
+        // and the badge below falls back to showing the raw coordinates instead. Never blocks
+        // proceeding with the wizard either way, same as every other geolocation failure here.
+        api
+          .resolveCoordinates(latitude, longitude)
+          .then((resolved) => {
+            // Nominatim's formatted_address is the ENTIRE administrative chain (road, neighbourhood,
+            // city, district, state, postcode, country) -- only the very TAIL (postcode, country) is
+            // pure noise for a quick-glance badge; everything before that (however many segments --
+            // a dense city address has many, a rural village fix might only have a few) is genuinely
+            // useful detail. Dropping only the last two (postcode, then country) keeps everything
+            // meaningful regardless of how many segments a given address actually has.
+            const parts = [resolved.city_name, resolved.district_name, resolved.state_name].filter(Boolean);
+            const segments = resolved.formatted_address ? resolved.formatted_address.split(",").map((s) => s.trim()) : [];
+            const trimmedFormatted = segments.length > 2 ? segments.slice(0, -2).join(", ") : segments.join(", ") || null;
+            setResolvedAddress(trimmedFormatted || (parts.length > 0 ? parts.join(", ") : null));
+          })
+          .catch(() => setResolvedAddress(null));
       },
       () => {
         setLocating(false);
@@ -94,6 +118,17 @@ export default function LocationPicker({
       },
       { timeout: 8000 }
     );
+  }
+
+  // LIVE-REPORTED BUG: choosing "Select manually" after a previous "Use current location" attempt
+  // left that earlier GPS fix's coords (and the "location detected" badge) silently attached --
+  // going back and explicitly picking the non-GPS path this time never cleared it, so the badge
+  // kept claiming a location was detected under a flow that no longer has anything to do with GPS.
+  function selectManually() {
+    setGeoError(null);
+    setResolvedAddress(null);
+    if (value.coords) onChange({ ...value, coords: null });
+    setMode("manual");
   }
 
   if (mode === "choose") {
@@ -112,7 +147,7 @@ export default function LocationPicker({
             <span style={{ fontSize: 11.5, color: "var(--ink-2)" }}>{t(lang, "location.useCurrentHint")}</span>
           </span>
         </button>
-        <button type="button" className="location-option" onClick={() => setMode("manual")}>
+        <button type="button" className="location-option" onClick={selectManually}>
           <span className="location-option-icon">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
               <path d="M12 21s7-6.5 7-11.5A7 7 0 0 0 5 9.5C5 14.5 12 21 12 21Z" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" />
@@ -132,12 +167,47 @@ export default function LocationPicker({
     <div>
       {geoError && <div className="banner-error">{geoError}</div>}
       {value.coords && (
-        <div className="dev-badge" style={{ marginBottom: 10 }}>
-          {t(lang, "location.gpsAttached")}
-        </div>
+        <>
+          <div className="location-detected-badge">
+            {/* Same crosshair used on the "Use current location" option above -- visually ties
+                this confirmation back to the button that produced it, rather than a new symbol. */}
+            <svg className="location-detected-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <circle cx="12" cy="12" r="3" stroke="currentColor" strokeWidth="1.7" />
+              <path d="M12 2v3M12 19v3M2 12h3M19 12h3" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+            </svg>
+            {resolvedAddress ? (
+              <span className="location-detected-text">
+                <span className="location-detected-label">{t(lang, "location.gpsAttachedPrefix")}</span>
+                <span className="location-detected-address">{resolvedAddress}</span>
+              </span>
+            ) : (
+              <span style={{ fontWeight: 600 }}>{t(lang, "location.gpsAttached")}</span>
+            )}
+          </div>
+          {/* Honest, permanent limitation, not "coming soon" -- ward-level detail is never
+              resolved from GPS alone (see backend/services/location_resolver.py's own documented
+              hard limit: OSM/Nominatim doesn't reliably cover Indian ward boundaries), so this
+              always shows alongside a GPS fix rather than only when something "went wrong". */}
+          <div className="location-detected-notice">
+            <svg className="location-detected-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M12 3 2 20h20L12 3Z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
+              <path d="M12 9.5v4M12 17v.01" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+            </svg>
+            <span>{t(lang, "location.wardNotAutoDetected")}</span>
+          </div>
+        </>
       )}
       <div className="field">
-        <label htmlFor="wizard-ward">{wards.length === 0 ? t(lang, "citizen.wardOptional") : t(lang, "citizen.ward")}</label>
+        <label htmlFor="wizard-ward">
+          {wards.length === 0 ? (
+            t(lang, "citizen.wardOptional")
+          ) : (
+            <>
+              {t(lang, "citizen.ward")}
+              <span className="field-required-mark" aria-hidden="true">*</span>
+            </>
+          )}
+        </label>
         {wards.length > 0 ? (
           <select id="wizard-ward" value={value.ward} onChange={(e) => onChange({ ...value, ward: e.target.value })} required>
             <option value="" disabled>

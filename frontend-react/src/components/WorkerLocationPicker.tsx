@@ -189,7 +189,10 @@ export default function WorkerLocationPicker({
       <div className="home-location-subtitle">{t(lang, "signup.homeLocation.subtitle")}</div>
 
       <div className="field home-location-row">
-        <label htmlFor="worker-location-state">{t(lang, "signup.homeLocation.state")}</label>
+        <label htmlFor="worker-location-state">
+          {t(lang, "signup.homeLocation.state")}
+          <span className="field-required-mark" aria-hidden="true">*</span>
+        </label>
         {!statesLoaded ? (
           <select id="worker-location-state" value="" disabled>
             <option value="">{t(lang, "signup.homeLocation.statePlaceholder")}</option>
@@ -219,7 +222,10 @@ export default function WorkerLocationPicker({
       </div>
 
       <div className="field home-location-row">
-        <label htmlFor="worker-location-city">{t(lang, "signup.homeLocation.city")}</label>
+        <label htmlFor="worker-location-city">
+          {t(lang, "signup.homeLocation.city")}
+          <span className="field-required-mark" aria-hidden="true">*</span>
+        </label>
         {!cityReady ? (
           <select id="worker-location-city" value="" disabled>
             <option value="">{t(lang, "signup.homeLocation.cityPlaceholder")}</option>
@@ -243,7 +249,10 @@ export default function WorkerLocationPicker({
       </div>
 
       <div className="field home-location-row">
-        <label htmlFor="worker-location-ward">{t(lang, "signup.homeLocation.ward")}</label>
+        <label htmlFor="worker-location-ward">
+          {t(lang, "signup.homeLocation.ward")}
+          <span className="field-required-mark" aria-hidden="true">*</span>
+        </label>
         {!wardReady ? (
           <select id="worker-location-ward" value="" disabled>
             <option value="">{t(lang, "signup.homeLocation.wardPlaceholder")}</option>
@@ -267,7 +276,10 @@ export default function WorkerLocationPicker({
       </div>
 
       <div className="field home-location-row home-location-row-last">
-        <label htmlFor="worker-location-area">{t(lang, "signup.homeLocation.area")}</label>
+        <label htmlFor="worker-location-area">
+          {t(lang, "signup.homeLocation.area")}
+          <span className="field-optional-mark">{t(lang, "signup.homeLocation.optional")}</span>
+        </label>
         {!areaReady ? (
           <select id="worker-location-area" value="" disabled>
             <option value="">{t(lang, "signup.homeLocation.areaPlaceholder")}</option>
