@@ -11,6 +11,19 @@ from backend.database import Base, get_db
 from backend.deps import _ai_limiter, _login_limiter, _otp_limiter, _signup_limiter
 from backend.main import app
 from backend.middleware import _general_limiter
+from backend.services.sarvam_client import SarvamClient
+
+# The one test that deliberately needs REAL Sarvam language-detection behavior (see
+# _stub_real_language_detection below) -- kept as a name, not a pytest marker, matching this
+# file's existing low-ceremony style (no pytest.ini/pyproject.toml exists in this repo to
+# register a custom marker in).
+_REAL_LANGUAGE_DETECTION_TEST = "test_response_language_follows_the_actual_text_not_a_stale_ui_toggle"
+# test_sarvam_client.py unit-tests identify_language()'s OWN internals directly (patching
+# client._client and asserting on the method's real return value) -- stubbing the method itself
+# would make those tests exercise the stub instead of the code under test, not just an unrelated
+# real network call. Excluded by module, not by individual test name, since every test in that
+# file is this same shape.
+_REAL_LANGUAGE_DETECTION_MODULE = "test_sarvam_client"
 
 
 @pytest.fixture(autouse=True)
@@ -46,6 +59,35 @@ def _force_email_dev_mode_off(monkeypatch):
     since their own monkeypatch.setattr(settings, "EMAIL_DEV_MODE", True) simply overrides this
     for their own duration."""
     monkeypatch.setattr(settings, "EMAIL_DEV_MODE", False)
+
+
+@pytest.fixture(autouse=True)
+def _stub_real_language_detection(request, monkeypatch):
+    """SarvamClient.identify_language() makes a REAL, billable call to Sarvam's own API whenever
+    a real SARVAM_API_KEY is configured -- and pytest loads that same real key from a developer's
+    own .env (backend/config.py's load_dotenv()), same class of leak _force_email_dev_mode_off
+    above already guards against. It's reached from over a dozen test files' worth of "real
+    service" builders (test_ask_janmitra.py's _real_ask_janmitra_service() and its counterparts
+    across test_ask_janmitra_agent_architecture.py, test_orchestration_graph.py, etc.) -- almost
+    none of which actually care what language gets detected, they only want the real RAG/graph
+    logic exercised. Without this, running the full local suite silently burns real Sarvam
+    credits every single run, and a funded CI key would drain fast for the same reason (see
+    PHOENIX_TRACING_PLAN.md's 2026-08-30 entry -- the user's own direct question: "the credits is
+    automatically gone... can we create our own fake serum so we can test that thing").
+
+    Stubbed to always return None -- the exact same "detection unavailable" result Sarvam's own
+    client already returns fail-open on ANY real failure (see identify_language's own docstring)
+    -- which is harmless for every test that doesn't specifically assert on detected-language
+    behavior: the caller-supplied language is used as the fallback either way, so this changes
+    nothing observable for the overwhelming majority of tests. The ONE test that deliberately
+    verifies genuine real-API detection opts out by name below -- it still exercises the real,
+    live Sarvam call (and gracefully skips itself if that account is out of credits, see that
+    test's own body), so this fixture costs that one test's real coverage nothing."""
+    if request.node.name == _REAL_LANGUAGE_DETECTION_TEST:
+        return
+    if request.module.__name__ == _REAL_LANGUAGE_DETECTION_MODULE:
+        return
+    monkeypatch.setattr(SarvamClient, "identify_language", lambda self, text: None)
 
 
 @pytest.fixture()
