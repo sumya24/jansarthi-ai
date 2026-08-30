@@ -42,12 +42,21 @@ Sarvam AI sits outside the box marked "this codebase" because it's a separate co
 
 > 📖 **Full deep dive** (why an ORM, schema design reasoning, the caching pattern, why SQLite and its real limits): **[`docs/DATABASE.md`](DATABASE.md)**
 
-Four tables, all defined in [`backend/models.py`](../backend/models.py). No migration framework exists for this project (see [§9](#9-a-known-limitation-no-database-migrations)) — the app creates whatever tables are missing on startup, but never alters an existing table, which matters if you're adding a new field yourself.
+**UPDATE — this schema started as 4 tables, but has since grown to 22** as the app gained a real
+location hierarchy, notifications, evidence photos, email OTP, refresh tokens, and more. This
+section originally enumerated all of them by hand; that list drifted out of sync with reality more
+than once, so it's deliberately not repeated here — **[`docs/DATABASE.md`](DATABASE.md) is the
+single, actively-maintained source of truth for the current schema**, verified directly against
+`backend/models.py`. No migration framework exists for this project (see
+[§9](#9-a-known-limitation-no-database-migrations)) — the app creates whatever tables are missing
+on startup, but never alters an existing table, which matters if you're adding a new field
+yourself.
 
-- **`users`** — every account: citizens, workers, and admins all live in the same table, distinguished by a `role` column. Workers additionally have a `ward`; citizens and admins don't use that field.
-- **`complaints`** — the core record. Stores the complaint in two forms at once: `original_text` (exactly what the citizen wrote or said, in their own language, never altered) and `translated_text` (the canonical English version everything else is derived from). Also carries `status` (see the lifecycle diagram below), `ward`, and which worker it's assigned to.
-- **`complaint_rejections`** — one row per (complaint, worker) pair where that worker rejected that complaint. Exists so a rejected complaint never gets re-offered to the same worker when it's reassigned.
-- **`complaint_translations`** — a cache: the complaint's English text/summary translated into one specific other language, computed once and reused on every later view in that language, instead of calling Sarvam again on every single read. See [`AI_AGENT.md §3.5`](AI_AGENT.md#35-translation-caching-not-part-of-the-ai-pipeline-itself-but-related).
+The four original tables are still the conceptual core everything else hangs off of:
+- **`users`** — every account: citizens, workers, and admins all live in the same table, distinguished by a `role` column.
+- **`complaints`** — the core record. Stores the complaint in two forms at once: `original_text` (exactly what the citizen wrote or said, never altered) and `translated_text` (the canonical English version everything else is derived from), plus `status`, `ward`, and structured location fields.
+- **`complaint_rejections`** — one row per (complaint, worker) pair where that worker rejected that complaint, so it's never re-offered to the same worker on reassignment.
+- **`complaint_translations`** — a cache: the complaint's English text/summary translated into one specific other language, computed once and reused on every later view in that language.
 
 ---
 
@@ -64,6 +73,20 @@ A complaint is never manually set to a status by a citizen or worker clicking so
 > 📖 **Full deep dive** (why FastAPI, the routes/services/models layering explained, CORS, dependency injection): **[`docs/BACKEND.md`](BACKEND.md)**
 
 Everything under `backend/`. Read top to bottom and you're reading the request-handling stack from the outside in: entry point → routes → services → database.
+
+**UPDATE — the table below covers only the original 3-route/8-service version of this app.** The
+real `backend/routes/` now has 6 modules (adds `locations.py`, `notifications.py`,
+`ask_janmitra.py`) and `backend/services/` has 30+ files (adds the whole `orchestration/` and
+`observability/` packages, `guardrails.py`, `reranker.py`, `rag_retriever.py`, `vector_store.py`,
+`embedding_provider.py`, `intent_classifier.py`, `location_extractor.py`/`location_resolver.py`,
+`vision_service.py`, `rate_limiter.py`, `complaint_report_service.py`, and more), plus a standalone
+`backend/mcp_server.py` and `backend/middleware.py`. Rather than duplicate a list here that's
+already drifted twice, **the real folder listing is the source of truth** — see
+[`docs/ask_janmitra_orchestration.md`](ask_janmitra_orchestration.md) for the AI-agent-specific
+files, [`docs/ask_janmitra_rag_architecture.md`](ask_janmitra_rag_architecture.md) for the RAG
+ones, and [`docs/RATE_LIMITING.md`](RATE_LIMITING.md)/[`docs/AUTHENTICATION.md`](AUTHENTICATION.md)
+for the security ones. The original-scope table below is still accurate for what it covers, just
+not complete.
 
 | File | What it's for |
 |---|---|
@@ -94,10 +117,13 @@ Everything under `backend/`. Read top to bottom and you're reading the request-h
 
 No sessions, no server-side login state — this app uses **JWTs** (JSON Web Tokens), a compact, signed piece of text the server hands the browser on login, which the browser then sends back on every subsequent request to prove who it is.
 
-1. You log in with a phone number and password. The backend checks your password against a stored **hash** (never the plaintext password itself — see `hash_password`/`verify_password` in `auth_service.py`) and, if it matches, creates a JWT containing your user ID and role, signed with a secret key only the backend knows.
-2. The browser stores that token (in `localStorage`, see `frontend-react/src/lib/auth.tsx`) and attaches it as an `Authorization: Bearer <token>` header on every API call from then on.
-3. On each request, `deps.get_current_user` verifies the token's signature (proving it wasn't tampered with) and expiry (tokens last 24 hours by default — `JWT_EXPIRE_MINUTES`), then looks up the real user it refers to.
-4. `require_role(...)` builds on top of that to reject anyone whose role doesn't match what a specific route needs — e.g., only a citizen can create a complaint, only an admin can create a worker.
+**UPDATE — this no longer stores tokens in `localStorage`.** See
+[`docs/AUTHENTICATION.md`](AUTHENTICATION.md) for the full current picture; in short:
+
+1. You log in with a phone number or email + password. The backend checks your password against a stored **hash** (never the plaintext password — see `hash_password`/`verify_password` in `auth_service.py`) and, if it matches, issues a short-lived **access token** plus a longer-lived, database-tracked **refresh token**.
+2. Both are set as **httpOnly cookies** (invisible to JavaScript, closing off the XSS-reads-localStorage risk the old approach had) — a non-browser client can still authenticate via a plain `Authorization: Bearer` header instead, both paths are supported. A third, deliberately non-httpOnly **CSRF token** cookie is echoed back as a header on every mutating request (the standard double-submit-cookie pattern), since cookies alone can't prove a request actually came from this app's own frontend.
+3. On each request, `deps.get_current_user` verifies the access token's signature and expiry, then looks up the real user it refers to. When it's expired, the frontend calls `/auth/refresh` once automatically — invisible to the citizen — and only logs them out if that also fails.
+4. `require_role(...)` builds on top of that to reject anyone whose role doesn't match what a specific route needs (a 403, distinct from the 401 an invalid/missing token gets) — e.g., only a citizen can create a complaint, only an admin can create a worker.
 
 If the JWT secret key isn't explicitly set (`JWT_SECRET_KEY` in `.env`), the app generates a random one for that process run — meaning every restart invalidates every previously-issued token. Fine for local development; a real deployment should set this explicitly.
 
@@ -108,6 +134,16 @@ If the JWT secret key isn't explicitly set (`JWT_SECRET_KEY` in `.env`), the app
 > 📖 **Full deep dive** (why React, why no Redux, routing/route-protection, the trickiest bug fixed in this codebase): **[`docs/FRONTEND.md`](FRONTEND.md)**
 
 Everything under `frontend-react/src/`. React apps are built from small, focused files — this one splits cleanly into **pages** (one per screen), **components** (reusable pieces used across pages), and **lib** (logic that isn't a visual thing at all: talking to the API, remembering who's logged in, etc.).
+
+**UPDATE — the tables below cover only the original 7-page version of this app.** The real
+`frontend-react/src/pages/` has 21 files now — notably **`AskJanMitra.tsx`** (the real Ask Sarthi
+chat interface, this app's actual AI entry point, missing from the table below entirely), plus
+`ReportIssue.tsx`, `CitizenHome.tsx`/`CitizenComplaintDetail.tsx`, `MyArea.tsx`,
+`AdminAiMonitoring.tsx`, `AdminWorkers.tsx`/`AdminWorkerDetail.tsx`, `AdminComplaintDetail.tsx`,
+`WorkerComplaintDetail.tsx`, `ForgotPassword.tsx`, and more. `src/components/` similarly has 36+
+files now, not 6. As with §5, the real folders are the source of truth here, not a hand-maintained
+list that's drifted before — the table below is still accurate for the original 7 pages, just not
+complete.
 
 ### Entry point & routing
 

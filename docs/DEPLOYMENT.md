@@ -1,10 +1,12 @@
-# Deployment
+# Deployment (original plan — the real, live deployment is now on GCP)
 
-> If Oracle Cloud signup is blocked (a known, common issue — Oracle's fraud-screening rejects a
-> lot of legitimate first attempts with a generic error), `docs/DEPLOYMENT_GCP.md` covers the
-> same setup on Google Cloud's free `e2-micro` tier as a stopgap. It's a tighter fit (1GB RAM vs.
-> up to 24GB here, no India region) — meant to unblock progress while Oracle support gets sorted
-> out, not as a permanent replacement for this doc.
+> **HISTORICAL.** This was the original deployment plan (Oracle Cloud's Always Free tier — cheaper
+> long-term, up to 24GB RAM). Oracle Cloud signup got blocked in practice (a known, common
+> issue — Oracle's fraud-screening rejects a lot of legitimate first attempts with a generic
+> error), so the live app runs on Google Cloud instead — see **[`docs/DEPLOYMENT_GCP.md`](DEPLOYMENT_GCP.md)**
+> for the actual current setup and instructions. This doc's architecture/CI-CD/rollback sections
+> are still accurate in general (the Docker setup is identical either way) and are cross-referenced
+> from that doc — but if you're deploying or operating this app today, start there, not here.
 
 ## Architecture
 

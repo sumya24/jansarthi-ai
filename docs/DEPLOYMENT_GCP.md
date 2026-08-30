@@ -1,11 +1,14 @@
-# Deployment — Google Cloud (stopgap while Oracle signup is blocked)
+# Deployment — Google Cloud (this is the real, live production deployment)
 
-> **This is a stopgap, not the intended long-term home.** `docs/DEPLOYMENT.md` (Oracle Cloud) is
-> still the better fit long-term — genuinely free forever, vs. either a tiny free VM or a 90-day
-> credit window here. Plan to migrate later (the Docker setup doesn't change — same containers,
-> just pointed at a different VM). Everything in `docs/DEPLOYMENT.md`'s "What all these files
-> actually are", "How CI/CD works day to day", "Rollback", and most of "Operating notes"
-> sections applies here unchanged — this doc only covers what's different about GCP.
+> **UPDATE — this is now the canonical, current production deployment**, not a stopgap. It was
+> originally adopted as a bridge while Oracle Cloud signup was blocked (`docs/DEPLOYMENT.md`'s
+> Always Free tier was the original long-term plan), and stayed live past that point rather than
+> migrating back — Oracle remains a genuinely cheaper long-term option if this ever needs
+> revisiting, but as of today, the real app is running on GCP, not Oracle. Treat `DEPLOYMENT.md`
+> as historical background on the original plan, not the current instructions. Everything in that
+> doc's "What all these files actually are", "How CI/CD works day to day", "Rollback", and most of
+> "Operating notes" sections still applies unchanged here — this doc only covers what's specific
+> to GCP (VM creation, the `deploybot` account, cost).
 
 ## Your account status
 

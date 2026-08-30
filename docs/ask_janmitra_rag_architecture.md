@@ -354,20 +354,39 @@ explicitly; no stage infers or silently converts it. `AskJanMitraResponse.verifi
 `test_verified_citation_preserved`, `test_synthetic_disclosure`, and (at the vector-store layer,
 independent of the API) `test_verification_status_survives_chroma_round_trip`.
 
-**Current real counts** (unchanged by this migration — no record was reclassified):
-**VERIFIED: 14, SYNTHETIC: 112, total: 126** (126 records → 504 chunks).
+**Current real counts** (grown substantially since this migration, as the knowledge base was
+expanded to cover more states/cities — verified directly against the built index, not a stale
+snapshot): **1057 total chunks — 609 VERIFIED, 448 SYNTHETIC.**
 
-**Why no ML reranker was added**: the spec explicitly asked for embeddings + filtering + threshold
-to be implemented first, with a reranker added only if it materially improves quality. The current
-category+location filter followed by a lightweight VERIFIED-preference score-band tie-break (§8
-step 5) already produces 100% retrieval accuracy on the evaluation dataset (§1/§14) and correct
-paraphrase/multilingual retrieval (§10) at this corpus size (504 chunks, ≤4 chunks per
-category/city). A trained cross-encoder reranker adds real latency (a second forward pass per
-candidate) and operational complexity (another model to load/version) for a corpus this small,
-where the candidate pool per query is already tiny (top_k*3 = 15 chunks, filtered to begin with).
-Not added because it would not have moved any measured metric here — this is a reasoned decision,
-not an oversight, and would be revisited if the corpus grows to the point where within-category
-candidate pools are large enough for ranking quality (not just filtering) to become the bottleneck.
+**UPDATE — the corpus outgrew this section's original decision, and a reranker was added.** The
+paragraph below is kept for its historical reasoning (why NOT adding one was originally correct),
+but is superseded by what actually shipped once the corpus and candidate pools grew past the small
+scale it was reasoned about:
+
+- **Hybrid search** (`RAG_HYBRID_SEARCH_ENABLED`, on by default) — combines BM25 keyword scoring
+  with the existing vector search, catching exact-term matches (e.g. an exact department name)
+  that pure semantic similarity alone can under-rank.
+- **A real cross-encoder reranker** (`backend/services/reranker.py`,
+  `cross-encoder/ms-marco-MiniLM-L-6-v2`, opt-in via `RAG_RERANKER_ENABLED`) — scores each
+  (question, candidate-chunk) pair jointly in one forward pass, catching relevance signals the
+  bi-encoder's separately-computed vectors structurally cannot. Layered ON TOP of, not replacing,
+  the VERIFIED-preference tie-break described below — a deliberate choice to avoid destabilizing
+  already-tuned behavior by handing ranking entirely to a model that's never seen this corpus.
+  Only ever runs on the already-filtered candidate shortlist (never the full corpus), exactly the
+  cost-shape this section's original reasoning said would justify adding one.
+
+**Original reasoning (superseded, kept for context)**: the spec explicitly asked for embeddings +
+filtering + threshold to be implemented first, with a reranker added only if it materially
+improved quality at the *then*-current corpus size (126 records → 504 chunks, ≤4 chunks per
+category/city) — where the category+location filter and VERIFIED-preference tie-break alone
+already hit 100% retrieval accuracy and a trained reranker's extra latency/operational cost
+wasn't justified. That corpus has since grown roughly 2x; the reranker and hybrid search were
+added once real testing showed room to improve within-category ranking quality, not filtering.
+
+Separately, every request (regardless of which retrieval path serves it) passes through
+hand-rolled prompt-injection guardrails (`backend/services/guardrails.py`) before the model is
+called and again on its output — a fast, pattern-based floor against known jailbreak/injection
+phrasing, not a semantic guarantee. See that module's own docstring for the full reasoning.
 
 ## 14. TF-IDF vs. real embeddings — the actual comparison
 
@@ -477,7 +496,7 @@ in the production wiring. **There is exactly one production retrieval path: embe
   the ~68ms/query embedding time further, not evaluated here since this project has no GPU
   available; noted as a real, not implemented, optimization opportunity.
 - **Intent classification remains keyword-based** (unchanged this phase) — real-world phrasing
-  this project hasn't anticipated will not always match; see `docs/ask_janmitra_response_behavior.md`
+  this project hasn't anticipated will not always match; see `docs/archive/ask_janmitra_response_behavior.md`
   for that component's own documented limitations.
 
 ## 18. Future scalability
