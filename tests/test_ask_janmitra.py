@@ -362,7 +362,11 @@ def test_gps_location_resolves_via_location_resolver(client, monkeypatch, make_c
 
     class _FakeGeocoder:
         def reverse(self, latitude, longitude):
-            return {"city": "Mohali", "state": "Punjab"}
+            # Real Nominatim shape: `address` is a NESTED dict, `display_name` a top-level
+            # sibling (see NominatimGeocoder.reverse's own docstring for the real bug this
+            # fixed -- this fake used to return the flat address dict directly, silently
+            # matching a since-fixed contract bug rather than the real API shape).
+            return {"address": {"city": "Mohali", "state": "Punjab"}, "display_name": "Mohali, Punjab, India"}
 
     real_resolver = LocationResolver(geocoder=_FakeGeocoder())
     gazetteer = RagGazetteer(settings.RAG_DATA_DIR / "chunks" / "chunks.json")
