@@ -1,5 +1,7 @@
 # JanSarthi AI
 
+**🔴 Live: [jansarthi-ai.duckdns.org](https://jansarthi-ai.duckdns.org)** — a real, deployed production app, not a local-only demo.
+
 A multilingual civic-grievance platform for India. A citizen reports a problem (garbage, water/drainage, roads/potholes, streetlights) or asks a civic question — by speaking, typing, or attaching a photo, in any of 6 Indian languages — through **Ask Sarthi**, a single conversational AI agent. The complaint is translated, routed to the real municipal worker who covers that ward, tracked to resolution, and rated. The AI agent, the security model, and the deployment pipeline are all production-grade, not a prototype shortcut.
 
 **Why it matters:** in India, most civic apps assume the citizen and the worker share a language, and most "AI features" bolted onto apps like this are a thin wrapper that just calls an LLM and hopes. This one doesn't assume either.
@@ -64,6 +66,34 @@ flowchart TB
 ```
 
 Full diagrams + explanation: [`docs/ask_janmitra_orchestration.md`](docs/ask_janmitra_orchestration.md) (the agent graph), [`docs/ask_janmitra_rag_architecture.md`](docs/ask_janmitra_rag_architecture.md) (retrieval), [`docs/PROJECT_OVERVIEW.md`](docs/PROJECT_OVERVIEW.md) (everything else, including the complaint lifecycle).
+
+### How one message actually flows through Ask Sarthi
+
+```mermaid
+flowchart LR
+    Msg["Citizen message<br/>(text / voice / photo)"]
+    In["Guardrail: input scan<br/>(blocks known jailbreak/<br/>injection phrasing)"]
+    Intent["Intent classification"]
+    Complaint["Complaint filing<br/>(builds a draft over<br/>multiple turns)"]
+    RAGQ["Civic Q&A<br/>(RAG: retrieve, then<br/>generate — never guess)"]
+    Status["Status check<br/>(looks up one complaint<br/>the citizen owns)"]
+    Confirm{"Citizen<br/>confirms?"}
+    File[("Complaint created,<br/>assigned to a worker")]
+    Answer["Grounded answer<br/>+ real citations"]
+    Reply["Real status,<br/>read live from the DB"]
+    Out["Guardrail: output scan<br/>(catches leaked prompts /<br/>complied-with injections)"]
+    Response["Response to citizen<br/>(in their own language)"]
+
+    Msg --> In --> Intent
+    Intent -->|"file a complaint"| Complaint --> Confirm
+    Confirm -->|yes| File --> Out
+    Confirm -->|no / not yet| Complaint
+    Intent -->|"ask a question"| RAGQ --> Answer --> Out
+    Intent -->|"check status"| Status --> Reply --> Out
+    Out --> Response
+```
+
+Nothing is ever filed without an explicit "yes," and no civic answer is ever given without a real, retrieved source — the two places this app is most deliberately careful about trust.
 
 ## Tech Stack
 
