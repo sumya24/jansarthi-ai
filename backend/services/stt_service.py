@@ -1,5 +1,5 @@
 """Chunked speech-to-text transcription -- shared by ComplaintAgent's voice-complaint flow and
-Ask Sarthi's voice-assistant flow (ask_janmitra_service.ask_voice()).
+Ask Sarthi's voice-assistant flow (ask_sarthi_service.ask_voice()).
 
 Relocated, unmodified, from backend/services/complaint_agent.py (a pure move -- see git history
 for the original location) so both callers reuse the exact same retry/gap-marker chunk-stitching

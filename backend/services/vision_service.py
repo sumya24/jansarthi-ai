@@ -55,7 +55,7 @@ class VisionService:
 
     Per-call result state (which provider actually served the last call, and its real token
     count if known) is kept in thread-local storage, not on `self` directly -- this instance is a
-    shared singleton reused across concurrent requests (see AskJanMitraService.__init__), and two
+    shared singleton reused across concurrent requests (see AskSarthiService.__init__), and two
     citizens' requests interleaving on different threads must never read back each other's result.
     """
 
@@ -199,7 +199,7 @@ class VisionService:
         """Real token count for `text` -- Gemini's own reported usage if the most recent call on
         this thread was served by Gemini (see `_describe_via_gemini`), else this model's own
         tokenizer as a best-effort estimate. For observability only (Phoenix's token-count
-        attributes, see ask_janmitra_service.py's `vision_span`), never for routing/business
+        attributes, see ask_sarthi_service.py's `vision_span`), never for routing/business
         logic. A method separate from `describe_image()`'s own return value, deliberately: that
         method is mocked as a bare string return in five existing test files, and this app
         already has one real regression on record from a signature change swept incompletely (see

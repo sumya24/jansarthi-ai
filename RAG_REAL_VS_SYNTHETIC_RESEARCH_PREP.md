@@ -10,7 +10,7 @@ disk on **2026-08-20**.
 
 **Scope note — this file is ONLY about the knowledge base (JSON files under
 `data/rag_knowledge_base/knowledge_records/`), not the SQL location hierarchy** (`states`,
-`districts`, `wards`, etc. in `janmitra.db`, covered in `DATA_COVERAGE_TRACKER.md`). Those are two
+`districts`, `wards`, etc. in `jansarthi.db`, covered in `DATA_COVERAGE_TRACKER.md`). Those are two
 separate systems that don't currently reference each other — mixing them into one table earlier
 caused confusion, so this file deliberately stays on one side only.
 

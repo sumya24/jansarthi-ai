@@ -16,7 +16,7 @@ how tightly this app already tracks Sarvam call volume) for a check a well-curat
 already catches for the overwhelming majority of real-world attempts.
 
 Two checks, both structural, applied at the two chokepoints every Ask Sarthi entry point
-(`ask()`/`ask_with_image()`/`ask_voice()`) already funnels through in `AskJanMitraService._run()`:
+(`ask()`/`ask_with_image()`/`ask_voice()`) already funnels through in `AskSarthiService._run()`:
 
 `check_input()`: scans a citizen's raw message for known prompt-injection/jailbreak phrasing
 BEFORE it ever reaches the intent classifier, RAG answer generation, or complaint agent -- every
@@ -86,7 +86,7 @@ _INJECTION_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
 class GuardrailResult:
     """`flagged=False` (the overwhelming majority case) means nothing else needs to happen --
     callers only branch on `flagged`; `reason` is for logging/audit only, never shown to the
-    citizen verbatim (see ask_janmitra_service.py's own citizen-safe fallback text)."""
+    citizen verbatim (see ask_sarthi_service.py's own citizen-safe fallback text)."""
 
     flagged: bool
     reason: str | None = None
@@ -108,8 +108,8 @@ def _normalize_for_leak_check(source: str) -> str:
     """Whitespace-normalized, lowercased form of `source`, cached per distinct source string.
 
     BUG FIX (code review, efficiency): this app calls `check_output()` with the SAME system-prompt
-    text on every single Ask Sarthi request (see `ask_janmitra_service.py`'s module-level
-    `_ASK_JANMITRA_SYSTEM_PROMPT`, loaded once at import time) -- recomputing this normalization
+    text on every single Ask Sarthi request (see `ask_sarthi_service.py`'s module-level
+    `_ASK_SARTHI_SYSTEM_PROMPT`, loaded once at import time) -- recomputing this normalization
     from scratch per request was pure redundant work. `maxsize=4` is generous headroom, not a real
     limit; this app only ever has one real system prompt in practice."""
     return " ".join(source.split()).lower()

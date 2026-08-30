@@ -1,4 +1,4 @@
-# Production deployment: everything on one host (see docs/DEPLOYMENT.md).
+# Production deployment: everything on one host (see docs/DEPLOYMENT_GCP.md).
 #
 # backend  -- FastAPI + RAG stack, no ports published; only reachable through caddy.
 # caddy    -- serves the built React SPA and reverse-proxies the backend's route prefixes to it
@@ -11,12 +11,25 @@
 #
 # Runtime secrets (SARVAM_API_KEY, JWT_SECRET_KEY, etc.) come from a .env file that lives ONLY
 # on the server, never in git -- see .env.example for the full list of variables it must set.
+#
+# `name:` is pinned deliberately to the OLD "janmitra-ai" project name, even though the production
+# server's directory itself was renamed to jansarthi-ai on 2026-08-30 -- Compose otherwise derives the
+# project name (and therefore every volume name below, e.g. janmitra-ai_backend_state) from the
+# directory it's run from, so an unpinned rename would have made Compose spin up brand-new empty
+# volumes and the app would have looked like it "lost" all its real data. Pinning this ahead of time
+# is exactly what let that directory rename happen safely, with the containers left running the whole
+# time and every existing volume untouched (verified live: `docker volume ls` still shows
+# janmitra-ai_backend_state/_caddy_data/_caddy_config/_phoenix_data after the rename). DO NOT change
+# this value to "jansarthi-ai" without first doing a deliberate one-time volume migration (rename or
+# copy each volume explicitly) -- changing it on its own would have the exact same data-loss-looking
+# effect the pin was added to prevent, just delayed instead of avoided.
+name: janmitra-ai
 services:
   backend:
     build:
       context: .
       dockerfile: backend/Dockerfile
-    image: ${BACKEND_IMAGE:-janmitra-backend:local}
+    image: ${BACKEND_IMAGE:-jansarthi-backend:local}
     env_file:
       - .env
     environment:
@@ -51,7 +64,7 @@ services:
     build:
       context: .
       dockerfile: frontend-react/Dockerfile
-    image: ${FRONTEND_IMAGE:-janmitra-frontend:local}
+    image: ${FRONTEND_IMAGE:-jansarthi-frontend:local}
     environment:
       # Plain HTTP on :80 until a domain is pointed at this VM -- set SITE_ADDRESS=your-domain.com
       # in .env to switch on automatic HTTPS (see deploy/Caddyfile).

@@ -86,6 +86,37 @@ A naive `expected_signature == actual_signature` in Python compares byte-by-byte
 
 This is FastAPI's **dependency injection** at work — a route just declares `admin: User = Depends(require_role("admin"))` as a parameter, and all of the above happens automatically before the route's own code runs at all. See [`docs/BACKEND.md`](BACKEND.md) for more on this pattern.
 
+**The same lifecycle, as a sequence diagram** — login, a real cookie-authenticated mutating request (with the CSRF check from §5a inline), then a refresh (§5b):
+
+```mermaid
+sequenceDiagram
+    actor Citizen
+    participant Browser
+    participant API as FastAPI
+    participant DB
+
+    Citizen->>Browser: phone + password
+    Browser->>API: POST /auth/login
+    API->>DB: look up user by phone
+    API->>API: bcrypt.checkpw(attempt, stored hash)
+    API->>API: create_access_token() + new refresh token
+    API-->>Browser: Set-Cookie: access_token (httpOnly)<br/>Set-Cookie: refresh_token (httpOnly, /auth only)<br/>Set-Cookie: csrf_token (readable by JS)
+
+    Note over Browser: later — a mutating request, e.g. filing a complaint
+    Browser->>Browser: read csrf_token cookie value via JS
+    Browser->>API: POST /complaints<br/>Cookie: access_token + refresh_token + csrf_token<br/>Header: X-CSRF-Token = csrf_token
+    API->>API: CSRFMiddleware — cookie value == header value?
+    API->>API: get_current_user — decode JWT, verify signature + exp
+    API->>API: require_role("citizen") — role allowed for this route?
+    API->>DB: run the route's real query
+    API-->>Browser: 200 OK
+
+    Note over Browser,API: access token nears/reaches its 24h expiry
+    Browser->>API: POST /auth/refresh<br/>Cookie: refresh_token
+    API->>API: rotate — revoke this refresh token, issue a new access + refresh pair
+    API-->>Browser: new Set-Cookie pair
+```
+
 ### 5a. Why a cookie needs its own CSRF protection (and this app's fix)
 
 Moving the tokens into httpOnly cookies closes off one attack (a malicious script on the page can no longer just read `localStorage` and steal the token) but opens a different one: a browser attaches cookies to **any** request to this origin, including one a malicious page on a completely different site tricks the citizen's browser into firing — a **Cross-Site Request Forgery (CSRF)** attack. A plain `Authorization` header doesn't have this problem, since only same-origin JavaScript can construct and attach a custom header in the first place — which is exactly what closes the gap here too.

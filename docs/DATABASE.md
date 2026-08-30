@@ -26,10 +26,48 @@ The honest trade-off, worth being able to state in an interview: an ORM adds a l
 **This started as four tables** (`users`, `complaints`, `complaint_rejections`, `complaint_translations`) and has since grown to **22**, as [`backend/models.py`](../backend/models.py) grew with the app — location hierarchy tables, a fuller complaint lifecycle, notifications, AI observability, and auth all arrived later. Each is a Python class inheriting from `Base` (SQLAlchemy's declarative base — the thing that turns a plain class into something that maps to a real database table). The original four below are still the ones most worth understanding deeply for an interview — the reasoning behind them (single-table-inheritance, caching, no `relationship()`) applies just as much to everything added since. The newer groups are summarized after them rather than given the same essay-length treatment each, since most of them are straightforward extensions of the same patterns already explained here.
 
 **Newer table groups, briefly:**
-- **Location hierarchy** — `states`, `districts`, `sub_districts`, `ulbs`, `zones`, `wards`, `localities`: a real, ID-based `state → district → sub_district → ulb → zone → ward → locality` chain (see [`docs/location_migration_plan.md`](location_migration_plan.md)), added so a ward/city could be referenced by a stable ID instead of only ever a free-text string. `users.ward` and `complaints.ward` (the original free-text columns) are kept alongside the new `*_id` columns for backward compatibility — nothing about §2's original two tables was removed, only added to.
+- **Location hierarchy** — `states`, `districts`, `sub_districts`, `ulbs`, `zones`, `wards`, `localities`: a real, ID-based `state → district → sub_district → ulb → zone → ward → locality` chain, added so a ward/city could be referenced by a stable ID instead of only ever a free-text string. `users.ward` and `complaints.ward` (the original free-text columns) are kept alongside the new `*_id` columns for backward compatibility — nothing about §2's original two tables was removed, only added to.
 - **Fuller complaint lifecycle** — `complaint_status_history` (an audit trail of every status transition), `complaint_updates` + `complaint_update_translations` (a worker's initial assessment/progress notes/completion note, and their cached translations — same caching pattern as [§4](#4-the-translation-cache--a-real-caching-pattern)), `complaint_evidence` (one row per attached photo, replacing the original single `photo_path` column with support for multiple photos per complaint or update).
 - **Notifications & AI observability** — `notifications` (in-app alerts for workers/citizens), `rag_answer_cache` (the same "compute once, cache, serve from cache" pattern as [§4](#4-the-translation-cache--a-real-caching-pattern), applied to Ask Sarthi's AI-generated answers), `ai_request_logs` + `ai_alert_states` (per-request cost/latency/error logging and alerting for the AI monitoring dashboard).
 - **Auth** — `refresh_tokens` (backs the rotation/reuse-detection scheme described in [`docs/AUTHENTICATION.md`](AUTHENTICATION.md#5b-refresh-token-rotation-and-reuse-detection)), `email_otps` + `signup_email_verifications` (one-time codes for email verification, separate from the phone+password login itself).
+
+**The original four, as an ER diagram** (the 18 tables added since are straightforward extensions of these same patterns, not a fundamentally different shape — see the bullets above for what each group adds):
+
+```mermaid
+erDiagram
+    users ||--o{ complaints : "assigned_worker_id"
+    users ||--o{ complaint_rejections : "worker_id"
+    complaints ||--o{ complaint_rejections : "complaint_id"
+    complaints ||--o{ complaint_translations : "complaint_id"
+
+    users {
+        int id PK
+        string phone "unique login identifier"
+        string password_hash "bcrypt, never plaintext"
+        string role "citizen / worker / admin"
+        string ward "free-text; meaningless for citizens/admins"
+    }
+    complaints {
+        int id PK
+        int assigned_worker_id FK "nullable until assigned"
+        string original_text "exactly what the citizen wrote, never edited"
+        string translated_text "canonical English, built from original_text"
+        string status "pending / assigned / accepted / in_progress / resolved"
+        string ward
+    }
+    complaint_rejections {
+        int id PK
+        int complaint_id FK
+        int worker_id FK
+        string reason
+    }
+    complaint_translations {
+        int id PK
+        int complaint_id FK
+        string language_code
+        string translated_text "cached — see SS4"
+    }
+```
 
 ### `users`
 
@@ -76,7 +114,7 @@ Note that this codebase doesn't use SQLAlchemy's `relationship()` feature (which
 
 ## 5. Why SQLite, and when that'd need to change
 
-SQLite stores the entire database as **one file on disk** (`janmitra.db`) — no separate database server process to install, configure, or keep running. For local development and a small pilot deployment, that's a real advantage: `git clone` and run, no infrastructure setup.
+SQLite stores the entire database as **one file on disk** (`jansarthi.db`) — no separate database server process to install, configure, or keep running. For local development and a small pilot deployment, that's a real advantage: `git clone` and run, no infrastructure setup.
 
 **The real limitation, worth stating plainly:** SQLite handles concurrent *writes* poorly — the whole database file is locked during a write, so many simultaneous writers will queue up and slow each other down. It's genuinely fine for a low-to-moderate-traffic pilot; it is **not** what you'd want in production for a real city's worth of concurrent citizens and workers.
 
@@ -89,7 +127,7 @@ SQLite stores the entire database as **one file on disk** (`janmitra.db`) — no
 Worth being upfront about, because it's a real gap and a fair thing to be asked about: **this project has no migration framework** (no Alembic, no Django-style migrations). `database.py`'s `init_db()` calls `Base.metadata.create_all()`, which creates any table that's *entirely missing* — but if you add a new column to an *existing* table, nothing automatically adds that column to a database file that already has real data in it.
 
 The two ways this gets handled here, both already used in this codebase:
-1. For local development: delete `janmitra.db` and let it recreate from scratch (fine when you don't care about existing data).
+1. For local development: delete `jansarthi.db` and let it recreate from scratch (fine when you don't care about existing data).
 2. For a real change against existing data: write a small, one-off script that runs a manual `ALTER TABLE` — see [`scripts/migrate_assignment_tracking.py`](../scripts/migrate_assignment_tracking.py) for a real example, which backfilled `assigned_worker_id` on complaints created before that column existed.
 
 **If asked "why not just use Alembic":** the honest answer is that this project hasn't needed enough schema changes yet to justify the setup overhead, not that migrations aren't valuable — a real production app of any size should have a real migration tool, and Alembic (SQLAlchemy's own migration library) is the natural choice given the stack already in use.

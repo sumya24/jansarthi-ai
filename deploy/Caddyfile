@@ -5,7 +5,7 @@
 # SITE_ADDRESS defaults to plain HTTP on port 80. Once a domain points at this VM, set
 # SITE_ADDRESS=your-domain.com in the .env used by docker-compose.prod.yml and restart -- Caddy
 # then automatically provisions and renews a Let's Encrypt TLS certificate for it, no config
-# change needed beyond that. See docs/DEPLOYMENT.md.
+# change needed beyond that. See docs/DEPLOYMENT_GCP.md.
 {$SITE_ADDRESS:http://:80} {
 	encode gzip
 
@@ -20,7 +20,7 @@
 	# top-level page load and can't be overridden by JS, so "path matches AND it's not a real page
 	# load" is what actually means "proxy this to the backend."
 	@backend {
-		path /auth* /admin* /complaints* /notifications* /ask-janmitra* /locations* /uploads* /health
+		path /auth* /admin* /complaints* /notifications* /ask-sarthi* /locations* /uploads* /health
 		not header Sec-Fetch-Mode navigate
 	}
 	handle @backend {

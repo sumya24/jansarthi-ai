@@ -2,15 +2,61 @@
 
 **Status: implemented and tested.** This document covers the workflow-orchestration layer added
 on top of the already-complete RAG/embeddings/ChromaDB foundation (see
-`docs/ask_janmitra_rag_architecture.md`, unchanged this phase) and the pre-existing complaint/
+`docs/ask_sarthi_rag_architecture.md`, unchanged this phase) and the pre-existing complaint/
 worker-assignment system (`backend/services/complaint_agent.py`, `assignment_service.py`,
 unchanged this phase). Nothing about embeddings, ChromaDB, the metadata schema, or the relevance
 threshold was touched — this phase is purely about how a request is *routed* through the
 already-working pieces.
 
+## The real graph, in full
+
+Every node and edge below is real — pulled directly from `build_graph()` in
+`backend/services/orchestration/graph.py`, not simplified. `agent_flow` is the multi-category
+supervisor node (§17); `clarification_flow` is the single shared node several different routes
+fall back to when something's ambiguous or missing.
+
+```mermaid
+flowchart TD
+    START(["Citizen message"]) --> IP["input_processing"]
+    IP --> LD["language_detection"]
+    LD -->|ok| IC["intent_classification"]
+    LD -->|needs clarification| CF["clarification_flow"]
+
+    IC -->|status check| SF["status_flow"]
+    IC -->|out of scope| OSF["out_of_scope_flow"]
+    IC -->|greeting| GF["greeting_flow"]
+    IC -->|"what can you do?"| CapF["capabilities_flow"]
+    IC -->|genuinely unclear| UF["unclear_flow"]
+    IC -->|ambiguous| CF
+    IC -->|complaint or civic Q&A| LR["location_resolution"]
+
+    LR -->|filing a complaint| CompF["complaint_flow"]
+    LR -->|civic question| RF["rag_flow"]
+    LR -->|multi-category / supervisor| AF["agent_flow"]
+    LR -->|location unresolved| CF
+
+    CompF -->|needs more info| CF
+    CompF -->|ready / confirmed| RG["response_generation"]
+
+    RF --> RG
+    AF --> RG
+    SF --> RG
+    CF --> RG
+    OSF --> RG
+    GF --> RG
+    CapF --> RG
+    UF --> RG
+    RG --> END(["Response to citizen"])
+```
+
+Notice the shape: **every single path converges on `response_generation`** — no matter which of
+the 8 possible routes a message took, the response is built in exactly one place, in the
+citizen's own language. That's deliberate, not incidental — see §12/§13 for why response
+generation is centralized rather than duplicated per-node.
+
 ## 1. Why LangGraph
 
-Before this phase, `AskJanMitraService.ask()` was one Python method with nested if/else branches
+Before this phase, `AskSarthiService.ask()` was one Python method with nested if/else branches
 deciding: TYPE_C → status lookup; out-of-scope → canned response; missing location → clarification;
 else → RAG retrieval + answer generation. That worked, but every new routing case (this phase
 adds: complaint creation, category clarification, multi-step clarification state) meant more
@@ -40,7 +86,7 @@ per-request dependencies out of `config["configurable"]` (see `nodes.py`'s `Grap
 `RequestContext`). No LangChain prompt templates, chains, retriever wrappers, or tool interfaces
 are used — `AnswerGenerationService` still calls the `sarvamai` SDK directly with plain
 `.format()`-templated prompt files (unchanged from the RAG phase, see
-`docs/ask_janmitra_rag_architecture.md`), and `RagRetriever`/`ChromaVectorStore` are still plain
+`docs/ask_sarthi_rag_architecture.md`), and `RagRetriever`/`ChromaVectorStore` are still plain
 Python classes, not LangChain retriever objects. This was a deliberate choice, not an oversight —
 see §4.
 
@@ -125,7 +171,7 @@ Deterministic routing throughout — no LLM call decides which node runs next, p
 
 `rag_flow_node` calls `RagRetriever.retrieve()` (unchanged) then `AnswerGenerationService.generate()`
 (unchanged), and builds the same citation-from-metadata-only shape the pre-graph service built —
-see `docs/ask_janmitra_rag_architecture.md` for everything about embeddings/ChromaDB/thresholds/
+see `docs/ask_sarthi_rag_architecture.md` for everything about embeddings/ChromaDB/thresholds/
 citations, none of which changed. The only thing that changed is *which* messages reach this node:
 TYPE_B (service-information) questions, not TYPE_A (complaint-shaped) ones — see §9.
 
@@ -157,10 +203,10 @@ routes to `complaint_flow_node`, which:
    calls that route already makes), then calls `assign_next_worker()` — completely unchanged
    assignment logic (see `assignment_service.py`, not touched this phase).
 5. Returns the complaint ID, ward, and assignment status in the response
-   (`AskJanMitraResponse.complaint_id`, a new field — see §22 below).
+   (`AskSarthiResponse.complaint_id`, a new field — see §22 below).
 
 This necessarily changed the expected behavior of several previously-tested TYPE_A cases — see
-`tests/test_ask_janmitra.py`'s updated assertions (queries changed to TYPE_B phrasing where the
+`tests/test_ask_sarthi.py`'s updated assertions (queries changed to TYPE_B phrasing where the
 test's actual purpose was to exercise RAG/citations, not complaint filing) and the final report
 for the complete list.
 
@@ -188,7 +234,7 @@ the concern it already existed for.
 ## 12. Multi-turn clarification
 
 Ask Sarthi remains a **stateless-server, client-resends-history** API (unchanged design
-decision from the RAG phase — see `docs/ask_janmitra_rag_architecture.md`'s "why no server-side
+decision from the RAG phase — see `docs/ask_sarthi_rag_architecture.md`'s "why no server-side
 conversation store"). "Multi-turn" means: turn N's response asks a clarifying question and ends;
 turn N+1's request includes the updated `conversation_history`; the graph reruns from `START`,
 and location/category recovery (both check `conversation_history` as a fallback, see §9/§11)
@@ -207,12 +253,12 @@ Unchanged. `AnswerGenerationService` (RAG answers) and `ComplaintAgent`'s intern
 `TranslationService`/`SummaryService`/`SarvamClient` (complaint creation) are called exactly as
 before — the graph orchestrates *when* each is invoked, not *how*. No new Sarvam API key handling,
 no duplicated client construction — `complaint_flow_node` receives an already-constructed
-`ComplaintAgent` via `GraphDeps`, built once by `AskJanMitraService.__init__` the same way every
+`ComplaintAgent` via `GraphDeps`, built once by `AskSarthiService.__init__` the same way every
 other dependency is.
 
 ## 14. Voice/text integration
 
-Ask Sarthi's frontend page (`frontend-react/src/pages/AskJanMitra.tsx`) is **text-only** —
+Ask Sarthi's frontend page (`frontend-react/src/pages/AskSarthi.tsx`) is **text-only** —
 checked directly before this phase began (no `useAudioRecorder`/voice import exists in that file).
 "Voice input" in this codebase exists only on the separate dedicated complaint form
 (`useAudioRecorder.ts` → `ComplaintAgent._transcribe_chunks`), unchanged and untouched this
@@ -236,8 +282,8 @@ gracefully:
   (matching `routes/complaints.py`'s own equivalent) — a resolver failure never undoes an
   already-committed complaint creation.
 - Any node exception that isn't caught locally propagates up through `run_graph()` (logged, then
-  re-raised) to `AskJanMitraService.ask()` (no try/except — propagates further) to
-  `routes/ask_janmitra.py`'s route-level `try/except Exception`, which converts it into a clean
+  re-raised) to `AskSarthiService.ask()` (no try/except — propagates further) to
+  `routes/ask_sarthi.py`'s route-level `try/except Exception`, which converts it into a clean
   503 with a generic message — never a raw stack trace, API key, DB credential, or internal path
   reaches the client (unchanged from the RAG phase; see
   `test_location_resolver_failure_does_not_break_the_pipeline`).
@@ -249,13 +295,13 @@ gracefully:
   pure functions), graph-structure test (`build_graph()` produces the expected node set), the
   multi-turn 3-turn scenario end-to-end, the category-recovery helper in isolation, and the
   complaint-creation-failure error-handling case.
-- `tests/test_ask_janmitra.py` (32 tests, updated this phase): every TYPE_A test whose actual
+- `tests/test_ask_sarthi.py` (32 tests, updated this phase): every TYPE_A test whose actual
   purpose was RAG/citation behavior was changed to a TYPE_B phrasing (still tests RAG, now
   correctly avoiding complaint_flow); a new complaint-creation-and-worker-assignment test replaces
   the old "never creates a complaint" regression test (deliberately inverted, see §9); a new
   "doesn't create a half-filled complaint" test replaces it as the honest regression guard that's
   actually still true.
-- `tests/test_ask_janmitra.py`'s `_FakeComplaintAgent` — mirrors the existing `fake_answers`
+- `tests/test_ask_sarthi.py`'s `_FakeComplaintAgent` — mirrors the existing `fake_answers`
   pattern (no real Sarvam network call in tests), builds a real `Complaint` ORM row
   deterministically so `complaint_flow_node`'s downstream logic (ward assignment, response text)
   is exercised against genuine data, not a further mock.

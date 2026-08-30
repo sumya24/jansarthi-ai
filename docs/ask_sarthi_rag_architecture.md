@@ -151,7 +151,7 @@ that absence rather than inventing something to fill the gap.
 **A real bug found and fixed during this migration**: `ChromaVectorStore.search()` originally
 built its result metadata from Chroma's `metadatas` only, but chunk *text* is stored separately by
 Chroma as a `document`, not inside `metadatas` — so `metadata["content"]` (which
-`AskJanMitraService` reads to build LLM context) was silently missing on every real query. Fixed
+`AskSarthiService` reads to build LLM context) was silently missing on every real query. Fixed
 by merging the returned `document` into the result metadata under the `"content"` key in
 `vector_store.py`. Caught before it reached production by running an actual end-to-end query
 against the built collection, not just unit-testing each component in isolation.
@@ -196,23 +196,49 @@ during this migration (`Loaded 504 chunks... Upserted 504 chunk(s)... Collection
 
 ## 8. Query pipeline
 
-`backend/services/rag_retriever.py`'s `RagRetriever.retrieve(query, service_category, city, state)`:
+`backend/services/rag_retriever.py`'s `RagRetriever.retrieve(query, service_category, city, state)`.
+
+**UPDATE — this numbered list predates hybrid search and the reranker (see §13); the real current
+order is the diagram + steps below, not the original 5-step version.**
+
+```mermaid
+flowchart TD
+    Q["Citizen's question"] --> Embed["Embed the query<br/>(multilingual-e5-small)"]
+    Embed --> Search["Vector search Chroma<br/>(top_k*3 candidates,<br/>metadata-filtered)"]
+    Search --> Hybrid{"Hybrid search<br/>enabled?"}
+    Hybrid -->|yes| BM25["Widen with BM25<br/>(exact-keyword matches<br/>vector search under-ranked)"]
+    Hybrid -->|no| Thresh
+    BM25 --> Thresh["Relevance threshold<br/>+ VERIFIED cross-lingual rescue"]
+    Thresh -->|nothing clears it| None(["insufficient_knowledge = true<br/>— honest 'I don't know'"])
+    Thresh -->|survives| Rerank{"Reranker<br/>enabled?"}
+    Rerank -->|yes| CE["Cross-encoder reranks<br/>the shortlist<br/>(ms-marco-MiniLM-L-6-v2)"]
+    Rerank -->|no| Heur["Heuristic score-band<br/>ranking (pre-reranker default)"]
+    CE --> Tie["VERIFIED-preference<br/>tie-break"]
+    Heur --> Tie
+    Tie --> Gen["Generate answer,<br/>grounded ONLY in these chunks"]
+```
 
 1. **Build the metadata filter** — `{"service_category": ..., "city": ...}` (or `state` if no
    city was resolved). Both are optional; an unfiltered call (both `None`) is legal but only
    happens if intent classification found no category at all.
 2. **Embed the query** via `embedding_provider.embed_query()` — the `"query: "`-prefixed side of
    the asymmetric E5 model (§3).
-3. **Search Chroma** — `store.search(query_vector, top_k=top_k*3, metadata_filter=...)`. Asking
-   for `3x top_k` candidates gives the rerank step (5) something to work with beyond the raw
-   top-k-by-score.
-4. **Relevance threshold** — candidates scoring below `RAG_EMBEDDING_RELEVANCE_THRESHOLD` are
-   dropped; if nothing survives (or the filter matched zero chunks to begin with),
-   `RetrievalOutcome(insufficient_knowledge=True, reason=...)` is returned — never a forced
-   answer from a low-quality match. See §11 for how this threshold was chosen.
-5. **VERIFIED-preference rerank** — among results within a small score band (`0.03`) of the top
-   result, `VERIFIED` chunks are preferred over `SYNTHETIC` ones. A heuristic tie-break, not a
-   trained reranker — see §13 for why a full cross-encoder reranker was not added.
+3. **Search Chroma** — `store.search(query_vector, top_k=top_k*3, metadata_filter=...)`.
+4. **Hybrid BM25 widening** (`RAG_HYBRID_SEARCH_ENABLED`, on by default) — builds a BM25 index
+   over the same metadata-filtered candidate pool vector search already scoped to, and appends any
+   chunk BM25 surfaces that pure vector similarity under-ranked (an exact department name, say).
+5. **Relevance threshold** — candidates scoring below `RAG_EMBEDDING_RELEVANCE_THRESHOLD` are
+   dropped, with one deliberate exception: a VERIFIED chunk scoring just under that threshold gets
+   rescued at a separate, lower floor (measured specifically for non-English-script queries against
+   this KB's English-authored content) — never applies to SYNTHETIC chunks. If nothing survives
+   either way, `RetrievalOutcome(insufficient_knowledge=True, reason=...)` is returned — never a
+   forced answer from a low-quality match. See §11 for how the main threshold was chosen.
+6. **Reranking** — either a real cross-encoder (`RAG_RERANKER_ENABLED`, opt-in) re-scoring this
+   small already-filtered shortlist, or, unchanged from before the reranker existed, the original
+   lightweight heuristic over raw cosine scores.
+7. **VERIFIED-preference tie-break** — runs either way, after reranking: among results within a
+   small score band (`0.03`) of the top result, `VERIFIED` chunks are preferred over `SYNTHETIC`
+   ones.
 
 ## 9. Location-aware and category-aware filtering
 
@@ -325,11 +351,11 @@ category/city (the typical case here).
 
 ## 12. Citation generation — never from the LLM
 
-`AskJanMitraService._answer_knowledge_question()` builds every `Citation` directly from a
+`AskSarthiService._answer_knowledge_question()` builds every `Citation` directly from a
 retrieved chunk's Chroma metadata (`source_id`, `source_title`, `source_organization`,
 `source_url`, `source_type`, `verification_status`, `geographic_scope`) — the LLM is never asked
 to produce a source list, and its output is never parsed for one. The system prompt
-(`prompts/ask_janmitra_system_prompt.txt`) explicitly instructs it not to invent contacts, URLs,
+(`prompts/ask_sarthi_system_prompt.txt`) explicitly instructs it not to invent contacts, URLs,
 or department names. `source_url` is `None` (never a fabricated placeholder) for every SYNTHETIC
 citation — enforced at the schema level (§6) and confirmed end-to-end by
 `test_synthetic_chunk_never_has_a_source_url_after_round_trip` and
@@ -347,27 +373,46 @@ including explicit `None`s, since it's plain Python rather than Chroma's stricte
 ## 13. VERIFIED vs. SYNTHETIC — survives every stage
 
 `KnowledgeRecord` → `Document` → `Chunk` → Chroma metadata → `ScoredChunk` → `Citation` →
-`AskJanMitraResponse.sources[].verification_status` — every stage carries the field through
-explicitly; no stage infers or silently converts it. `AskJanMitraResponse.verification_status` is
+`AskSarthiResponse.sources[].verification_status` — every stage carries the field through
+explicitly; no stage infers or silently converts it. `AskSarthiResponse.verification_status` is
 `"VERIFIED"` only if every cited source is VERIFIED, `"SYNTHETIC"` only if every one is SYNTHETIC,
 `"MIXED"` if both appear, `null` if there are no sources at all. Verified end-to-end by
 `test_verified_citation_preserved`, `test_synthetic_disclosure`, and (at the vector-store layer,
 independent of the API) `test_verification_status_survives_chroma_round_trip`.
 
-**Current real counts** (unchanged by this migration — no record was reclassified):
-**VERIFIED: 14, SYNTHETIC: 112, total: 126** (126 records → 504 chunks).
+**Current real counts** (grown substantially since this migration, as the knowledge base was
+expanded to cover more states/cities — verified directly against the built index, not a stale
+snapshot): **1057 total chunks — 609 VERIFIED, 448 SYNTHETIC.**
 
-**Why no ML reranker was added**: the spec explicitly asked for embeddings + filtering + threshold
-to be implemented first, with a reranker added only if it materially improves quality. The current
-category+location filter followed by a lightweight VERIFIED-preference score-band tie-break (§8
-step 5) already produces 100% retrieval accuracy on the evaluation dataset (§1/§14) and correct
-paraphrase/multilingual retrieval (§10) at this corpus size (504 chunks, ≤4 chunks per
-category/city). A trained cross-encoder reranker adds real latency (a second forward pass per
-candidate) and operational complexity (another model to load/version) for a corpus this small,
-where the candidate pool per query is already tiny (top_k*3 = 15 chunks, filtered to begin with).
-Not added because it would not have moved any measured metric here — this is a reasoned decision,
-not an oversight, and would be revisited if the corpus grows to the point where within-category
-candidate pools are large enough for ranking quality (not just filtering) to become the bottleneck.
+**UPDATE — the corpus outgrew this section's original decision, and a reranker was added.** The
+paragraph below is kept for its historical reasoning (why NOT adding one was originally correct),
+but is superseded by what actually shipped once the corpus and candidate pools grew past the small
+scale it was reasoned about:
+
+- **Hybrid search** (`RAG_HYBRID_SEARCH_ENABLED`, on by default) — combines BM25 keyword scoring
+  with the existing vector search, catching exact-term matches (e.g. an exact department name)
+  that pure semantic similarity alone can under-rank.
+- **A real cross-encoder reranker** (`backend/services/reranker.py`,
+  `cross-encoder/ms-marco-MiniLM-L-6-v2`, opt-in via `RAG_RERANKER_ENABLED`) — scores each
+  (question, candidate-chunk) pair jointly in one forward pass, catching relevance signals the
+  bi-encoder's separately-computed vectors structurally cannot. Layered ON TOP of, not replacing,
+  the VERIFIED-preference tie-break described below — a deliberate choice to avoid destabilizing
+  already-tuned behavior by handing ranking entirely to a model that's never seen this corpus.
+  Only ever runs on the already-filtered candidate shortlist (never the full corpus), exactly the
+  cost-shape this section's original reasoning said would justify adding one.
+
+**Original reasoning (superseded, kept for context)**: the spec explicitly asked for embeddings +
+filtering + threshold to be implemented first, with a reranker added only if it materially
+improved quality at the *then*-current corpus size (126 records → 504 chunks, ≤4 chunks per
+category/city) — where the category+location filter and VERIFIED-preference tie-break alone
+already hit 100% retrieval accuracy and a trained reranker's extra latency/operational cost
+wasn't justified. That corpus has since grown roughly 2x; the reranker and hybrid search were
+added once real testing showed room to improve within-category ranking quality, not filtering.
+
+Separately, every request (regardless of which retrieval path serves it) passes through
+hand-rolled prompt-injection guardrails (`backend/services/guardrails.py`) before the model is
+called and again on its output — a fast, pattern-based floor against known jailbreak/injection
+phrasing, not a semantic guarantee. See that module's own docstring for the full reasoning.
 
 ## 14. TF-IDF vs. real embeddings — the actual comparison
 
@@ -378,7 +423,7 @@ See §1 for the headline numbers. Full detail (per-case scores for both engines)
 cases: exact-keyword, paraphrase, multilingual, cross-location, and off-topic-rejection — plus 2
 classifier-layer cases excluded from this specific comparison since they're resolved by
 `intent_classifier.py` before either retriever is ever called, and are already covered end-to-end
-by `tests/test_ask_janmitra.py`).
+by `tests/test_ask_sarthi.py`).
 
 **Measured retrieval time**: OLD (TF-IDF, warm) 0.46ms/query average; NEW (embeddings, warm)
 67.74ms/query average. The new path is genuinely slower per-query (a neural forward pass vs. a
@@ -415,7 +460,7 @@ passing):
   back as `None` via `.get()`, never a `KeyError`
   (`test_incomplete_metadata_chunk_does_not_crash_retrieval`).
 
-**A real, measured startup/latency issue found and fixed during validation**: `AskJanMitraService`'s
+**A real, measured startup/latency issue found and fixed during validation**: `AskSarthiService`'s
 embedding provider was originally fully lazy — the model loaded on the *first real request* after
 a backend restart, not at startup. Running the Playwright suite against a freshly-restarted
 backend caught this directly: the first live Ask Sarthi request paid the ~20-25s model-load cost
@@ -437,7 +482,7 @@ final report) — the previously-failing test passed consistently (24.5s, 27.2s)
 | Query embedding generation (warm) | ~part of the 67.74ms/query figure above |
 | ChromaDB query (with metadata filter, 504-chunk collection) | sub-millisecond to low-single-digit ms (included in the 67.74ms figure, which is dominated by the embedding forward pass, not the Chroma lookup) |
 | End-to-end retrieval (embed + filter + search + rerank), warm | ~68ms average |
-| Full `/ask-janmitra` request (retrieval + Sarvam LLM answer generation), warm, real backend | ~2-3s typical, dominated by the LLM call, not retrieval |
+| Full `/ask-sarthi` request (retrieval + Sarvam LLM answer generation), warm, real backend | ~2-3s typical, dominated by the LLM call, not retrieval |
 
 ## 16. The legacy TF-IDF path — isolated, not deleted
 
@@ -445,9 +490,9 @@ Per explicit instruction, the TF-IDF implementation was not removed. It remains 
 (`TfidfEmbeddingProvider` in `embedding_provider.py`, `FlatVectorStore` in `vector_store.py`,
 `python scripts/build_rag_embeddings.py --legacy-tfidf`) and is used exclusively for the
 before/after comparison in §1/§14 and `scripts/evaluate_rag_retrieval.py`. **It is not imported by
-any default-construction code path** — `AskJanMitraService`'s constructor defaults to
+any default-construction code path** — `AskSarthiService`'s constructor defaults to
 `ChromaVectorStore` + `SentenceTransformerEmbeddingProvider` unconditionally
-(`_load_default_store()`/`_load_default_embedding_provider()` in `ask_janmitra_service.py`);
+(`_load_default_store()`/`_load_default_embedding_provider()` in `ask_sarthi_service.py`);
 confirmed by grepping the codebase for every reference to `FlatVectorStore`/`TfidfEmbeddingProvider`
 outside of module docstrings, the legacy-build script path, and the comparison script — none exist
 in the production wiring. **There is exactly one production retrieval path: embeddings + ChromaDB.**
@@ -477,8 +522,9 @@ in the production wiring. **There is exactly one production retrieval path: embe
   the ~68ms/query embedding time further, not evaluated here since this project has no GPU
   available; noted as a real, not implemented, optimization opportunity.
 - **Intent classification remains keyword-based** (unchanged this phase) — real-world phrasing
-  this project hasn't anticipated will not always match; see `docs/ask_janmitra_response_behavior.md`
-  for that component's own documented limitations.
+  this project hasn't anticipated will not always match; see
+  [`docs/ask_sarthi_orchestration.md`](ask_sarthi_orchestration.md) for that component's
+  current, real routing behavior.
 
 ## 18. Future scalability
 
@@ -506,7 +552,7 @@ in the production wiring. **There is exactly one production retrieval path: embe
                            │
                            ▼
                      ASK SARTHI
-              (POST /ask-janmitra, backend/routes/ask_janmitra.py)
+              (POST /ask-sarthi, backend/routes/ask_sarthi.py)
                            │
                            ▼
                   INTENT CLASSIFIER
@@ -575,11 +621,11 @@ in the production wiring. **There is exactly one production retrieval path: embe
              \                    /
               \                  /
                ▼                ▼
-             AskJanMitraResponse
-          (backend/schemas/ask_janmitra.py)
+             AskSarthiResponse
+          (backend/schemas/ask_sarthi.py)
                        │
                        ▼
-         frontend-react/src/pages/AskJanMitra.tsx
+         frontend-react/src/pages/AskSarthi.tsx
 ```
 
 ## 20. How to rebuild the index / run tests
@@ -589,7 +635,7 @@ python scripts/build_rag_knowledge_base.py           # knowledge_records/ -> doc
 python scripts/build_rag_embeddings.py                # chunks.json -> ChromaDB (production path)
 python scripts/build_rag_embeddings.py --legacy-tfidf  # chunks.json -> embeddings/index.json (comparison only)
 python scripts/evaluate_rag_retrieval.py               # OLD vs NEW retrieval comparison (needs both indices built)
-python -m pytest tests/test_ask_janmitra.py tests/test_rag_vector_store.py -v -p no:cacheprovider
+python -m pytest tests/test_ask_sarthi.py tests/test_rag_vector_store.py -v -p no:cacheprovider
 ```
 
 ## 21. Configuration (env vars)

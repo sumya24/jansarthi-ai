@@ -2,7 +2,7 @@
 routes/admin.py's /admin/ai-monitoring endpoints and models.py's `AiRequestLog` docstring).
 
 Mirrors complaint_repository.py's plain-function style. `record_ai_request()` is called from
-`AskJanMitraService.ask()` (see that module) on both the success and error paths of every
+`AskSarthiService.ask()` (see that module) on both the success and error paths of every
 request -- it is deliberately best-effort: a logging failure here must never break (or mask the
 success/failure of) the Ask Sarthi response that has already been produced by the time this is
 called, so every exception is caught and logged, never re-raised.
@@ -230,7 +230,7 @@ def check_and_fire_alerts(db: Session) -> list[str]:
     internet-reachable webhook endpoint for something that only needs to notify admins already
     using this app.
 
-    Called from `AskJanMitraService.ask()` right after `record_ai_request()`, on both the
+    Called from `AskSarthiService.ask()` right after `record_ai_request()`, on both the
     success and failure path. Best-effort like that function -- an alerting bug must never break
     the Ask Sarthi response that already completed by the time this runs.
 

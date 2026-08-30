@@ -15,9 +15,9 @@ Writes a report to data/rag_knowledge_base/reports/tfidf_vs_embeddings_compariso
 
 Note on "unanswerable_electricity" / "unanswerable_new_water_connection": these two cases in the
 dataset are handled by backend/services/intent_classifier.py's out-of-scope keyword detection,
-which runs BEFORE either retriever is ever called (see ask_janmitra_service.py) -- they are
+which runs BEFORE either retriever is ever called (see ask_sarthi_service.py) -- they are
 reported here as N/A for both engines (not a retrieval-layer comparison point) and are already
-covered end-to-end by tests/test_ask_janmitra.py's test_no_knowledge_available_says_so_honestly
+covered end-to-end by tests/test_ask_sarthi.py's test_no_knowledge_available_says_so_honestly
 and test_new_water_connection_does_not_retrieve_a_leak_repair_chunk.
 """
 

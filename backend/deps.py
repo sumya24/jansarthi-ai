@@ -138,7 +138,7 @@ def require_role(*allowed_roles: str):
 # window, single-process deployment only) and docs/RATE_LIMITING.md for the full picture. Three
 # separate limiter instances -- login, AI, and the general baseline (see backend/middleware.py)
 # never share a counting namespace, so exhausting one never affects another. A request to POST
-# /auth/login or POST /ask-janmitra* is checked against BOTH its own strict, purpose-specific
+# /auth/login or POST /ask-sarthi* is checked against BOTH its own strict, purpose-specific
 # limit here AND the general middleware's coarser one -- the general limiter is a safety net for
 # every OTHER route, not a replacement for these two.
 
@@ -223,7 +223,7 @@ def require_otp_rate_limit(request: Request) -> None:
 
 
 def require_ai_rate_limit(current_user: User = Depends(get_current_user)) -> None:
-    """Dependency for the POST /ask-janmitra* endpoints -- throttles expensive Sarvam/LLM/vision
+    """Dependency for the POST /ask-sarthi* endpoints -- throttles expensive Sarvam/LLM/vision
     calls per authenticated user, shared across all three routes (text/image/voice) so a citizen
     can't dodge the limit by switching endpoints. Depends on `get_current_user` itself (rather
     than reading a raw token) so an invalid/expired token is rejected with its own real 401 before

@@ -28,7 +28,7 @@ OUTPUT_PATH = "scripts/i18n_translations_output.json"
 ENGLISH_SOURCE: dict[str, str] = {
     # --- Ask Sarthi RAG-retrieval-phase additions (all 6 languages hand-added directly to
     # i18n.ts at the same time as these source entries -- see that file's "ask.loading" etc, and
-    # docs/ask_janmitra_rag_architecture.md's known-limitations section for why these three are
+    # docs/ask_sarthi_rag_architecture.md's known-limitations section for why these three are
     # hand-translated rather than run through translate_with_retry()'s live Sarvam calls here) ---
     "ask.loading": "Thinking…",
     "ask.error": "Something went wrong. Please try again.",

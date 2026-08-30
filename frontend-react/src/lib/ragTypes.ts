@@ -49,13 +49,13 @@ export interface SourceRecord {
   last_updated?: string | null;
 }
 
-/** The real Ask Sarthi backend's response shape (backend/schemas/ask_janmitra.py's
- * AskJanMitraResponse — POST /ask-janmitra, wired in lib/api.ts's askJanMitra() and consumed by
- * pages/AskJanMitra.tsx). Superset of the original `{answer, sources}` shape this page rendered
- * against its now-removed mock data (lib/mockAskJanMitra.ts, deleted once this real backend
+/** The real Ask Sarthi backend's response shape (backend/schemas/ask_sarthi.py's
+ * AskSarthiResponse — POST /ask-sarthi, wired in lib/api.ts's askSarthi() and consumed by
+ * pages/AskSarthi.tsx). Superset of the original `{answer, sources}` shape this page rendered
+ * against its now-removed mock data (lib/mockAskSarthi.ts, deleted once this real backend
  * existed) — `sources` alone remains valid for that render code, everything else here is
  * additive (intent/location/follow-up/routing metadata). */
-export interface AskJanMitraLocation {
+export interface AskSarthiLocation {
   city: string | null;
   state: string | null;
   source: "text" | "gps" | "conversation_history" | "none";
@@ -63,18 +63,18 @@ export interface AskJanMitraLocation {
   ambiguous_candidates: string[];
 }
 
-export type AskJanMitraIntent =
+export type AskSarthiIntent =
   | "TYPE_A_COMPLAINT"
   | "TYPE_B_SERVICE_INFO"
   | "TYPE_C_STATUS"
   | "CAPABILITIES"
   | "UNCLEAR";
 
-/** A reference to a photo already validated and saved to disk (backend/schemas/ask_janmitra.py's
+/** A reference to a photo already validated and saved to disk (backend/schemas/ask_sarthi.py's
  * PhotoEvidenceRef, mirroring evidence_service.SavedFile) -- round-tripped on
- * AskJanMitraConversationTurn so a LATER turn with no photo of its own (e.g. a typed "yes, submit
+ * AskSarthiConversationTurn so a LATER turn with no photo of its own (e.g. a typed "yes, submit
  * it") can still have the SAME real file attached to the complaint it eventually creates. See
- * AskJanMitra.tsx's `historyForRequest` for where this gets echoed back. */
+ * AskSarthi.tsx's `historyForRequest` for where this gets echoed back. */
 export interface PhotoEvidenceRef {
   filename: string;
   original_name: string;
@@ -82,12 +82,12 @@ export interface PhotoEvidenceRef {
   size: number;
 }
 
-export interface AskJanMitraResponse {
+export interface AskSarthiResponse {
   answer: string;
-  intent: AskJanMitraIntent;
+  intent: AskSarthiIntent;
   service_category: ServiceCategory | null;
   language: string;
-  location: AskJanMitraLocation | null;
+  location: AskSarthiLocation | null;
   sources: SourceRecord[];
   verification_status: VerificationStatus | "MIXED" | null;
   follow_up_required: boolean;
@@ -121,11 +121,11 @@ export interface AskJanMitraResponse {
    * dedicated complaint form uses, instead of only answering from RAG. */
   complaint_id: number | null;
   /** Set whenever a photo was validated and saved to disk THIS turn -- see PhotoEvidenceRef's own
-   * docstring. Echoed back via AskJanMitraConversationTurn.photo_evidence so a LATER turn (no
+   * docstring. Echoed back via AskSarthiConversationTurn.photo_evidence so a LATER turn (no
    * photo of its own) can still recover and attach the SAME file to a complaint. */
   photo_evidence?: PhotoEvidenceRef | null;
   /** One of "DRAFT" | "AWAITING_CONFIRMATION" | "CONFIRMED" | "CANCELLED", or null when this turn
-   * wasn't complaint-shaped at all -- see backend/schemas/ask_janmitra.py's own docstring.
+   * wasn't complaint-shaped at all -- see backend/schemas/ask_sarthi.py's own docstring.
    * LIVE-REPORTED BUG this closes: this field existed on the backend from the start specifically
    * so Sarthi could recognize its own confirmation/terminal turns as DATA rather than by
    * re-parsing this response's own (possibly translated) `answer` text -- but this TS type never
@@ -134,23 +134,23 @@ export interface AskJanMitraResponse {
    * Marathi/Odia/Gujarati/Bengali never produces, so a FILED complaint's own turn was never
    * recognized as a boundary -- a brand-new complaint in a DIFFERENT city, right after, silently
    * reused the already-closed one's ward/category instead of resolving fresh. Echoed back via
-   * AskJanMitraConversationTurn.complaint_workflow_state, exactly like photo_evidence above. */
+   * AskSarthiConversationTurn.complaint_workflow_state, exactly like photo_evidence above. */
   complaint_workflow_state?: string | null;
 }
 
-export interface AskJanMitraConversationTurn {
+export interface AskSarthiConversationTurn {
   role: "user" | "assistant";
   content: string;
   photo_evidence?: PhotoEvidenceRef | null;
   complaint_workflow_state?: string | null;
 }
 
-/** POST /ask-janmitra/voice's response (backend/schemas/ask_janmitra.py's AskVoiceResponse) --
- * everything AskJanMitraResponse already has, plus the citizen's own transcribed speech
+/** POST /ask-sarthi/voice's response (backend/schemas/ask_sarthi.py's AskVoiceResponse) --
+ * everything AskSarthiResponse already has, plus the citizen's own transcribed speech
  * (`question`, a real STT result, not a guess) and the AI's reply as real synthesized audio.
  * `audio_base64` is null only when TTS itself failed server-side (a real, honest failure) --
  * `answer` is still real text to fall back to displaying in that case. */
-export interface AskVoiceResponse extends AskJanMitraResponse {
+export interface AskVoiceResponse extends AskSarthiResponse {
   question: string;
   audio_base64: string | null;
   audio_format: string;

@@ -1,5 +1,5 @@
 """Best-effort audio duration detection, for real Sarvam speech-to-text cost tracking (see
-ask_janmitra_service.py's `stt_span` -- STT is billed per hour of audio, so a real cost needs a
+ask_sarthi_service.py's `stt_span` -- STT is billed per hour of audio, so a real cost needs a
 real duration, which the raw audio bytes alone don't carry).
 
 Two paths, tried in order:

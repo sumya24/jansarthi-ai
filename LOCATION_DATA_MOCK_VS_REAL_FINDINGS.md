@@ -115,7 +115,7 @@ asked about this exact dropdown.
 ## 4. Live Excel dashboard (the "real-time" sheet you asked for)
 
 `Data_Coverage_Dashboard.xlsx` (project root) — **not a static export**: it's generated fresh from
-`janmitra.db` + the knowledge-base JSON files every time you run:
+`jansarthi.db` + the knowledge-base JSON files every time you run:
 
 ```bash
 python scripts/generate_data_coverage_workbook.py

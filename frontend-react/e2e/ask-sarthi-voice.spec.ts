@@ -3,7 +3,7 @@ import { verifySignupEmail, fillHomeLocationPicker, uniqueEmail, uniquePhone } f
 
 /**
  * E2E coverage for Ask Sarthi's voice-to-voice assistant ("Mic 2", phase 6 of the multimodal
- * upgrade) against the REAL backend (POST /ask-janmitra/voice) -- not a mock. Uses the fake mic
+ * upgrade) against the REAL backend (POST /ask-sarthi/voice) -- not a mock. Uses the fake mic
  * device configured in playwright.config.ts, same as theme-and-voice.spec.ts's existing real
  * voice-complaint test -- and, like that test, tolerates either a real successful response or a
  * graceful error for the actual STT/answer content (a fake device streams synthetic silence, so

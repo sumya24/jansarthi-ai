@@ -7,16 +7,16 @@ numbers, symbols, very long junk, whitespace-only, and no input at all -- throug
 that share this one clarification node: civic-info questions (TYPE_B_SERVICE_INFO) and complaint
 filing (TYPE_A_COMPLAINT), plus a multi-turn recovery check and a localization wiring check.
 
-Reuses test_ask_janmitra.py's `_real_ask_janmitra_service`/`_install_real_service`/`_ask` helpers
+Reuses test_ask_sarthi.py's `_real_ask_sarthi_service`/`_install_real_service`/`_ask` helpers
 -- same real ChromaDB + real gazetteer, fake LLM/complaint-agent, so these are genuine retrieval/
 routing/location-matching checks, not mocks of the thing under test.
 """
 
 import pytest
 
-import backend.routes.ask_janmitra as ask_janmitra_module
-from backend.schemas.ask_janmitra import ConversationTurn
-from tests.test_ask_janmitra import _ask, _install_real_service, _real_ask_janmitra_service
+import backend.routes.ask_sarthi as ask_sarthi_module
+from backend.schemas.ask_sarthi import ConversationTurn
+from tests.test_ask_sarthi import _ask, _install_real_service, _real_ask_sarthi_service
 
 _UNRECOGNIZED = "i couldn't recognize that as a location"
 _DEFAULT_ASK = "what is the location? this helps me give you the correct local information."
@@ -267,8 +267,8 @@ def test_unrecognized_location_message_is_localized_for_non_english_citizen(clie
 
     fake_sarvam = Mock()
     fake_sarvam.translate = lambda text, source_language_code, target_language_code: f"[{target_language_code}] {text}"
-    service = _real_ask_janmitra_service(sarvam_client=fake_sarvam)
-    monkeypatch.setattr(ask_janmitra_module, "_service", service)
+    service = _real_ask_sarthi_service(sarvam_client=fake_sarvam)
+    monkeypatch.setattr(ask_sarthi_module, "_service", service)
 
     token, _ = make_citizen(phone="9100000062")
     resp = _ask(client, token, _QUESTION, language="hi", location_text="Zzz Nonexistent Place")

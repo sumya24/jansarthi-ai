@@ -1,9 +1,9 @@
-"""Tests for the P0 rate-limiting fix: POST /auth/login and the three POST /ask-janmitra*
+"""Tests for the P0 rate-limiting fix: POST /auth/login and the three POST /ask-sarthi*
 endpoints. See docs/RATE_LIMITING.md and backend/services/rate_limiter.py's module docstring for
 the design.
 
 Reuses this codebase's established Ask Sarthi test pattern (real ChromaDB retrieval, fake LLM/
-vision calls -- no network call, see test_ask_janmitra.py's own docstring) rather than
+vision calls -- no network call, see test_ask_sarthi.py's own docstring) rather than
 reinventing it. Login tests need no such fakes -- /auth/login never calls any external service.
 
 Rate-limit state is reset before every test by conftest.py's autouse `_reset_rate_limiters`
@@ -20,9 +20,9 @@ from backend.config import settings
 from backend.middleware import _general_limiter
 from backend.services.rate_limiter import RateLimiter
 
-from tests.test_ask_janmitra import _ask, _install_real_service
-from tests.test_ask_janmitra_image import _ask_image
-from tests.test_ask_janmitra_image import _install_real_service as _install_real_service_with_vision
+from tests.test_ask_sarthi import _ask, _install_real_service
+from tests.test_ask_sarthi_image import _ask_image
+from tests.test_ask_sarthi_image import _install_real_service as _install_real_service_with_vision
 
 # --- Login -----------------------------------------------------------------------------------
 
@@ -210,7 +210,7 @@ def test_ai_shared_across_text_image_and_voice_variants(client, monkeypatch, mak
     for _ in range(settings.AI_RATE_LIMIT):
         assert _ask(client, token, "Who do I contact about street lights in Mohali?").status_code == 200
 
-    # Same user, DIFFERENT ask-janmitra route -- still blocked, proving the shared bucket.
+    # Same user, DIFFERENT ask-sarthi route -- still blocked, proving the shared bucket.
     response = _ask_image(client, token, "What is this?")
     assert response.status_code == 429
 
@@ -219,7 +219,7 @@ def test_ai_unauthorized_request_gets_401_not_a_bypass(client, monkeypatch):
     """No token at all must fail authentication (401) before any rate-limit bookkeeping runs --
     never a silent bypass, never a 429 that would imply the request was otherwise legitimate."""
     _install_real_service(monkeypatch)
-    response = client.post("/ask-janmitra", json={"question": "hello", "language": "en"})
+    response = client.post("/ask-sarthi", json={"question": "hello", "language": "en"})
     assert response.status_code == 401
 
 
@@ -228,7 +228,7 @@ def test_ai_unauthorized_requests_never_consume_a_real_users_quota(client, monke
     rejected at auth, before the rate limiter (keyed by user id) ever runs."""
     _install_real_service(monkeypatch)
     for _ in range(settings.AI_RATE_LIMIT + 5):
-        response = client.post("/ask-janmitra", json={"question": "hello", "language": "en"})
+        response = client.post("/ask-sarthi", json={"question": "hello", "language": "en"})
         assert response.status_code == 401
 
     token, _ = make_citizen(phone="9100000016")

@@ -2,26 +2,26 @@ import { useEffect, useRef, useState } from "react";
 import { useLocation } from "react-router-dom";
 import { useUiLang } from "../lib/uiLang";
 import { t } from "../lib/i18n";
-import { AskJanMitraContent, type AskJanMitraHandle } from "../pages/AskJanMitra";
+import { AskSarthiContent, type AskSarthiHandle } from "../pages/AskSarthi";
 import Mascot from "./Mascot";
-import "./AskJanMitraWidget.css";
+import "./AskSarthiWidget.css";
 
 /** Floating entry point for Ask Sarthi -- replaces the old nav tab with the common
  * floating-chat-widget pattern: a round button in the corner that periodically shows
  * a small greeting bubble, and opens a slide-out panel instead of navigating away. The panel
- * renders the exact same `AskJanMitraContent` the standalone /citizen/ask page uses, so both
+ * renders the exact same `AskSarthiContent` the standalone /citizen/ask page uses, so both
  * entry points share one real implementation.
  *
  * Hidden on /citizen/ask itself -- opening this panel while already on the dedicated page for
  * the same thing would just be redundant. */
-export default function AskJanMitraWidget() {
+export default function AskSarthiWidget() {
   const { lang } = useUiLang();
   const location = useLocation();
   const [open, setOpen] = useState(false);
   const [everOpened, setEverOpened] = useState(false);
   const [showGreeting, setShowGreeting] = useState(false);
   const [scrolled, setScrolled] = useState(false);
-  const contentRef = useRef<AskJanMitraHandle>(null);
+  const contentRef = useRef<AskSarthiHandle>(null);
 
   // Periodic nudge: show the greeting bubble a little after load, then again every so often --
   // but only until the widget's actually been used once this session, so it doesn't keep
@@ -85,7 +85,7 @@ export default function AskJanMitraWidget() {
       <div className={`ask-widget-panel ${open ? "open" : ""}`} role="dialog" aria-modal="true" aria-label={t(lang, "nav.askJanmitra")}>
         <div className="ask-widget-panel-head">
           {/* Same row as the close button, not its own stacked bar underneath -- see
-              AskJanMitraHandle/hideNewChatBar's docstring in AskJanMitra.tsx for the "two
+              AskSarthiHandle/hideNewChatBar's docstring in AskSarthi.tsx for the "two
               separate corner toolbars" problem this replaces. Always shown once the panel's ever
               been opened, even on an empty conversation -- clicking it then is just a harmless
               no-op, and a control that doesn't pop in/out as messages arrive is more predictable
@@ -108,7 +108,7 @@ export default function AskJanMitraWidget() {
             pop out from under the still-sliding panel -- it's just off-screen via the panel's
             own transform when closed. hideNewChatBar=true: this panel's head row above already
             carries New Chat, so the content itself renders no second, internal one. */}
-        {everOpened && <AskJanMitraContent ref={contentRef} hideNewChatBar />}
+        {everOpened && <AskSarthiContent ref={contentRef} hideNewChatBar />}
       </div>
 
       {/* Hidden while the panel is open, not just visually behind it -- its z-index (96) sits
@@ -124,7 +124,7 @@ export default function AskJanMitraWidget() {
         </div>
         {/* Always idle here -- opening the panel isn't the same thing as the mic actively
             recording (see Mascot.tsx's docstring); "listening" only ever appears inside
-            AskJanMitraContent, driven by useSpeechToText's real status. */}
+            AskSarthiContent, driven by useSpeechToText's real status. */}
         <button type="button" className="ask-widget-fab" onClick={handleToggle} aria-label={t(lang, "nav.askJanmitra")} aria-haspopup="dialog" aria-expanded={open}>
           <Mascot state="idle" size={58} />
         </button>

@@ -7,7 +7,7 @@ import { t, toLangCode, SUPPORTED_LANGUAGES } from "../lib/i18n";
 import { api, ApiError } from "../lib/api";
 import { useAudioRecorder } from "../lib/useAudioRecorder";
 import { useSpeechToText } from "../lib/useSpeechToText";
-import type { AskJanMitraConversationTurn, AskVoiceResponse } from "../lib/ragTypes";
+import type { AskSarthiConversationTurn, AskVoiceResponse } from "../lib/ragTypes";
 import "./VoiceAssistantOverlay.css";
 
 type VoicePhase = "idle" | "listening" | "processing" | "speaking" | "error";
@@ -17,7 +17,7 @@ type VoicePhase = "idle" | "listening" | "processing" | "speaking" | "error";
  * (useSpeechToText.ts, which just fills the text input for manual editing/sending): this opens a
  * dedicated overlay, captures a full spoken turn via the SAME chunked-recording hook the
  * complaint-creation voice flow already uses (useAudioRecorder.ts), sends it to the real
- * POST /ask-janmitra/voice backend, and plays back the AI's real synthesized speech.
+ * POST /ask-sarthi/voice backend, and plays back the AI's real synthesized speech.
  *
  * Turn-based by design (not real-time interruption) -- see the implementation plan for why: this
  * stack has no streaming ASR/persistent channel, so real barge-in isn't feasible without a real
@@ -46,18 +46,18 @@ export default function VoiceAssistantOverlay({
   conversationId,
 }: {
   onClose: () => void;
-  initialHistory: AskJanMitraConversationTurn[];
+  initialHistory: AskSarthiConversationTurn[];
   /** LIVE-REPORTED BUG, fixed alongside `initialHistory`'s own: the turn this reports back to the
    * main chat used to lose the attached photo (no thumbnail in the background transcript, even
    * though the request genuinely included one) and never showed how long the reply took (unlike
    * every typed/photo turn, which does) -- because this callback only ever passed `question`/
    * `response`, nothing about the image or real elapsed time. `durationMs` is measured here
-   * (right around the actual `api.askJanMitraVoice` call, not a guess); `imagePreview` is a
+   * (right around the actual `api.askSarthiVoice` call, not a guess); `imagePreview` is a
    * `URL.createObjectURL()` blob of whatever was attached THIS turn, or `undefined` if nothing
-   * was -- same shape/lifecycle as `AskJanMitra.tsx`'s own text/image submit path, which is also
+   * was -- same shape/lifecycle as `AskSarthi.tsx`'s own text/image submit path, which is also
    * where this blob's cleanup (`imagePreviewUrlsRef`) lives, not here. */
   onTurnComplete: (question: string, response: AskVoiceResponse, durationMs: number, imagePreview?: string) => void;
-  /** Observability only (see AskJanMitra.tsx's loadOrCreateConversationId docstring) -- passed
+  /** Observability only (see AskSarthi.tsx's loadOrCreateConversationId docstring) -- passed
    * through so a voice turn groups into the SAME Phoenix session as the rest of this chat, not a
    * separate one, matching how `initialHistory`/`onTurnComplete` already keep this one shared
    * conversation instead of two disconnected ones. */
@@ -90,7 +90,7 @@ export default function VoiceAssistantOverlay({
   const [audioPlaying, setAudioPlaying] = useState(false);
   // Seeded from the main chat's own history (see this component's own docstring), not an empty
   // array -- every turn taken IN this overlay still just appends onto it locally, same as before.
-  const [history, setHistory] = useState<AskJanMitraConversationTurn[]>(initialHistory);
+  const [history, setHistory] = useState<AskSarthiConversationTurn[]>(initialHistory);
   const [attachedImage, setAttachedImage] = useState<File[]>([]);
 
   const stopRequestedRef = useRef(false);
@@ -164,10 +164,10 @@ export default function VoiceAssistantOverlay({
     // this turn's real elapsed time shouldn't depend on that succeeding.
     const sentAt = performance.now();
     // Created now (this turn's image, if any, is about to be cleared on success either way) --
-    // `undefined` when nothing was attached, matching AskJanMitra.tsx's own text/image submit path.
+    // `undefined` when nothing was attached, matching AskSarthi.tsx's own text/image submit path.
     const imagePreview = attachedImage[0] ? URL.createObjectURL(attachedImage[0]) : undefined;
     try {
-      const result = await api.askJanMitraVoice(token, {
+      const result = await api.askSarthiVoice(token, {
         language: lang,
         conversation_history: history,
         conversation_id: conversationId,
@@ -181,7 +181,7 @@ export default function VoiceAssistantOverlay({
         ...prev,
         { role: "user", content: result.question },
         // `complaint_workflow_state` echoed here too -- same gap, same fix as the main text chat
-        // (see AskJanMitra.tsx's own historyForRequest comment): without it, a complaint filed or
+        // (see AskSarthi.tsx's own historyForRequest comment): without it, a complaint filed or
         // cancelled via voice can't be recognized as a closed boundary on a later turn (voice OR
         // text, since this history is shared with the main chat -- see this component's own
         // docstring), letting a brand-new complaint silently reuse its stale ward/category.
@@ -193,7 +193,7 @@ export default function VoiceAssistantOverlay({
       // docstring for the live-reported gap this closes.
       onTurnComplete(result.question, result, performance.now() - sentAt, imagePreview);
       // Only clear on success -- a failed request keeps the attached photo so the citizen can
-      // just retry, matching AskJanMitra.tsx's own text/image submit behavior.
+      // just retry, matching AskSarthi.tsx's own text/image submit behavior.
       setAttachedImage([]);
 
       if (result.audio_base64) {
@@ -317,7 +317,7 @@ export default function VoiceAssistantOverlay({
         )}
 
         {/* Attaching a photo here is optional and only meaningful before/between turns -- a
-            combined voice+image turn (see backend ask_janmitra_service.ask_voice()), reusing
+            combined voice+image turn (see backend ask_sarthi_service.ask_voice()), reusing
             the exact same single-image attach control the text/image flow already uses. */}
         {(phase === "idle" || phase === "error") && (
           <MultiPhotoUpload photos={attachedImage} onChange={setAttachedImage} maxFiles={1} placeholderKey="ask.image.addLabel" />

@@ -1,64 +1,114 @@
 # JanSarthi AI
 
-A civic complaint app where a citizen can report a problem (starting with garbage collection) by speaking in their own language. The app transcribes, translates, and routes the complaint to the right worker — who sees it in their own language — without the citizen and worker ever needing to share a common language.
+**🔴 Live: [jansarthi-ai.duckdns.org](https://jansarthi-ai.duckdns.org)** — a real, deployed production app, not a local-only demo.
 
-**Why it matters:** In India, most civic apps assume citizen and worker share a language. This one doesn't have to.
+A multilingual civic-grievance platform for India. A citizen reports a problem (garbage, water/drainage, roads/potholes, streetlights) or asks a civic question — by speaking, typing, or attaching a photo, in any of 6 Indian languages — through **Ask Sarthi**, a single conversational AI agent. The complaint is translated, routed to the real municipal worker who covers that ward, tracked to resolution, and rated. The AI agent, the security model, and the deployment pipeline are all production-grade, not a prototype shortcut.
+
+**Why it matters:** in India, most civic apps assume the citizen and the worker share a language, and most "AI features" bolted onto apps like this are a thin wrapper that just calls an LLM and hopes. This one doesn't assume either.
 
 ## 📚 Full documentation
 
-This README is a quick reference and setup guide. Everything else — the actual depth, written so it makes sense whether or not you already write code, and detailed enough to explain confidently in an interview — lives in `docs/`. **Start with `PROJECT_OVERVIEW.md`** for the big picture, then go to whichever specific doc covers what you're trying to understand:
+This README is a quick reference and setup guide. Full depth — written so it makes sense whether or not you already write code, detailed enough to explain confidently in an interview — lives in `docs/`.
 
 | If you want to understand... | Read this |
 |---|---|
-| The big picture: what this app is, how its pieces fit together, every file's purpose, with diagrams | **[`docs/PROJECT_OVERVIEW.md`](docs/PROJECT_OVERVIEW.md)** |
-| The backend: FastAPI, why it was chosen, how routes/services/models are layered, CORS | **[`docs/BACKEND.md`](docs/BACKEND.md)** |
-| The frontend: React, why it was chosen, component structure, state management, routing | **[`docs/FRONTEND.md`](docs/FRONTEND.md)** |
-| The database: SQLAlchemy, schema design, caching, why SQLite (and its real limits) | **[`docs/DATABASE.md`](docs/DATABASE.md)** |
-| Login, passwords, JWTs, and roles — what a JWT actually is and why this project hand-rolled its own | **[`docs/AUTHENTICATION.md`](docs/AUTHENTICATION.md)** |
-| The AI pipeline: speech-to-text, translation, summarization, and the real limits measured against the live Sarvam API | **[`docs/AI_AGENT.md`](docs/AI_AGENT.md)** |
-| Testing strategy: pytest, mocking, property-based tests, Playwright end-to-end tests | **[`docs/TESTING.md`](docs/TESTING.md)** |
-| Tracing (LangSmith), Phoenix, real ₹ cost tracking, and the Admin AI Monitoring alerts | **[`docs/ask_janmitra_langsmith_observability.md`](docs/ask_janmitra_langsmith_observability.md)** + **[`docs/OBSERVABILITY.md`](docs/OBSERVABILITY.md)** |
-| What's deliberately out of scope so far | **[`future_work.md`](future_work.md)** |
-
-Every doc in `docs/` ends with a **"Likely interview questions about this part of the project"** section — real questions with real, specific answers grounded in this actual codebase, not generic advice.
+| The big picture: what this app is, how its pieces fit together | **[`docs/PROJECT_OVERVIEW.md`](docs/PROJECT_OVERVIEW.md)** |
+| **Ask Sarthi**: the LangGraph agent, intent classification, stateless orchestration | **[`docs/ask_sarthi_orchestration.md`](docs/ask_sarthi_orchestration.md)** |
+| **RAG**: retrieval, embeddings, hybrid search, the cross-encoder reranker, VERIFIED/SYNTHETIC knowledge tiers | **[`docs/ask_sarthi_rag_architecture.md`](docs/ask_sarthi_rag_architecture.md)** |
+| How a citizen's message actually flows end to end, turn by turn | **[`docs/ask_sarthi_service_flow.md`](docs/ask_sarthi_service_flow.md)** |
+| The backend: FastAPI, why it was chosen, how routes/services/models are layered | **[`docs/BACKEND.md`](docs/BACKEND.md)** |
+| The frontend: React, component structure, state management, routing | **[`docs/FRONTEND.md`](docs/FRONTEND.md)** |
+| The database: SQLAlchemy, the real 22-table schema, why SQLite (and its real limits) | **[`docs/DATABASE.md`](docs/DATABASE.md)** |
+| Login, JWTs, roles, httpOnly cookies, and CSRF | **[`docs/AUTHENTICATION.md`](docs/AUTHENTICATION.md)** |
+| Rate limiting: the 4 independent sliding-window limiters | **[`docs/RATE_LIMITING.md`](docs/RATE_LIMITING.md)** |
+| The original complaint-filing AI pipeline (STT/normalize/translate/summarize) | **[`docs/AI_AGENT.md`](docs/AI_AGENT.md)** |
+| Testing strategy: pytest, mocking, Playwright end-to-end tests | **[`docs/TESTING.md`](docs/TESTING.md)** |
+| Tracing (LangSmith + Phoenix), real ₹ cost tracking, Admin AI Monitoring | **[`docs/ask_sarthi_langsmith_observability.md`](docs/ask_sarthi_langsmith_observability.md)** + **[`docs/OBSERVABILITY.md`](docs/OBSERVABILITY.md)** |
+| Error monitoring (Sentry): concepts, then technical reference | **[`docs/ERROR_MONITORING_GUIDE.md`](docs/ERROR_MONITORING_GUIDE.md)** + **[`docs/ERROR_MONITORING.md`](docs/ERROR_MONITORING.md)** |
+| Where LangChain is (and deliberately isn't) used, with the live evidence behind each call | **[`docs/LANGCHAIN_INTEGRATION.md`](docs/LANGCHAIN_INTEGRATION.md)** |
+| CI/CD: the two GitHub Actions workflows, job by job | **[`docs/CI_CD_GITHUB_ACTIONS.md`](docs/CI_CD_GITHUB_ACTIONS.md)** |
+| The live production deployment (GCP): VM setup, secrets, `deploybot` | **[`docs/DEPLOYMENT_GCP.md`](docs/DEPLOYMENT_GCP.md)** |
 
 ## Current status
 
-Full citizen/worker/Super Admin roles with real JWT authentication, ward-scoped complaint assignment (with automatic reassignment on rejection), cached on-demand translation, and voice complaints that aren't capped at Sarvam's 30-second-per-request speech-to-text limit (recordings are chunked client-side and stitched back together). The UI supports 6 languages: English, Hindi, Marathi, Odia, Gujarati, Bengali.
+Full citizen/worker/Admin roles with JWT access+refresh tokens (httpOnly cookies + CSRF double-submit protection), role-based access control, mandatory OTP email verification, and 4 independent rate limiters. Ward-scoped complaint assignment with automatic reassignment on rejection (every ward has 2+ workers for exactly this reason). Voice complaints aren't capped at Sarvam's 30-second-per-request limit (recordings are chunked client-side and stitched back together). The UI supports 6 languages: English, Hindi, Marathi, Odia, Gujarati, Bengali.
 
-This replaced an earlier, simpler version (hardcoded single citizen/worker, no login, Streamlit-only frontend) — those Streamlit apps (`frontend/citizen_app.py`, `frontend/worker_app.py`) still exist in this repo for reference but are superseded by the React frontend below.
+**Ask Sarthi**, the AI assistant, is a stateless [LangGraph](https://langchain-ai.github.io/langgraph/) orchestration — not a single prompt-and-hope call. It classifies intent, then routes to complaint-filing, RAG-grounded civic Q&A, or complaint-status-check, converging on a shared response node. Every AI request passes through hand-rolled prompt-injection guardrails (`backend/services/guardrails.py`) before and after the model call. The RAG layer combines vector search (ChromaDB + `multilingual-e5-small` embeddings), hybrid BM25+vector search, and an optional cross-encoder reranker (`ms-marco-MiniLM-L-6-v2`) over a real, sourced knowledge base — VERIFIED records carry a real government citation; SYNTHETIC_REPRESENTATIVE records are honestly labelled as such. If nothing clears the relevance threshold, it says "I don't have reliable information" instead of guessing. The same services are also exposed as [MCP](https://modelcontextprotocol.io) tools (`backend/mcp_server.py`) for any MCP-compatible client.
+
+This replaced an earlier, simpler version (hardcoded single citizen/worker, no login, Streamlit-only frontend) — those Streamlit apps (`frontend/citizen_app.py`, `frontend/worker_app.py`) still exist in this repo for reference but are fully superseded by the React frontend below.
 
 ## Architecture
 
-```
-   Citizen / Worker / Admin (React + TypeScript SPA)
-                    │
-                    │  HTTPS, JWT bearer token
-                    ▼
-              FastAPI Backend
-                    │
-      ┌─────────────┼──────────────┐
-      ▼             ▼              ▼
-  SQLite       Sarvam AI       uploads/
-  Database     (external:      folder
-  (users,       STT, translate, (complaint
-  complaints,   chat completion) photos)
-  translations)
+```mermaid
+flowchart TB
+    User["Citizen / Worker / Admin<br/>(React + TypeScript SPA)"]
+    Caddy["Caddy<br/>(reverse proxy, automatic HTTPS)"]
+    API["FastAPI Backend"]
+    Guard["Guardrails<br/>(prompt-injection scan)"]
+    Graph["Ask Sarthi<br/>(LangGraph orchestration)"]
+    RAG["RAG retrieval<br/>(ChromaDB + hybrid search + reranker)"]
+    DB[("SQLite / SQLAlchemy<br/>22 tables")]
+    Sarvam["Sarvam AI<br/>(STT, TTS, translate)"]
+    Gemini["Gemini free tier<br/>(photo captioning)"]
+    MCP["MCP server<br/>(tools for external agents)"]
+    Obs["Phoenix + LangSmith + Sentry<br/>(tracing, real ₹ cost, errors)"]
+
+    User -- "HTTPS, JWT + CSRF" --> Caddy --> API
+    API --> Guard --> Graph
+    Graph --> RAG --> DB
+    Graph --> Sarvam
+    Graph --> Gemini
+    API --> DB
+    MCP --> RAG
+    MCP --> DB
+    API -. traces .-> Obs
 ```
 
-Full diagram + explanation: [`docs/PROJECT_OVERVIEW.md §2`](docs/PROJECT_OVERVIEW.md#2-system-architecture). Complaint lifecycle diagram: [`docs/PROJECT_OVERVIEW.md §4`](docs/PROJECT_OVERVIEW.md#4-how-a-complaint-moves-through-the-system). AI pipeline diagram: [`docs/AI_AGENT.md §2`](docs/AI_AGENT.md#2-the-pipeline-visually).
+Full diagrams + explanation: [`docs/ask_sarthi_orchestration.md`](docs/ask_sarthi_orchestration.md) (the agent graph), [`docs/ask_sarthi_rag_architecture.md`](docs/ask_sarthi_rag_architecture.md) (retrieval), [`docs/PROJECT_OVERVIEW.md`](docs/PROJECT_OVERVIEW.md) (everything else, including the complaint lifecycle).
 
-All AI calls (speech-to-text, spelling cleanup, translation, summarization) go through the **Sarvam AI** SDK — one vendor for everything. Direct calls from FastAPI to Sarvam; no agent framework, queue, or orchestration layer. See [`docs/AI_AGENT.md`](docs/AI_AGENT.md) for exactly how, and what its real, measured limits are.
+### How one message actually flows through Ask Sarthi
+
+```mermaid
+flowchart LR
+    Msg["Citizen message<br/>(text / voice / photo)"]
+    In["Guardrail: input scan<br/>(blocks known jailbreak/<br/>injection phrasing)"]
+    Intent["Intent classification"]
+    Complaint["Complaint filing<br/>(builds a draft over<br/>multiple turns)"]
+    RAGQ["Civic Q&A<br/>(RAG: retrieve, then<br/>generate — never guess)"]
+    Status["Status check<br/>(looks up one complaint<br/>the citizen owns)"]
+    Confirm{"Citizen<br/>confirms?"}
+    File[("Complaint created,<br/>assigned to a worker")]
+    Answer["Grounded answer<br/>+ real citations"]
+    Reply["Real status,<br/>read live from the DB"]
+    Out["Guardrail: output scan<br/>(catches leaked prompts /<br/>complied-with injections)"]
+    Response["Response to citizen<br/>(in their own language)"]
+
+    Msg --> In --> Intent
+    Intent -->|"file a complaint"| Complaint --> Confirm
+    Confirm -->|yes| File --> Out
+    Confirm -->|no / not yet| Complaint
+    Intent -->|"ask a question"| RAGQ --> Answer --> Out
+    Intent -->|"check status"| Status --> Reply --> Out
+    Out --> Response
+```
+
+Nothing is ever filed without an explicit "yes," and no civic answer is ever given without a real, retrieved source — the two places this app is most deliberately careful about trust.
 
 ## Tech Stack
 
-- **Frontend:** React + TypeScript (Vite), plain CSS with light/dark/system theming — `frontend-react/`
-- **Backend:** FastAPI (Python)
-- **Auth:** JWT (HS256), implemented against the standard library directly — no third-party JWT package
-- **Database:** SQLite (via SQLAlchemy), no migration framework (see [`docs/PROJECT_OVERVIEW.md §9`](docs/PROJECT_OVERVIEW.md#9-a-known-limitation-no-database-migrations))
-- **AI:** Sarvam AI — `saaras:v3` (speech-to-text), `sarvam-translate:v1` (translation), `sarvam-105b` (chat-completion for spelling cleanup + summaries)
-- **Storage:** Local filesystem for photos
-- **Testing:** pytest (backend, all AI calls mocked) + Playwright (end-to-end, against real running dev servers) + Hypothesis (property-based tests for auth/token logic)
+- **Frontend:** React 19 + TypeScript (Vite), React Router 7, plain hand-written CSS (no framework) with light/dark theming, Sentry for error tracking — `frontend-react/`
+- **Backend:** FastAPI (Python), SQLAlchemy ORM over SQLite (Postgres-ready)
+- **AI orchestration:** [LangGraph](https://langchain-ai.github.io/langgraph/) — Ask Sarthi's whole conversation is a stateless directed graph of nodes, not nested if/else
+- **RAG:** ChromaDB (vector store) + `intfloat/multilingual-e5-small` embeddings + hybrid BM25/vector search + an optional cross-encoder reranker (`cross-encoder/ms-marco-MiniLM-L-6-v2`)
+- **AI safety:** hand-rolled prompt-injection guardrails on every request's input and the model's output
+- **Language AI:** Sarvam AI — speech-to-text, text-to-speech, and translation, tuned for Indian languages
+- **Vision:** Google Gemini's free tier for photo captioning
+- **Tool exposure:** an [MCP](https://modelcontextprotocol.io) server wrapping RAG/complaint services as tools for any MCP-compatible client
+- **Auth & security:** JWT access + refresh tokens, httpOnly cookies, CSRF double-submit protection, role-based access control, bcrypt, 4 independent sliding-window rate limiters
+- **Observability:** Arize Phoenix + LangSmith (LLM tracing, real ₹ cost per model) + Sentry (errors, performance)
+- **Infrastructure:** Docker + Docker Compose, Caddy (reverse proxy/automatic HTTPS), deployed on a Google Cloud Compute Engine VM
+- **CI/CD:** GitHub Actions — a CI workflow (pytest + npm build/lint) that must pass before a separate CD workflow builds Docker images, pushes to GHCR, and deploys over SSH
+- **Testing:** 1000+ pytest tests (backend, AI calls mocked) + Playwright (end-to-end) + Hypothesis (property-based)
 - **Legacy:** `frontend/citizen_app.py` / `worker_app.py` — the original Streamlit frontend, superseded by `frontend-react/`, kept for reference
 
 ## Project Structure
@@ -68,33 +118,50 @@ janmitra-ai/
 ├── backend/
 │   ├── config.py                    # All settings, loaded from .env
 │   ├── main.py                      # FastAPI app entry point
-│   ├── models.py                    # users, complaints, complaint_rejections, complaint_translations
+│   ├── middleware.py                # CSRF double-submit-cookie middleware
+│   ├── models.py                    # 22 tables — users, complaints, location hierarchy, ...
 │   ├── database.py                  # Engine/session setup, init_db()
-│   ├── deps.py                      # JWT verification + role-checking dependencies
+│   ├── deps.py                      # Auth (JWT/cookie), require_role(), rate-limit dependencies
+│   ├── mcp_server.py                 # Exposes RAG/complaint services as MCP tools
 │   ├── routes/
-│   │   ├── auth.py                  # Sign-up, login, profile
-│   │   ├── admin.py                 # Super-admin: create/list workers
-│   │   └── complaints.py            # Create/list/accept/reject/resolve/feedback, ward list
+│   │   ├── auth.py                  # Signup, login, refresh, email OTP, password reset
+│   │   ├── admin.py                 # Worker management, AI monitoring, complaint oversight
+│   │   ├── complaints.py            # Full complaint lifecycle + PDF reports
+│   │   ├── locations.py             # State/City/Ward/Area cascade, GPS reverse-geocode
+│   │   ├── notifications.py         # Per-user notification feed
+│   │   └── ask_sarthi.py          # Ask Sarthi: text/image/voice entry points
 │   └── services/
-│       ├── sarvam_client.py         # STT + translation, direct Sarvam SDK calls
-│       ├── translation_service.py   # Language-code mapping + translate calls
-│       ├── normalization_service.py # Spelling cleanup (best-effort, never blocks)
-│       ├── summary_service.py       # Short summary via Sarvam chat completion
-│       ├── complaint_agent.py       # Orchestrates the full AI pipeline + storage
-│       ├── complaint_translation_cache.py  # Caches per-language translations
+│       ├── orchestration/           # graph.py, nodes.py, state.py — the LangGraph agent
+│       ├── observability/           # tracing.py — Phoenix/LangSmith spans
+│       ├── ask_sarthi_service.py  # Wires the graph together, guardrails at the edges
+│       ├── rag_retriever.py         # Vector + hybrid search, reranking
+│       ├── reranker.py              # Cross-encoder reranker
+│       ├── vector_store.py / embedding_provider.py
+│       ├── guardrails.py            # Prompt-injection input/output scanning
+│       ├── intent_classifier.py     # Complaint / Q&A / status-check routing
+│       ├── location_extractor.py / location_resolver.py
+│       ├── complaint_agent.py       # STT→normalize→translate→summarize pipeline
 │       ├── assignment_service.py    # Ward-scoped worker assignment + reassignment
-│       └── auth_service.py          # Password hashing + JWT issuing/verification
-├── frontend-react/                  # Current frontend — see docs/PROJECT_OVERVIEW.md §7
-│   ├── src/pages/                   # One file per screen
-│   ├── src/components/              # Reusable UI pieces
+│       ├── rate_limiter.py          # Hand-rolled sliding-window limiter
+│       ├── auth_service.py          # Password hashing + JWT issuing/verification
+│       ├── complaint_report_service.py  # PDF resolution reports
+│       ├── vision_service.py        # Gemini photo captioning
+│       └── sarvam_client.py         # STT/TTS/translate, direct Sarvam SDK calls
+├── frontend-react/
+│   ├── src/pages/                   # 21 screens — one file per page
+│   ├── src/components/              # 36+ reusable UI pieces
 │   ├── src/lib/                     # API client, auth, i18n, audio recording, theming
 │   └── e2e/                         # Playwright end-to-end tests
 ├── frontend/                        # Legacy Streamlit apps (superseded, kept for reference)
 ├── prompts/                         # AI prompt text, never hardcoded in Python
-├── scripts/                         # One-off admin/seed/migration/i18n-build scripts
-├── docs/                            # Full documentation — see links at the top of this file
-├── uploads/                         # Stored complaint photos
-├── tests/                           # pytest (backend) — mocked AI calls
+├── scripts/                         # Admin/seed/migration/RAG-build scripts
+├── docs/                            # Full documentation — see the table above
+├── data/rag_knowledge_base/         # VERIFIED/SYNTHETIC knowledge records (source of the RAG index)
+├── uploads/                         # Stored complaint/evidence photos
+├── tests/                           # pytest (1000+ tests, AI calls mocked)
+├── .github/workflows/               # CI (test/build) + CD (build images, deploy over SSH)
+├── docker-compose.prod.yml
+├── setup.ps1                        # One-command local setup (Windows)
 ├── requirements.txt
 └── .env.example
 ```
@@ -113,8 +180,8 @@ The manual steps it automates, if you'd rather do them yourself or aren't on Win
 1. **Clone and install backend dependencies**
 
    ```bash
-   git clone https://github.com/sumya24/janmitra-ai
-   cd janmitra-ai
+   git clone https://github.com/sumya24/jansarthi-ai
+   cd jansarthi-ai
    python -m venv .venv
    .venv\Scripts\activate        # Windows; on macOS/Linux: source .venv/bin/activate
    pip install -r requirements.txt
@@ -134,31 +201,38 @@ The manual steps it automates, if you'd rather do them yourself or aren't on Win
    cp .env.example .env
    ```
 
+   The most important variables to set — see `.env.example` for the full, current list (it covers 40+ variables: rate limits, Sentry, Phoenix, RAG tuning, and more):
+
    | Variable | Description |
    |---|---|
-   | `SARVAM_API_KEY` | Your Sarvam AI subscription key (used for STT and translation) |
-   | `SARVAM_BASE_URL` | Sarvam API base URL (defaults to `https://api.sarvam.ai`) |
-   | `LLM_API_KEY` | Key used for the chat-completion calls (normalize/summarize). Leave blank to reuse `SARVAM_API_KEY`. |
+   | `SARVAM_API_KEY` | Your Sarvam AI subscription key (STT, TTS, translation) |
+   | `LLM_API_KEY` | Key used for chat-completion calls. Leave blank to reuse `SARVAM_API_KEY` |
    | `LLM_MODEL` | Chat model used (defaults to `sarvam-105b`) |
-   | `LLM_MAX_TOKENS` | Token budget per chat-completion call — see [`docs/AI_AGENT.md §4`](docs/AI_AGENT.md#4-why-every-step-is-best-effort-not-a-bigger-token-budget) for why this needs real headroom (4096, not a smaller "should be enough" number) |
-   | `UPLOAD_FOLDER` | Local folder for stored complaint photos (defaults to `uploads`) |
+   | `JWT_SECRET_KEY` | Secret used to sign tokens. **Set this explicitly for any real deployment** — if left blank, a random key is generated per process, invalidating every session on restart |
    | `DATABASE_URL` | SQLite connection string |
-   | `BACKEND_URL` | Legacy — only used by the old Streamlit frontends |
-   | `CORS_ORIGINS` | Comma-separated browser origins allowed to call the API (defaults cover the Vite dev server) |
-   | `JWT_SECRET_KEY` | Secret used to sign login tokens. **Set this explicitly for any real deployment** — if left blank, a random key is generated per process, invalidating every session on restart |
-   | `JWT_EXPIRE_MINUTES` | How long a login session lasts (defaults to 1440 = 24h) |
+   | `RAG_RERANKER_ENABLED` | Turn the cross-encoder reranker on/off (default: off, opt-in) |
+   | `RAG_HYBRID_SEARCH_ENABLED` | Turn hybrid BM25+vector search on/off (default: on) |
+   | `SENTRY_DSN` | Enables error/performance monitoring if set |
+   | `PHOENIX_TRACING` | Enables LLM tracing to a local/self-hosted Phoenix instance |
 
    Get a Sarvam AI API key at [sarvam.ai](https://www.sarvam.ai/).
 
-4. **Seed the first Super Admin account**
+4. **Build the RAG knowledge base** (required before the backend can start — `chunks.json` isn't committed to git)
+
+   ```bash
+   python scripts/build_rag_knowledge_base.py
+   python scripts/build_rag_embeddings.py
+   ```
+
+5. **Seed the first Admin account**
 
    ```bash
    python scripts/seed_admin.py
    ```
 
-   This is the *only* way a Super Admin account ever gets created — there's no sign-up path for it. Safe to re-run; it checks for an existing account with the same phone number first.
+   This is the *only* way an Admin account ever gets created — there's no sign-up path for it. Safe to re-run; it checks for an existing account with the same phone number first.
 
-5. **Run the backend**
+6. **Run the backend**
 
    ```bash
    python -m uvicorn backend.main:app --reload
@@ -166,7 +240,7 @@ The manual steps it automates, if you'd rather do them yourself or aren't on Win
 
    API docs available at `http://localhost:8000/docs`.
 
-6. **Run the frontend** (in a separate terminal)
+7. **Run the frontend** (in a separate terminal)
 
    ```bash
    cd frontend-react
@@ -177,31 +251,37 @@ The manual steps it automates, if you'd rather do them yourself or aren't on Win
 
 ## Demo Workflow
 
-1. Open the app, pick a UI language, and sign up as a citizen (phone + password).
-2. Log in as the Super Admin you seeded, and create a worker account for a specific ward.
-3. Log back in as the citizen, pick that same ward, and either record or type a complaint (e.g. "कचरा उचलला नाही" — "Garbage has not been collected").
-4. Submit — the backend transcribes (if voice), cleans up spelling, translates to English, and generates a summary. The complaint is immediately assigned to the worker you created in that ward.
-5. Log in as that worker, see the complaint (translated into the worker's own preferred language), and **Accept** it — this unlocks the worker's phone number for the citizen.
-6. Mark it **Resolved**.
-7. Log back in as the citizen — the complaint now shows **Resolved**, with a step-by-step tracker, and a 1-5★ feedback form appears.
+1. Open the app, pick a UI language, and sign up as a citizen (phone + password, OTP-verified email).
+2. Log in as the Admin you seeded, and create a worker account for a specific ward.
+3. Log back in as the citizen. Open **Ask Sarthi** and either file a complaint conversationally (e.g. "कचरा उचलला नाही" — "Garbage has not been collected") or ask a civic question directly ("who do I contact for garbage collection in Ahmedabad?").
+4. If filing a complaint: Ask Sarthi asks for anything missing, shows a summary, and only files it once you explicitly confirm. It's immediately assigned to the worker you created in that ward.
+5. Log in as that worker, see the complaint (translated into their own preferred language), and **Accept** it.
+6. Post a progress update, then mark it **Resolved** with a completion photo.
+7. Log back in as the citizen — the complaint shows **Resolved** with a real photo/status timeline, and a 1-5★ feedback form appears.
+8. Log back in as the Admin — see the complaint in **AI Monitoring** with its real trace, latency, and ₹ cost.
 
 ## API Endpoints
 
+The real surface is large (40+ routes across 6 modules) — this is a representative slice; see each route file directly for the rest, or `http://localhost:8000/docs` for the live, auto-generated reference.
+
 | Method | Endpoint | Who | Description |
 |---|---|---|---|
-| `POST` | `/auth/signup` | Anyone | Create a citizen account and log in immediately |
-| `POST` | `/auth/login` | Anyone | Log in with phone + password, any role |
-| `GET` | `/auth/me` | Authenticated | Current user's profile |
-| `PATCH` | `/auth/me` | Authenticated | Update your own display name / preferred language |
-| `POST` | `/admin/workers` | Admin | Create a worker account for a ward |
+| `POST` | `/auth/signup` | Anyone | Create a citizen account (requires OTP-verified email) |
+| `POST` | `/auth/login` | Anyone | Log in with phone or email + password |
+| `POST` | `/auth/refresh` | Anyone (valid refresh token) | Exchange a refresh token for a new access token |
+| `POST` | `/ask-sarthi` | Citizen | Ask Sarthi — text: file a complaint, ask a civic question, or check status |
+| `POST` | `/ask-sarthi/voice` | Citizen | Same, from a voice recording (chunked if long) |
+| `POST` | `/ask-sarthi/image` | Citizen | Same, with a photo attached |
+| `POST` | `/complaints` | Citizen | Create a complaint from the traditional form (typed/voice text + optional photo) |
+| `GET` | `/complaints?lang=hi` | Authenticated | List complaints visible to you, translated on read |
+| `POST` | `/complaints/{id}/accept` \| `/reject` \| `/resolve` | Worker | Accept, reject (reassigns), or resolve a complaint |
+| `POST` | `/complaints/{id}/updates` | Worker | Post a progress update with an optional photo |
+| `GET` | `/complaints/{id}/report` | Admin | Generate a PDF resolution report |
+| `GET` | `/locations/states` → `.../cities` → `.../wards` → `.../localities` | Anyone | The real cascading location hierarchy |
+| `GET` | `/locations/resolve-coordinates` | Anyone | Live GPS reverse-geocode preview |
+| `GET` | `/admin/ai-monitoring` | Admin | Real request counts, latency, and ₹ cost by model |
 | `GET` | `/admin/workers` | Admin | List every worker with open/resolved complaint counts |
-| `GET` | `/complaints/wards` | Authenticated | List wards that currently have a worker (backs the ward picker) |
-| `POST` | `/complaints` | Citizen | Create a complaint from typed text or (possibly chunked) voice, with an optional photo |
-| `GET` | `/complaints?lang=hi` | Authenticated | List complaints visible to you, translated into `lang` on read (scoped by role — see [`docs/PROJECT_OVERVIEW.md §4`](docs/PROJECT_OVERVIEW.md#4-how-a-complaint-moves-through-the-system)) |
-| `POST` | `/complaints/{id}/accept` | Worker | Accept a complaint assigned to you |
-| `POST` | `/complaints/{id}/reject` | Worker | Reject it — reassigns to the next eligible worker in the ward |
-| `POST` | `/complaints/{id}/resolve` | Worker | Mark an accepted complaint resolved |
-| `POST` | `/complaints/{id}/feedback` | Citizen | Leave a 1-5★ rating (+ optional comment) on your own resolved complaint |
+| `GET` | `/notifications` | Authenticated | This user's real-time notification feed |
 
 ## Testing
 
@@ -216,10 +296,14 @@ npx playwright test
 
 ## Known limitations
 
-- **No database migrations** — adding a column to an existing table needs a manual one-off script. See [`docs/PROJECT_OVERVIEW.md §9`](docs/PROJECT_OVERVIEW.md#9-a-known-limitation-no-database-migrations).
-- **AI steps have real, measured limits** — a 30-second-per-request cap on voice input (worked around via chunking) and unpredictable reliability on longer text inputs. Full detail, with real numbers: [`docs/AI_AGENT.md`](docs/AI_AGENT.md).
-- **`LLM_TIMEOUT_SECONDS` isn't currently wired up** — it's documented in `.env.example` but nothing in the code reads it yet; the Sarvam SDK's default (60s) applies instead. See [`docs/AI_AGENT.md §5`](docs/AI_AGENT.md#5-real-measured-limits-not-guessed).
+- **No database migrations** — adding a column to an existing table needs a manual one-off script. See [`docs/PROJECT_OVERVIEW.md`](docs/PROJECT_OVERVIEW.md).
+- **AI steps have real, measured limits** — a 30-second-per-request cap on voice input (worked around via chunking), and prompt-injection guardrails are pattern-based (a real floor against known attack shapes, not a semantic guarantee). Full detail: [`docs/AI_AGENT.md`](docs/AI_AGENT.md), [`docs/ask_sarthi_rag_architecture.md`](docs/ask_sarthi_rag_architecture.md).
+- **Single-server deployment, brief downtime on deploy** — a deploy stops and restarts the backend container, a genuine few-second gap. True zero-downtime would need a second server or an orchestrator. See [`docs/DEPLOYMENT_GCP.md`](docs/DEPLOYMENT_GCP.md).
 
-## Roadmap
+## License
 
-See [`future_work.md`](future_work.md) for the full list.
+This repository is public for viewing and evaluation only — it is **not** open source. No
+permission is granted to copy, modify, distribute, or reuse this code or the JanSarthi AI concept
+without prior written permission from the copyright holder. See [`LICENSE`](LICENSE) for the full
+notice.
+

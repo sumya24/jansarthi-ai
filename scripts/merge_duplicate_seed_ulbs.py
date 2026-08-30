@@ -28,7 +28,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
-DB_PATH = Path(__file__).resolve().parent.parent / "janmitra.db"
+DB_PATH = Path(__file__).resolve().parent.parent / "jansarthi.db"
 
 # (duplicate ULB name, correct/seed ULB name) -- both share the same real LGD code.
 DUPLICATE_PAIRS = [

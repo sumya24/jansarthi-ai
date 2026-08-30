@@ -9,7 +9,7 @@ This is what prevents the exact failure mode observed while building this module
 unfiltered search for "new electricity connection" returned a WATER_DRAINAGE chunk (shared words
 like "new"/"connection") as its top hit. With category filtering active, a question correctly
 classified as being about an unsupported service (electricity) never reaches vector search at
-all (see ask_janmitra_service.py, which checks `out_of_scope_service` first).
+all (see ask_sarthi_service.py, which checks `out_of_scope_service` first).
 
 Provider-agnostic by design: this class works unchanged against either
 `(SentenceTransformerEmbeddingProvider, ChromaVectorStore)` (the active default) or
@@ -82,7 +82,7 @@ class RetrievalOutcome:
     """What retrieve() found -- always returned, never raises. `results` is empty and
     `insufficient_knowledge` is True whenever nothing usable was found, with `reason` explaining
     why (no location, no category match, no results above the relevance threshold) so the caller
-    (ask_janmitra_service.py) can compose an honest response instead of a generic failure."""
+    (ask_sarthi_service.py) can compose an honest response instead of a generic failure."""
 
     results: list[ScoredChunk] = field(default_factory=list)
     insufficient_knowledge: bool = False
@@ -123,7 +123,7 @@ class RagRetriever:
         # app's own real usage pattern -- civic complaints cluster heavily by category and city).
         # Keyed on a hashable form of metadata_filter; this instance is already a long-lived
         # per-process singleton (same lifetime as the Chroma collection/embedding model it wraps
-        # -- see AskJanMitraService's own module docstring), so caching for the process lifetime
+        # -- see AskSarthiService's own module docstring), so caching for the process lifetime
         # matches how every other expensive one-time load in this pipeline is already handled.
         # Capped (see _widen_with_bm25) so an unusual flood of distinct filters can't grow this
         # unboundedly over a very long-running process.
@@ -209,7 +209,7 @@ class RagRetriever:
         # module's docstring and backend/services/reranker.py) re-scoring this small
         # already-filtered candidate set, or -- unchanged from before the reranker existed -- a
         # lightweight heuristic over the raw cosine scores (documented in
-        # docs/ask_janmitra_rag_architecture.md's reranking section as the original, pre-Part-6
+        # docs/ask_sarthi_rag_architecture.md's reranking section as the original, pre-Part-6
         # choice). Either way, the VERIFIED-preference tie-breaker below runs the same: among
         # results within a small band of the top score, prefer VERIFIED over SYNTHETIC -- never
         # lets a SYNTHETIC chunk outrank a near-equally-relevant VERIFIED one, without ever
@@ -422,7 +422,7 @@ def chunk_context_label(chunk: ScoredChunk) -> str:
     Bhubaneswar-specific claim the source never states. Labeling each excerpt with `sub_service`
     (already authored on every KnowledgeRecord in this KB, see backend/schemas/rag_knowledge.py's
     Chunk model -- no new data, no new keyword list) lets the SAME model, given the SAME prompt
-    (see prompts/ask_janmitra_answer_prompt.txt's existing "using only the context above... if
+    (see prompts/ask_sarthi_answer_prompt.txt's existing "using only the context above... if
     insufficient, say so plainly" instruction) recognize the topic mismatch itself and decline
     honestly -- verified directly: without this label the model fabricated a pothole-reporting
     procedure from a road-cutting-permission record; with it, the same call answered "I don't have

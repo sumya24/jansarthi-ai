@@ -28,7 +28,7 @@ reportlab==5.0.0  # worker complaint-resolution report PDF generation, see backe
 # all three are real, current options, not deprecated/renamed ones copied from stale docs.
 sentry-sdk[fastapi]==2.68.0
 
-# RAG retrieval (Ask Sarthi) -- see docs/ask_janmitra_rag_architecture.md.
+# RAG retrieval (Ask Sarthi) -- see docs/ask_sarthi_rag_architecture.md.
 # torch is CPU-only (~200MB) -- installing plain `pip install torch` on Windows pulls the much
 # larger CUDA wheel by default; install it explicitly first with:
 #   pip install --index-url https://download.pytorch.org/whl/cpu torch
@@ -44,7 +44,7 @@ numpy==2.3.0
 # its own (confirmed via `pip show`), now pinned explicitly since RagRetriever imports it directly.
 rank-bm25==0.2.2
 
-# Ask Sarthi orchestration layer -- see docs/ask_janmitra_orchestration.md and
+# Ask Sarthi orchestration layer -- see docs/ask_sarthi_orchestration.md and
 # backend/services/orchestration/. LangGraph is the workflow-orchestration engine (StateGraph,
 # conditional routing); langchain-core is a direct dependency of langgraph itself (RunnableConfig)
 # and is not otherwise used as a service layer -- see that doc for the "why not LangChain as the
@@ -53,7 +53,7 @@ langgraph==1.2.10
 langchain-core==1.5.3
 
 # LangSmith observability layer around the Ask Sarthi LangGraph pipeline -- see
-# backend/services/observability/tracing.py and docs/ask_janmitra_langsmith_observability.md.
+# backend/services/observability/tracing.py and docs/ask_sarthi_langsmith_observability.md.
 # Already an installed transitive dependency of langchain-core; pinned explicitly here now that
 # this app imports it directly (backend/services/observability/tracing.py).
 langsmith==0.10.17
@@ -77,7 +77,7 @@ arize-phoenix-client==3.3.0
 # language_detection, intent_classification, etc., plus the _route_after_* conditional edges) so
 # Phoenix gets the SAME fine-grained, framework-level trace LangSmith already captures
 # automatically via its own LangChain integration -- previously Phoenix only ever saw this app's
-# own hand-built spans (ask_janmitra_graph/rag_retrieval/answer_generation/...), a real gap
+# own hand-built spans (ask_sarthi_graph/rag_retrieval/answer_generation/...), a real gap
 # LIVE-REPORTED by comparing an actual LangSmith trace screenshot against Phoenix's spans for the
 # same request. Confirmed lightweight via `pip install --dry-run` before installing: every one of
 # its own dependencies was already satisfied by arize-phoenix-otel above -- adds exactly one new

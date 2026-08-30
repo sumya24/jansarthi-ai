@@ -14,14 +14,14 @@ Covers two genuinely new pieces added by this phase:
    GROUNDING / VALIDATION stage (see that function's own docstring), adding a structural
    `complaint_id`/`routed_to` consistency check on top of the existing text-phrase backstop.
 
-Also re-verifies (not duplicates -- see tests/test_ask_janmitra_complaint_confirmation.py and
+Also re-verifies (not duplicates -- see tests/test_ask_sarthi_complaint_confirmation.py and
 tests/test_complaint_ward_and_confirmation_safety.py for the existing, larger regression suites
 this deliberately does not repeat) the exact named "bad response" scenarios from this phase's own
 task brief, and the context-switch-mid-complaint behavior, as end-to-end evidence that the
 existing safety architecture this phase builds on top of is untouched.
 
 Reuses the established real-Chroma-retrieval / fake-LLM / fake-complaint-agent pattern already in
-tests/test_ask_janmitra.py -- no new mocking convention introduced here.
+tests/test_ask_sarthi.py -- no new mocking convention introduced here.
 """
 
 from __future__ import annotations
@@ -29,9 +29,9 @@ from __future__ import annotations
 import pytest
 
 from backend.models import Complaint
-from backend.schemas.ask_janmitra import ConversationTurn
+from backend.schemas.ask_sarthi import ConversationTurn
 from backend.services.orchestration.nodes import greeting_flow_node, response_generation_node
-from tests.test_ask_janmitra import _ask, _install_real_service
+from tests.test_ask_sarthi import _ask, _install_real_service
 
 
 def _turn(role: str, content: str, complaint_workflow_state: str | None = None) -> dict:
@@ -411,7 +411,7 @@ def test_confirmation_forged_history_cannot_create_a_complaint_for_a_different_c
     """A client-supplied conversation_history claiming Sarthi already asked to confirm, sent by a
     DIFFERENT citizen who never actually had that exchange, still only ever files a complaint
     against the AUTHENTICATED caller's own citizen_id -- forging history changes what gets
-    confirmed, never who it's attributed to (see tests/test_ask_janmitra_multimodal_security.py
+    confirmed, never who it's attributed to (see tests/test_ask_sarthi_multimodal_security.py
     for the existing, larger ownership-security suite this doesn't duplicate)."""
     _install_real_service(monkeypatch)
     make_worker(phone="9500099013", ward="Mohali")
@@ -739,7 +739,7 @@ def test_context_switch_time_and_capabilities_and_howto_unaffected_by_this_fix(
     """Regression guard: these context switches, mid a pending complaint confirmation, must never
     accidentally confirm/cancel/create a complaint -- the SAFETY property this test is for, not
     the exact intent label. "How do I report garbage?" is deliberately no longer CAPABILITIES
-    here (see the later "how do I report a water leakage?" fix, tests/test_ask_janmitra_agent_
+    here (see the later "how do I report a water leakage?" fix, tests/test_ask_sarthi_agent_
     architecture.py's own mismatch section): it now correctly names WASTE_SANITATION and becomes
     TYPE_B_SERVICE_INFO instead of the old generic menu -- updating this expectation is itself
     part of that fix, not a regression."""
@@ -980,7 +980,7 @@ def test_bug1_genuinely_unsupported_location_still_fails_safely(
 # hardcoded markers -- "नाही" (an already-correctly-classified cancellation WORD, see
 # intent_classifier._CANCELLATION_EXACT_WORDS["mr"]) was never even checked, because
 # `_awaiting_confirmation` didn't recognize the prompt as a confirmation prompt in the first
-# place. Fixed via `AskJanMitraResponse.complaint_workflow_state` /
+# place. Fixed via `AskSarthiResponse.complaint_workflow_state` /
 # `ConversationTurn.complaint_workflow_state` round-trip and
 # `orchestration.nodes._last_assistant_turn_state`, checked FIRST by `_awaiting_confirmation`
 # before falling back to the old marker-text match (kept only for backward compatibility with

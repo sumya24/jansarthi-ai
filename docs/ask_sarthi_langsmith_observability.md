@@ -1,8 +1,8 @@
 # Ask Sarthi — LangSmith Observability
 
 **Status: implemented and tested.** This document covers the observability layer added around
-the already-complete LangGraph orchestrator (`docs/ask_janmitra_orchestration.md`) and RAG
-pipeline (`docs/ask_janmitra_rag_architecture.md`), both unchanged by this phase. Nothing about
+the already-complete LangGraph orchestrator (`docs/ask_sarthi_orchestration.md`) and RAG
+pipeline (`docs/ask_sarthi_rag_architecture.md`), both unchanged by this phase. Nothing about
 routing, retrieval, complaint creation, or the database schema for complaints/workers/users was
 touched — this phase only adds a way to *observe* that pipeline, plus a small local metrics table
 the Admin dashboard reads from.
@@ -39,17 +39,17 @@ front of or inside it:
 - **PostgreSQL remains the operational source of truth** for complaints, workers, users,
   assignments, and application state. Nothing about this integration changes that.
 - **ChromaDB remains the vector knowledge store.** LangSmith never stores or serves RAG content.
-- **LangGraph remains the orchestration engine**, unchanged (see `docs/ask_janmitra_orchestration.md`).
+- **LangGraph remains the orchestration engine**, unchanged (see `docs/ask_sarthi_orchestration.md`).
 - **LangSmith only *observes*** what LangGraph/RAG/the LLM call already did — it cannot influence
   routing, retrieval, or any application decision. If LangSmith is down, misconfigured, or simply
   not set up, the application behaves *identically* (see §7).
 
 ## 3. What is traced
 
-One LangSmith trace per `/ask-janmitra` request, structured as:
+One LangSmith trace per `/ask-sarthi` request, structured as:
 
 ```
-ask_janmitra_graph (root span)
+ask_sarthi_graph (root span)
   ├── rag_retrieval        (only for the RAG flow)
   ├── answer_generation    (only when retrieval found something to answer from)
   └── complaint_creation   (only for the complaint flow)
@@ -57,25 +57,25 @@ ask_janmitra_graph (root span)
 
 | Span | Created in | Captures |
 |---|---|---|
-| `ask_janmitra_graph` | `orchestration/graph.py`'s `run_graph()` | The citizen's question (redacted, see §6), language, input type, turn count on the way in; on the way out: intent, `routed_to`, service category, verification status, `insufficient_knowledge`, `follow_up_required`, complaint id, the generated answer (redacted), and total latency. Errors (if the graph raised) are recorded before re-raising. The root run's `metadata` also carries, added for the multimodal/voice upgrade: `input_mode` (`"TEXT"` \| `"STT"` \| `"IMAGE"` \| `"IMAGE_STT"` \| `"VOICE_ASSISTANT"` \| `"IMAGE_VOICE_ASSISTANT"` — `"STT"`/`"IMAGE_STT"` mean the text came from Mic 1, `AskJanMitraRequest.was_voice_input`, not that any transcription happens inside the graph itself), `has_image`/`vision_used` (bool, identical signal, `vision_used` kept as its own key so a LangSmith filter reads naturally), and `tts_used` (bool — this request's mode *will attempt* TTS; whether synthesis actually succeeded is separately visible via `AskVoiceResponse.audio_base64` in the application response, not duplicated into tracing). All four are purely categorical/boolean — never the image itself, its caption, or any audio (see §7). |
+| `ask_sarthi_graph` | `orchestration/graph.py`'s `run_graph()` | The citizen's question (redacted, see §6), language, input type, turn count on the way in; on the way out: intent, `routed_to`, service category, verification status, `insufficient_knowledge`, `follow_up_required`, complaint id, the generated answer (redacted), and total latency. Errors (if the graph raised) are recorded before re-raising. The root run's `metadata` also carries, added for the multimodal/voice upgrade: `input_mode` (`"TEXT"` \| `"STT"` \| `"IMAGE"` \| `"IMAGE_STT"` \| `"VOICE_ASSISTANT"` \| `"IMAGE_VOICE_ASSISTANT"` — `"STT"`/`"IMAGE_STT"` mean the text came from Mic 1, `AskSarthiRequest.was_voice_input`, not that any transcription happens inside the graph itself), `has_image`/`vision_used` (bool, identical signal, `vision_used` kept as its own key so a LangSmith filter reads naturally), and `tts_used` (bool — this request's mode *will attempt* TTS; whether synthesis actually succeeded is separately visible via `AskVoiceResponse.audio_base64` in the application response, not duplicated into tracing). All four are purely categorical/boolean — never the image itself, its caption, or any audio (see §7). |
 | `rag_retrieval` | `orchestration/nodes.py`'s `rag_flow_node()` | The query (redacted), service category, city/state filter in; result count, top relevance score, `insufficient_knowledge`, and the reason out. |
 | `answer_generation` | same | The question (redacted), target language, number of context chunks in; whether the LLM actually generated the answer (`answer_was_llm_generated`) vs. the raw-excerpt fallback, and the answer itself (redacted) out. |
 | `complaint_creation` | `orchestration/nodes.py`'s `complaint_flow_node()` | Service category and language in; the new complaint's id/status out, or the error if creation failed. |
-| `vision_processing` | `ask_janmitra_service.py`'s `ask_with_image()`/`ask_voice()` | `{"has_image": true}` in; `caption_produced` (bool) and `caption_length` (int) out -- never the caption text itself or the image. Real span duration, not folded into the graph's own timing -- this is where the vision model's real, measured latency (see docs/... performance notes) actually shows up. |
-| `speech_to_text` | `ask_janmitra_service.py`'s `ask_voice()` | `segment_count` in; `transcript_length` and the transcript itself (redacted) out, or the error if every chunk failed. |
+| `vision_processing` | `ask_sarthi_service.py`'s `ask_with_image()`/`ask_voice()` | `{"has_image": true}` in; `caption_produced` (bool) and `caption_length` (int) out -- never the caption text itself or the image. Real span duration, not folded into the graph's own timing -- this is where the vision model's real, measured latency (see docs/... performance notes) actually shows up. |
+| `speech_to_text` | `ask_sarthi_service.py`'s `ask_voice()` | `segment_count` in; `transcript_length` and the transcript itself (redacted) out, or the error if every chunk failed. |
 | `text_to_speech` | same | `answer_length` in; `audio_produced` (bool) out -- never the audio itself. |
 
 Child-span nesting for image/voice requests genuinely matches the flow a reviewer would expect to
 see in the LangSmith UI:
 
 ```
-IMAGE:  ask_janmitra_graph (root) -> vision_processing -> [rag_retrieval/answer_generation OR complaint_creation]
-VOICE:  ask_janmitra_graph (root) -> speech_to_text -> [rag_retrieval/... OR complaint_creation] -> text_to_speech
-VOICE+IMAGE:  ask_janmitra_graph (root) -> speech_to_text -> vision_processing -> [...] -> text_to_speech
+IMAGE:  ask_sarthi_graph (root) -> vision_processing -> [rag_retrieval/answer_generation OR complaint_creation]
+VOICE:  ask_sarthi_graph (root) -> speech_to_text -> [rag_retrieval/... OR complaint_creation] -> text_to_speech
+VOICE+IMAGE:  ask_sarthi_graph (root) -> speech_to_text -> vision_processing -> [...] -> text_to_speech
 ```
 
 `vision_processing`/`speech_to_text`/`text_to_speech` are real children of the SAME
-`ask_janmitra_graph` root run the RAG/complaint spans belong to, not a separate trace and not
+`ask_sarthi_graph` root run the RAG/complaint spans belong to, not a separate trace and not
 just inferred from `input_mode` metadata. This required `run_graph()` to accept an already-started
 root run (see its own docstring for exactly how ownership/ending is negotiated between it and the
 service layer) -- `graph.py` exposes `root_run_inputs_and_metadata()`/`root_run_outputs()` so both
@@ -120,9 +120,9 @@ existing convention for every other external service).
 - `GET /admin/ai-monitoring/requests` — the most recent requests, each with intent, route,
   latency, success/failure, and a "View Trace" link where available.
 
-**Deliberately sourced from a local table, not from LangSmith.** Every `/ask-janmitra` call writes
+**Deliberately sourced from a local table, not from LangSmith.** Every `/ask-sarthi` call writes
 one row to a new `ai_request_logs` table (`AiRequestLog` in `models.py`, populated by
-`AskJanMitraService.ask()`) regardless of whether LangSmith tracing is enabled. The Admin
+`AskSarthiService.ask()`) regardless of whether LangSmith tracing is enabled. The Admin
 dashboard reads only this table — never the LangSmith API — so it keeps showing real numbers
 whether LangSmith is fully configured, partially configured, or not set up at all (see §7). This
 matches §4's architecture: LangSmith observes the pipeline, it does not become a dependency of
@@ -183,7 +183,7 @@ actually carries):
   (`image_description`), raw audio bytes/base64, and the citizen's transcribed speech text are
   never passed to any span's `inputs`/`outputs`/`metadata` — confirmed by direct code review of
   every `tracing.*` call site in `orchestration/nodes.py`/`graph.py` (see backend/services/
-  ask_janmitra_service.py's `ask_with_image()`/`ask_voice()`, which keep the caption/transcript
+  ask_sarthi_service.py's `ask_with_image()`/`ask_voice()`, which keep the caption/transcript
   entirely inside `GraphState`/the HTTP response, never inside a tracing call). A transcribed
   question that becomes part of `response_text` still passes through the same `redact_text()` the
   root span's `answer` output already used.
@@ -207,8 +207,8 @@ independently best-effort: `ai_request_log_repository.record_ai_request()` catch
 own exceptions rather than raising, so a database hiccup while writing this row cannot fail (or
 mask the outcome of) the Ask Sarthi response that has already been produced.
 
-Verified directly: `tests/test_ask_janmitra_tracing.py::test_ask_janmitra_endpoint_works_when_every_langsmith_call_raises`
-exercises the real `/ask-janmitra` endpoint with `LANGSMITH_TRACING=true` and a LangSmith client
+Verified directly: `tests/test_ask_sarthi_tracing.py::test_ask_sarthi_endpoint_works_when_every_langsmith_call_raises`
+exercises the real `/ask-sarthi` endpoint with `LANGSMITH_TRACING=true` and a LangSmith client
 that raises on every call, and asserts a normal `200` response.
 
 ## 9. Testing
@@ -216,8 +216,8 @@ that raises on every call, and asserts a normal `200` response.
 - `tests/test_langsmith_tracing.py` — the tracing module in isolation: configuration parsing,
   span start/end shape, redaction, and that every failure mode (missing config, missing package,
   client construction failure, API-call failure) is swallowed, never raised.
-- `tests/test_ask_janmitra_tracing.py` — the same behavior exercised through the real LangGraph
-  orchestrator and (for the RAG spans) the real `/ask-janmitra` endpoint: one root span per
+- `tests/test_ask_sarthi_tracing.py` — the same behavior exercised through the real LangGraph
+  orchestrator and (for the RAG spans) the real `/ask-sarthi` endpoint: one root span per
   request, the root span reaching nodes via `config["configurable"]["trace_root"]`, error tracing
   on a node exception, RAG retrieval/answer-generation spans (including the "nothing found" case),
   and the full HTTP request/response cycle staying correct with a fully-failing LangSmith client.
@@ -227,7 +227,7 @@ that raises on every call, and asserts a normal `200` response.
 
 Run just this feature's tests:
 ```
-python -m pytest -q tests/test_langsmith_tracing.py tests/test_ask_janmitra_tracing.py tests/test_ai_monitoring.py
+python -m pytest -q tests/test_langsmith_tracing.py tests/test_ask_sarthi_tracing.py tests/test_ai_monitoring.py
 ```
 Run the full suite (unchanged tests plus the above) with `python -m pytest -q`.
 
@@ -253,7 +253,7 @@ and scores two things per case as a LangSmith **Experiment**:
    itself *after* the fact; this evaluator does.
 
 **Where to see it**: run `python scripts/langsmith_rag_evaluation.py`, then in the LangSmith UI go
-to **Datasets & Experiments** → `janmitra-ask-janmitra-rag-eval`. Each run shows up as a new
+to **Datasets & Experiments** → `janmitra-ask-sarthi-rag-eval`. Each run shows up as a new
 experiment column — compare experiments over time (e.g. before/after a knowledge-base update or a
 relevance-threshold change) to catch a regression instead of discovering it from citizen traffic.
 
@@ -284,9 +284,9 @@ same way every other `tracing.*` call is (see §8).
 
 ## 12. Prompt Hub — versioned prompts, without changing what the app loads
 
-`scripts/push_prompts_to_langsmith.py` mirrors `prompts/ask_janmitra_system_prompt.txt` and
-`prompts/ask_janmitra_answer_prompt.txt` into LangSmith's **Prompt Hub** as one
-`janmitra-ask-janmitra-answer-prompt` prompt (system message + human message, exactly the two
+`scripts/push_prompts_to_langsmith.py` mirrors `prompts/ask_sarthi_system_prompt.txt` and
+`prompts/ask_sarthi_answer_prompt.txt` into LangSmith's **Prompt Hub** as one
+`janmitra-ask-sarthi-answer-prompt` prompt (system message + human message, exactly the two
 messages `AnswerGenerationService.generate()` sends to Sarvam).
 
 **Deliberately mirror-only.** `AnswerGenerationService` keeps reading the local `.txt` files via
@@ -301,7 +301,7 @@ prompt wording change without a code deploy — this project doesn't currently n
 revisiting if that need actually shows up; not done speculatively here.
 
 **Where to see it**: run `python scripts/push_prompts_to_langsmith.py`, then LangSmith UI →
-**Prompts** → `janmitra-ask-janmitra-answer-prompt`. Test alternate wording in the **Playground**
+**Prompts** → `janmitra-ask-sarthi-answer-prompt`. Test alternate wording in the **Playground**
 there before ever touching the actual `.txt` files.
 
 ## 13. Admin alerts — sustained error rate / latency
@@ -346,7 +346,7 @@ Sarthi response that triggered the check.
    `jansarthi-ai`).
 4. Optionally set `LANGSMITH_TRACE_URL_TEMPLATE` per §6 to enable the Admin dashboard's "View
    Trace" links.
-5. Restart the backend. The next `/ask-janmitra` request should appear in your LangSmith project
+5. Restart the backend. The next `/ask-sarthi` request should appear in your LangSmith project
    within a few seconds.
 6. Optionally run `python scripts/langsmith_rag_evaluation.py` (§10) to populate Datasets &
    Experiments, and `python scripts/push_prompts_to_langsmith.py` (§12) to populate Prompt Hub —

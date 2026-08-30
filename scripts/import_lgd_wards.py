@@ -33,7 +33,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-DB_PATH = Path(__file__).resolve().parent.parent / "janmitra.db"
+DB_PATH = Path(__file__).resolve().parent.parent / "jansarthi.db"
 WARDS_CSV = Path(__file__).resolve().parent.parent / "data" / "lgd_import" / "urban_local_body_wards.30Apr2026.csv"
 
 SOURCE_NAME = (

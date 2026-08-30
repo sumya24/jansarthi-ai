@@ -18,7 +18,7 @@ if: the `langsmith` package is missing, tracing is disabled or unconfigured (no 
 LangSmith client can't be constructed, or any individual call to it fails (auth error, network
 error, timeout). Callers (graph.py, nodes.py) never need their own try/except around these calls
 -- a LangSmith outage or misconfiguration must never break RAG, complaint creation, complaint
-status, or the LangGraph pipeline itself (see docs/ask_janmitra_langsmith_observability.md's
+status, or the LangGraph pipeline itself (see docs/ask_sarthi_langsmith_observability.md's
 "failure behavior" section). The `langsmith` SDK itself also batches/uploads runs on a background
 thread rather than blocking the caller on network I/O -- this module's own try/except is
 defense-in-depth on top of that, not a replacement for it.
@@ -35,7 +35,7 @@ free-text fields (the citizen's question, the generated answer) are routed throu
 `redact_text()` at all.
 
 **Arize Phoenix (second, self-hosted backend).** Purely additive: Phoenix spans are keyed off the
-SAME `RunTree.id` LangSmith already assigns, so nodes.py/graph.py/ask_janmitra_service.py keep
+SAME `RunTree.id` LangSmith already assigns, so nodes.py/graph.py/ask_sarthi_service.py keep
 passing that one `RunTree` around unchanged -- this module alone tracks which Phoenix span belongs
 to which run, in a private `_phoenix_spans` dict. Known scope limit: because Phoenix piggybacks on
 the RunTree as its id-carrier, a Phoenix span is only produced when `start_root_run()` actually
@@ -88,7 +88,7 @@ try:
     # edges) becomes its own Phoenix span automatically, the same fine-grained trace LangSmith
     # already shows via its own separate, built-in LangChain integration -- LIVE-REPORTED gap:
     # Phoenix previously only ever received this module's own hand-built spans below
-    # (ask_janmitra_graph/rag_retrieval/answer_generation/...), never this framework-level detail.
+    # (ask_sarthi_graph/rag_retrieval/answer_generation/...), never this framework-level detail.
     from openinference.instrumentation.langchain import LangChainInstrumentor as _LangChainInstrumentor
 except Exception:  # pragma: no cover -- defensive: package genuinely missing/broken
     _LangChainInstrumentor = None  # type: ignore[assignment,misc]
@@ -104,7 +104,7 @@ _review_queue_unavailable = False
 
 # Arize Phoenix -- a second, self-hosted tracing backend, purely additive alongside everything
 # above (see this module's docstring for why). Keyed by the SAME id LangSmith's RunTree already
-# uses, so nodes.py/graph.py/ask_janmitra_service.py keep passing that one RunTree around exactly
+# uses, so nodes.py/graph.py/ask_sarthi_service.py keep passing that one RunTree around exactly
 # as before -- this module alone knows a Phoenix span exists for a given run id.
 _phoenix_tracer: Any = None
 _phoenix_tracer_unavailable = False
@@ -115,7 +115,7 @@ _phoenix_provider: Any = None
 _phoenix_spans: dict[uuid.UUID, Any] = {}
 # Phoenix's own (OTel) trace id is a different id space from the RunTree uuid used as the dict
 # key above -- OTel assigns it internally, it can't be forced to match. Kept in its own dict,
-# NOT cleared when a span ends (unlike `_phoenix_spans`), since callers (ask_janmitra_service.py)
+# NOT cleared when a span ends (unlike `_phoenix_spans`), since callers (ask_sarthi_service.py)
 # need to read it for AiRequestLog.phoenix_trace_id after the request has already finished.
 # Negligible memory footprint at this app's real scale (~50 bytes/request, matches the same
 # scale reasoning ai_request_log_repository.py already uses for its own in-memory aggregation).
@@ -486,7 +486,7 @@ def _get_review_queue_id() -> "uuid.UUID | None":
                 "Ask Sarthi requests where the knowledge base couldn't answer -- either "
                 "insufficient_knowledge or an out-of-scope service. Each one is a real citizen "
                 "question the KB should potentially cover. See docs/"
-                "ask_janmitra_langsmith_observability.md's Annotation Queue section."
+                "ask_sarthi_langsmith_observability.md's Annotation Queue section."
             ),
         )
         _review_queue_id = created.id
@@ -526,7 +526,7 @@ def get_trace_url(trace_id: str | None) -> str | None:
     config.py), or `None` if that's not configured or `trace_id` is falsy. Deliberately does not
     call the LangSmith API to resolve a link (that would put a network call on the admin
     dashboard's read path) -- the template is a one-time manual copy from the LangSmith UI (see
-    docs/ask_janmitra_langsmith_observability.md's setup section)."""
+    docs/ask_sarthi_langsmith_observability.md's setup section)."""
     if not trace_id or not settings.LANGSMITH_TRACE_URL_TEMPLATE:
         return None
     try:
@@ -552,7 +552,7 @@ def get_phoenix_trace_url(trace_id: str | None) -> str | None:
 # own docstring for why this reads spans directly instead of Phoenix's own "Top models" widgets. ---
 
 # One entry per real span this app's own tracing creates that can carry a real `llm.model_name`
-# (see nodes.py/ask_janmitra_service.py's own tracing call sites) -- a fixed, known list, not
+# (see nodes.py/ask_sarthi_service.py's own tracing call sites) -- a fixed, known list, not
 # discovered dynamically, since discovering it would need the same "top N" queries this function
 # exists to route around.
 _MODEL_COST_SPAN_NAMES = ["answer_generation", "response_translation", "text_to_speech", "speech_to_text", "vision_processing"]
@@ -592,7 +592,7 @@ def _phoenix_enqueue_for_review(run_id: uuid.UUID | None, reason: str) -> None:
     module: a no-op if Phoenix is disabled, this run never got a Phoenix span (see
     `_phoenix_trace_ids`/`_phoenix_span_ids`), or any part of the lookup/mutation fails.
 
-    Root spans are always named "ask_janmitra_graph" (see graph.py's `start_root_run()` call
+    Root spans are always named "ask_sarthi_graph" (see graph.py's `start_root_run()` call
     site) -- filtering Phoenix's spans by that name, then matching the exact trace/span id
     client-side from the (small) result set, avoids needing to guess Phoenix's filter-expression
     syntax for raw OTel ids directly.
@@ -646,7 +646,7 @@ def _phoenix_enqueue_for_review(run_id: uuid.UUID | None, reason: str) -> None:
             """
             spans_resp = client.post(
                 base_url,
-                json={"query": spans_query, "variables": {"id": project["id"], "filter": 'name == "ask_janmitra_graph"'}},
+                json={"query": spans_query, "variables": {"id": project["id"], "filter": 'name == "ask_sarthi_graph"'}},
             )
             spans_resp.raise_for_status()
             edges = (((spans_resp.json().get("data") or {}).get("node") or {}).get("spans") or {}).get("edges", [])
@@ -701,7 +701,7 @@ def get_model_cost_summary(days: int = 30) -> list[dict[str, Any]]:
     this app calls, regardless of Phoenix's own ranking, by querying each model's own known span
     NAME directly (see `_MODEL_COST_SPAN_NAMES`) and summing the real `llm.cost.total`/
     `llm.token_count.total` attributes already on every such span (see nodes.py's/
-    ask_janmitra_service.py's own tracing call sites -- this reads the exact same numbers, not a
+    ask_sarthi_service.py's own tracing call sites -- this reads the exact same numbers, not a
     separate computation).
 
     Fail-open, like everything else in this module: returns an empty list (never raises) if

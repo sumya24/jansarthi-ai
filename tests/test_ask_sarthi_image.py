@@ -1,4 +1,4 @@
-"""Tests for POST /ask-janmitra/image (Ask JanMitra image-attachment phases 3 and 4).
+"""Tests for POST /ask-sarthi/image (Ask JanMitra image-attachment phases 3 and 4).
 
 Phase 3 covered: the endpoint accepts, validates, and persists an attached image using the same
 evidence_service.validate_and_write() every other photo upload in this app already uses.
@@ -12,7 +12,7 @@ real `ComplaintEvidence` row via the EXISTING evidence system.
 VisionService is always swapped for a deterministic fake here (never the real ~1.9B-param model)
 -- same reasoning as swapping AnswerGenerationService/ComplaintAgent below: no real network call
 or heavy model load in tests. Follows the same fake-service/no-network-call pattern as
-test_ask_janmitra.py (real ChromaDB retrieval, fake LLM answer generation, fake complaint agent)
+test_ask_sarthi.py (real ChromaDB retrieval, fake LLM answer generation, fake complaint agent)
 and the same file-upload assertion style as test_evidence.py (real disk persistence, real
 content-type/size validation).
 """
@@ -21,11 +21,11 @@ import json
 from pathlib import Path
 from unittest.mock import Mock
 
-import backend.routes.ask_janmitra as ask_janmitra_module
+import backend.routes.ask_sarthi as ask_sarthi_module
 import backend.services.observability.tracing as tracing_module
 from backend.config import settings
 from backend.models import Complaint, ComplaintEvidence
-from backend.services.ask_janmitra_service import AskJanMitraService
+from backend.services.ask_sarthi_service import AskSarthiService
 from backend.services.embedding_provider import SentenceTransformerEmbeddingProvider
 from backend.services.vector_store import ChromaVectorStore
 from backend.services.vision_service import VisionServiceError
@@ -68,7 +68,7 @@ class _FakeComplaintAgent:
 
 
 def _install_real_service(monkeypatch, *, caption: str | None = _FAKE_CAPTION, caption_error: bool = False) -> Mock:
-    """Installs a real AskJanMitraService (real Chroma retrieval) with LLM/complaint/vision calls
+    """Installs a real AskSarthiService (real Chroma retrieval) with LLM/complaint/vision calls
     swapped for deterministic fakes. Returns the fake answer-generation Mock so tests can inspect
     exactly what query text reached it (proving/disproving caption-folding).
     """
@@ -85,26 +85,26 @@ def _install_real_service(monkeypatch, *, caption: str | None = _FAKE_CAPTION, c
     else:
         fake_vision.describe_image = Mock(return_value=caption)
 
-    service = AskJanMitraService(
+    service = AskSarthiService(
         vector_store=store,
         embedding_provider=provider,
         answer_service=fake_answers,
         complaint_agent=_FakeComplaintAgent(),
         vision_service=fake_vision,
     )
-    monkeypatch.setattr(ask_janmitra_module, "_service", service)
+    monkeypatch.setattr(ask_sarthi_module, "_service", service)
     return fake_answers
 
 
 def _ask_text(client, token, question, **kwargs):
     body = {"question": question, "language": "en", **kwargs}
-    return client.post("/ask-janmitra", headers={"Authorization": f"Bearer {token}"}, json=body)
+    return client.post("/ask-sarthi", headers={"Authorization": f"Bearer {token}"}, json=body)
 
 
 def _ask_image(client, token, question, image_bytes=_JPEG_BYTES, filename="photo.jpg", content_type="image/jpeg", **kwargs):
     data = {"question": question, "language": "en", **kwargs}
     return client.post(
-        "/ask-janmitra/image",
+        "/ask-sarthi/image",
         headers={"Authorization": f"Bearer {token}"},
         data=data,
         files=[("image", (filename, image_bytes, content_type))],
@@ -171,7 +171,7 @@ def test_image_plus_complaint_creates_real_photo_path_and_evidence_row(client, m
     assert response.status_code == 200, response.text
     body = response.json()
     # P0 SAFETY FIX (production-safety audit): category + location resolving together no longer
-    # creates a complaint on the first call -- see tests/test_ask_janmitra.py's
+    # creates a complaint on the first call -- see tests/test_ask_sarthi.py's
     # test_type_a_complaint_creates_and_assigns_complaint for the full rationale. The image is
     # re-attached on the confirmation call below (the backend has no server-side session to
     # remember the first call's already-saved file -- see complaint_flow_node's own docstring on
@@ -232,7 +232,7 @@ def test_cancelling_a_photo_complaint_tells_the_citizen_the_photo_wont_carry_for
         {"role": "assistant", "content": body["answer"]},
     ]
     cancel = client.post(
-        "/ask-janmitra",
+        "/ask-sarthi",
         headers={"Authorization": f"Bearer {token}"},
         json={"question": "No, cancel.", "language": "en", "conversation_history": history},
     )
@@ -252,7 +252,7 @@ def test_cancelling_a_text_only_complaint_does_not_mention_a_photo(client, monke
     token, _ = make_citizen(phone="9000000113")
 
     first = client.post(
-        "/ask-janmitra",
+        "/ask-sarthi",
         headers={"Authorization": f"Bearer {token}"},
         json={"question": "Streetlight not working in Mohali.", "language": "en"},
     )
@@ -264,7 +264,7 @@ def test_cancelling_a_text_only_complaint_does_not_mention_a_photo(client, monke
         {"role": "assistant", "content": body["answer"]},
     ]
     cancel = client.post(
-        "/ask-janmitra",
+        "/ask-sarthi",
         headers={"Authorization": f"Bearer {token}"},
         json={"question": "No, cancel.", "language": "en", "conversation_history": history},
     )
@@ -281,14 +281,14 @@ def test_report_a_problem_after_photo_clarification_recovers_category_and_captio
     text (neither clearly a complaint nor a question) -- gets asked "Are you reporting a problem
     with Roads Potholes, or would you like information about it?" (the photo's own caption already
     identified the category). Clicking "Report a problem" (WITHOUT re-attaching the photo --
-    exactly what AskJanMitra.tsx's handleFollowUpOption sends) must go straight to a real
+    exactly what AskSarthi.tsx's handleFollowUpOption sends) must go straight to a real
     confirmation prompt using the photo's own category and caption -- not ask "What issue would
     you like to report?" again, and not use the bare button label "Report a problem" as the stored
     complaint description.
 
     Also covers the FULL follow-up fix (photo persistence, see PhotoEvidenceRef and
     `_recover_photo_evidence_from_history`): every `conversation_history` turn here echoes
-    `photo_evidence` back exactly like AskJanMitra.tsx's `historyForRequest` now does, so the
+    `photo_evidence` back exactly like AskSarthi.tsx's `historyForRequest` now does, so the
     ORIGINAL photo -- uploaded on turn 1, never re-attached since -- must still end up as REAL
     evidence on the complaint eventually filed on turn 3."""
     _install_real_service(monkeypatch)
@@ -306,7 +306,7 @@ def test_report_a_problem_after_photo_clarification_recovers_category_and_captio
         {"role": "assistant", "content": body1["answer"], "photo_evidence": body1["photo_evidence"]},
     ]
     second = client.post(
-        "/ask-janmitra",
+        "/ask-sarthi",
         headers={"Authorization": f"Bearer {token}"},
         json={"question": "Report a problem", "language": "en", "conversation_history": history},
     )
@@ -324,7 +324,7 @@ def test_report_a_problem_after_photo_clarification_recovers_category_and_captio
     history.append({"role": "user", "content": "Report a problem"})
     history.append({"role": "assistant", "content": body2["answer"]})
     third = client.post(
-        "/ask-janmitra",
+        "/ask-sarthi",
         headers={"Authorization": f"Bearer {token}"},
         json={"question": "Yes, submit it.", "language": "en", "conversation_history": history},
     )
@@ -388,7 +388,7 @@ def test_image_rejects_oversized_file(client, monkeypatch, make_citizen):
 
 
 def test_image_endpoint_allows_empty_question(client, monkeypatch, make_citizen):
-    """Unlike the plain JSON endpoint (AskJanMitraRequest.question requires non-empty text), the
+    """Unlike the plain JSON endpoint (AskSarthiRequest.question requires non-empty text), the
     image endpoint must allow an empty question -- an image with no text at all is a real,
     supported case (see the clarification tests above for what actually happens to it)."""
     _install_real_service(monkeypatch)
@@ -421,7 +421,7 @@ def test_image_endpoint_requires_authentication(client, monkeypatch):
     _install_real_service(monkeypatch)
 
     response = client.post(
-        "/ask-janmitra/image",
+        "/ask-sarthi/image",
         data={"question": "hello", "language": "en"},
         files=[("image", ("photo.jpg", _JPEG_BYTES, "image/jpeg"))],
     )
@@ -452,7 +452,7 @@ def test_image_plus_voice_to_text_is_a_real_request_not_a_crash(client, monkeypa
     text exactly like typing does. This test's only job is proving the `was_voice_input` flag
     (set when Mic 1 produced the text) is accepted and doesn't change the real answer -- the
     LangSmith input_mode="IMAGE_STT" mapping itself is covered directly in
-    test_ask_janmitra_tracing.py."""
+    test_ask_sarthi_tracing.py."""
     _install_real_service(monkeypatch)
     token, _ = make_citizen(phone="9000000212")
 
@@ -467,7 +467,7 @@ def test_image_plus_voice_to_text_is_a_real_request_not_a_crash(client, monkeypa
 def test_image_plus_ambiguous_location_request_asks_for_the_city_not_a_guess(client, monkeypatch, make_citizen):
     """Image + a complaint-shaped question whose location is genuinely ambiguous (a state that
     matches more than one known city) must still ask which city -- exactly like the text-only
-    path already does (test_ask_janmitra.py::test_ambiguous_state_only_location_asks_for_city) --
+    path already does (test_ask_sarthi.py::test_ambiguous_state_only_location_asks_for_city) --
     never guess a city just because an image is also attached."""
     _install_real_service(monkeypatch)
     token, _ = make_citizen(phone="9000000213")

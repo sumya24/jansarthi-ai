@@ -40,7 +40,7 @@ from backend.config import settings
 from backend.database import SessionLocal
 from backend.repositories import complaint_repository
 from backend.schemas.rag_knowledge import ServiceCategory
-from backend.services.ask_janmitra_service import AskJanMitraService
+from backend.services.ask_sarthi_service import AskSarthiService
 from backend.services.complaint_agent import ComplaintAgent
 from backend.services.rag_retriever import RagRetriever
 from backend.services.sarvam_client import AIServiceError
@@ -58,7 +58,7 @@ mcp = FastMCP(
     ),
 )
 
-# Lazily constructed on first tool call, exactly like AskJanMitraService's own default-loading
+# Lazily constructed on first tool call, exactly like AskSarthiService's own default-loading
 # helpers this reuses -- importing this module (or starting the MCP server) never pays the real
 # embedding-model/Chroma-collection load cost until a tool is actually invoked.
 _retriever: RagRetriever | None = None
@@ -68,7 +68,7 @@ _complaint_agent: ComplaintAgent | None = None
 def _get_retriever() -> RagRetriever:
     global _retriever
     if _retriever is None:
-        # Reuses AskJanMitraService's own default-loading staticmethods (ChromaVectorStore +
+        # Reuses AskSarthiService's own default-loading staticmethods (ChromaVectorStore +
         # SentenceTransformerEmbeddingProvider + the reranker -- the exact same active-default
         # retrieval stack the real HTTP API uses) instead of duplicating that wiring here.
         #
@@ -78,10 +78,10 @@ def _get_retriever() -> RagRetriever:
         # RAG_RERANKER_ENABLED=true, the HTTP API would rerank results via the cross-encoder while
         # this tool kept returning heuristic-only-ranked results for the identical query -- a
         # silent divergence. Reusing the same staticmethod here means the two can never drift
-        # again: whatever AskJanMitraService's real wiring does, this tool now does too.
-        store = AskJanMitraService._load_default_store()
-        provider = AskJanMitraService._load_default_embedding_provider()
-        reranker = AskJanMitraService._load_default_reranker()
+        # again: whatever AskSarthiService's real wiring does, this tool now does too.
+        store = AskSarthiService._load_default_store()
+        provider = AskSarthiService._load_default_embedding_provider()
+        reranker = AskSarthiService._load_default_reranker()
         _retriever = RagRetriever(
             store,
             provider,
@@ -109,7 +109,7 @@ def search_civic_knowledge_base(
     state: str | None = None,
 ) -> dict:
     """Search JanSarthi AI's real civic-service knowledge base -- the same retrieval pipeline the
-    /ask-janmitra endpoint's RAG path uses (same thresholds, same VERIFIED-preference rerank,
+    /ask-sarthi endpoint's RAG path uses (same thresholds, same VERIFIED-preference rerank,
     same citation-honesty filtering; see backend/services/rag_retriever.py).
 
     `service_category`, if given, must be one of the ServiceCategory enum values, e.g.

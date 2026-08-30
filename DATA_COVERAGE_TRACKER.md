@@ -252,7 +252,7 @@ exist (matching §5's table), and `(none)` where nothing's been entered yet. A `
 that need location data added.
 
 *(Re-generate either file any time from live data with the same Python one-liners used to build
-this doc — query `janmitra.db` and `data/rag_knowledge_base/knowledge_records/`, then re-export.)*
+this doc — query `jansarthi.db` and `data/rag_knowledge_base/knowledge_records/`, then re-export.)*
 
 ---
 

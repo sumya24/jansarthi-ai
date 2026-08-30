@@ -55,7 +55,7 @@ function TrashIcon() {
 
 /** Its own page (not a section of AdminDashboard) so the worker-management view and the AI
  * observability view don't compete for space/scroll -- reached via the "AI Monitoring" button on
- * AdminDashboard. See docs/ask_janmitra_langsmith_observability.md for what's shown here and
+ * AdminDashboard. See docs/ask_sarthi_langsmith_observability.md for what's shown here and
  * where the numbers come from (the app's own `ai_request_logs` table, never a live LangSmith
  * call -- see that doc's "Admin Monitoring" section for why). */
 export default function AdminAiMonitoring() {

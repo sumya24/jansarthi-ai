@@ -53,7 +53,7 @@ export default defineConfig({
       "/complaints": proxyTo("http://127.0.0.1:8000"),
       "/locations": proxyTo("http://127.0.0.1:8000"),
       "/notifications": proxyTo("http://127.0.0.1:8000"),
-      "/ask-janmitra": proxyTo("http://127.0.0.1:8000"),
+      "/ask-sarthi": proxyTo("http://127.0.0.1:8000"),
       "/uploads": proxyTo("http://127.0.0.1:8000"),
       "/health": proxyTo("http://127.0.0.1:8000"),
     },

@@ -1,11 +1,11 @@
 """Security/authorization regression for the multimodal Ask Sarthi endpoints (Phase 8).
 
-Verifies the new `/ask-janmitra/image` and `/ask-janmitra/voice` endpoints do not introduce any
-new authorization bypass relative to the existing, already-tested `/ask-janmitra` (text) endpoint
+Verifies the new `/ask-sarthi/image` and `/ask-sarthi/voice` endpoints do not introduce any
+new authorization bypass relative to the existing, already-tested `/ask-sarthi` (text) endpoint
 and the existing complaint/evidence system:
 
-- Both require authentication (already covered in test_ask_janmitra_image.py/
-  test_ask_janmitra_voice.py; not repeated here).
+- Both require authentication (already covered in test_ask_sarthi_image.py/
+  test_ask_sarthi_voice.py; not repeated here).
 - A citizen still cannot see another citizen's complaint status through the image/voice
   endpoints -- the same `status_flow_node` ownership check the text endpoint already relies on,
   now proven to apply through both new entry points too, not just assumed because they share a
@@ -21,10 +21,10 @@ import json
 from pathlib import Path
 from unittest.mock import Mock
 
-import backend.routes.ask_janmitra as ask_janmitra_module
+import backend.routes.ask_sarthi as ask_sarthi_module
 from backend.config import settings
 from backend.models import Complaint, ComplaintEvidence
-from backend.services.ask_janmitra_service import AskJanMitraService
+from backend.services.ask_sarthi_service import AskSarthiService
 from backend.services.embedding_provider import SentenceTransformerEmbeddingProvider
 from backend.services.vector_store import ChromaVectorStore
 from tests.image_fixtures import VALID_JPEG_BYTES as _JPEG_BYTES
@@ -74,7 +74,7 @@ def _install_real_service(monkeypatch):
     fake_vision = Mock()
     fake_vision.describe_image = Mock(return_value=_FAKE_CAPTION)
 
-    service = AskJanMitraService(
+    service = AskSarthiService(
         vector_store=store,
         embedding_provider=provider,
         answer_service=fake_answers,
@@ -82,14 +82,14 @@ def _install_real_service(monkeypatch):
         sarvam_client=fake_sarvam,
         vision_service=fake_vision,
     )
-    monkeypatch.setattr(ask_janmitra_module, "_service", service)
+    monkeypatch.setattr(ask_sarthi_module, "_service", service)
     return fake_sarvam
 
 
 def _ask_image(client, token, question, **kwargs):
     data = {"question": question, "language": "en", **kwargs}
     return client.post(
-        "/ask-janmitra/image", headers={"Authorization": f"Bearer {token}"},
+        "/ask-sarthi/image", headers={"Authorization": f"Bearer {token}"},
         data=data, files=[("image", ("photo.jpg", _JPEG_BYTES, "image/jpeg"))],
     )
 
@@ -97,7 +97,7 @@ def _ask_image(client, token, question, **kwargs):
 def _ask_voice(client, token, **kwargs):
     data = {"language": "en", **kwargs}
     return client.post(
-        "/ask-janmitra/voice", headers={"Authorization": f"Bearer {token}"},
+        "/ask-sarthi/voice", headers={"Authorization": f"Bearer {token}"},
         data=data, files=[("audio", ("seg0.wav", b"chunk1", "audio/wav"))],
     )
 
@@ -105,7 +105,7 @@ def _ask_voice(client, token, **kwargs):
 def _ask_voice_with_image(client, token, **kwargs):
     data = {"language": "en", **kwargs}
     return client.post(
-        "/ask-janmitra/voice", headers={"Authorization": f"Bearer {token}"},
+        "/ask-sarthi/voice", headers={"Authorization": f"Bearer {token}"},
         data=data,
         files=[("audio", ("seg0.wav", b"chunk1", "audio/wav")), ("image", ("photo.jpg", _JPEG_BYTES, "image/jpeg"))],
     )
@@ -113,7 +113,7 @@ def _ask_voice_with_image(client, token, **kwargs):
 
 # ---------------------------------------------------------------------------
 # TYPE_C ownership: a citizen cannot see another citizen's complaint status
-# through either new multimodal endpoint (mirrors test_ask_janmitra.py's
+# through either new multimodal endpoint (mirrors test_ask_sarthi.py's
 # test_type_c_cannot_see_another_citizens_complaint for the text endpoint).
 # ---------------------------------------------------------------------------
 
@@ -151,7 +151,7 @@ def test_voice_endpoint_cannot_see_another_citizens_complaint_status(client, mon
     complaint_id = _seed_complaint_for(db_session, str(owner["id"]))
 
     monkeypatch.setattr(
-        ask_janmitra_module._service._sarvam_client, "transcribe",
+        ask_sarthi_module._service._sarvam_client, "transcribe",
         Mock(return_value=f"What is the status of complaint #{complaint_id}?"),
     )
     response = _ask_voice(client, other_token)
@@ -188,7 +188,7 @@ def test_image_complaint_is_stamped_with_the_authenticated_citizens_own_id(clien
     assert response.status_code == 200, response.text
     body = response.json()
     # P0 SAFETY FIX (production-safety audit): confirmation required before creation -- see
-    # tests/test_ask_janmitra.py's test_type_a_complaint_creates_and_assigns_complaint.
+    # tests/test_ask_sarthi.py's test_type_a_complaint_creates_and_assigns_complaint.
     assert body.get("complaint_id") is None
 
     history = json.dumps([
@@ -222,7 +222,7 @@ def test_voice_complaint_is_stamped_with_the_authenticated_citizens_own_id(clien
     assert response.status_code == 200, response.text
     body = response.json()
     # P0 SAFETY FIX (production-safety audit): confirmation required before creation -- see
-    # tests/test_ask_janmitra.py's test_type_a_complaint_creates_and_assigns_complaint. The fixed
+    # tests/test_ask_sarthi.py's test_type_a_complaint_creates_and_assigns_complaint. The fixed
     # `transcribe` mock always returns the same phrase, so the confirmation reply is sent via a
     # second transcript override rather than real distinguishable audio.
     assert body.get("complaint_id") is None

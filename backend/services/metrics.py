@@ -10,7 +10,7 @@ what that setting is supposed to do.
 
 Gating happens HERE instead, at the one place every metrics call site in this codebase already
 goes through, rather than repeating `if settings.SENTRY_ENABLE_METRICS:` at each of the 6 call
-sites (routes/complaints.py, routes/ask_janmitra.py x3, middleware.py, deps.py x2) -- one place
+sites (routes/complaints.py, routes/ask_sarthi.py x3, middleware.py, deps.py x2) -- one place
 to get right, one place a future call site can't forget.
 """
 

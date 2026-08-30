@@ -8,7 +8,7 @@ import CitizenHome from "./pages/CitizenHome";
 import CitizenDashboard from "./pages/CitizenDashboard";
 import CitizenComplaintDetail from "./pages/CitizenComplaintDetail";
 import ReportIssue from "./pages/ReportIssue";
-import AskJanMitra from "./pages/AskJanMitra";
+import AskSarthi from "./pages/AskSarthi";
 import MyArea from "./pages/MyArea";
 import WorkerDashboard from "./pages/WorkerDashboard";
 import WorkerComplaintDetail from "./pages/WorkerComplaintDetail";
@@ -63,7 +63,7 @@ export default function App() {
         path="/citizen/ask"
         element={
           <ProtectedRoute allowedRoles={["citizen"]}>
-            <AskJanMitra />
+            <AskSarthi />
           </ProtectedRoute>
         }
       />

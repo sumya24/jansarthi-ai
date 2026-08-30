@@ -1,13 +1,13 @@
 """Tests for the real-embeddings + ChromaDB retrieval layer added in the RAG retrieval upgrade
-(see docs/ask_janmitra_rag_architecture.md). Covers the embedding provider, ChromaVectorStore,
-and RagRetriever directly -- lower-level than tests/test_ask_janmitra.py's HTTP-level tests,
+(see docs/ask_sarthi_rag_architecture.md). Covers the embedding provider, ChromaVectorStore,
+and RagRetriever directly -- lower-level than tests/test_ask_sarthi.py's HTTP-level tests,
 specifically targeting: dimensionality, persistence, idempotent upsert, empty/corrupted-store
 handling, metadata filtering, VERIFIED/SYNTHETIC preservation, cross-location contamination,
 multilingual retrieval, and semantic paraphrase retrieval (measured, not just claimed).
 
 Uses the REAL, checked-in ChromaDB collection and the real embedding model -- no mocks in this
 file except where a test deliberately constructs a broken/empty store to prove graceful failure.
-Model-load cost is paid once via the same module-level caching pattern as test_ask_janmitra.py.
+Model-load cost is paid once via the same module-level caching pattern as test_ask_sarthi.py.
 """
 
 from __future__ import annotations

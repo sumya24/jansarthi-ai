@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from backend.config import settings
 from backend.database import SessionLocal, init_db
 from backend.middleware import CSRFMiddleware, GeneralRateLimitMiddleware, SecurityHeadersMiddleware
-from backend.routes import admin, ask_janmitra, auth, complaints, locations, notifications
+from backend.routes import admin, ask_sarthi, auth, complaints, locations, notifications
 from backend.services.upload_cleanup_service import cleanup_orphaned_uploads
 
 logging.basicConfig(
@@ -149,14 +149,14 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     latency, and exceeded a 30s client timeout in one such run. Warming it once at startup (a
     few extra seconds before the app reports ready, paid once, off the request path) avoids
     that. Best-effort: if this fails (e.g. no network on first run before the model is cached
-    locally), the app still starts -- ask_janmitra_service.py's embedding provider is lazy by
+    locally), the app still starts -- ask_sarthi_service.py's embedding provider is lazy by
     design and will retry the load on the first real request, matching the pre-warm-up behavior.
     """
     _check_production_secrets()
     init_error_monitoring()
     init_db()
     try:
-        from backend.routes.ask_janmitra import _service
+        from backend.routes.ask_sarthi import _service
 
         _service._embedding_provider.load()
         logger.info("RAG embedding model warmed up at startup")
@@ -205,7 +205,7 @@ app.include_router(admin.router)
 app.include_router(complaints.router)
 app.include_router(locations.router)
 app.include_router(notifications.router)
-app.include_router(ask_janmitra.router)
+app.include_router(ask_sarthi.router)
 app.mount("/uploads", StaticFiles(directory=settings.UPLOAD_FOLDER), name="uploads")
 
 

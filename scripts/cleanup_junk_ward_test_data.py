@@ -27,7 +27,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
-DB_PATH = Path(__file__).resolve().parent.parent / "janmitra.db"
+DB_PATH = Path(__file__).resolve().parent.parent / "jansarthi.db"
 
 JUNK_WORKER_IDS = [
     108, 142, 171, 203, 243, 269, 290, 300, 316, 324,  # Evidence Test Worker

@@ -102,21 +102,21 @@ class Settings:
 
     # RAG retrieval config (see backend/services/rag_retriever.py, vector_store.py,
     # embedding_provider.py). RAG_TOP_K/RAG_RELEVANCE_THRESHOLD are tunable via env var without
-    # a code change — see docs/ask_janmitra_rag_architecture.md for how these were chosen.
+    # a code change — see docs/ask_sarthi_rag_architecture.md for how these were chosen.
     RAG_EMBEDDINGS_INDEX_PATH: Path = BASE_DIR / "data" / "rag_knowledge_base" / "embeddings" / "index.json"
     RAG_TOP_K: int = int(os.getenv("RAG_TOP_K", "5"))
     # NOTE: this default applies to the LEGACY TF-IDF path only (scores 0.0-~0.4 typically).
     # The active default path (real embeddings) uses RAG_EMBEDDING_RELEVANCE_THRESHOLD below --
     # cosine similarity from a neural sentence embedding model has a very different, much
     # higher-and-narrower score distribution (empirically ~0.7-0.9 for both related and
-    # unrelated text in this corpus -- see docs/ask_janmitra_rag_architecture.md's threshold
+    # unrelated text in this corpus -- see docs/ask_sarthi_rag_architecture.md's threshold
     # evaluation section for the actual measurements behind this default).
     RAG_RELEVANCE_THRESHOLD: float = float(os.getenv("RAG_RELEVANCE_THRESHOLD", "0.08"))
 
     # Real-embeddings + ChromaDB retrieval config (see backend/services/embedding_provider.py's
     # SentenceTransformerEmbeddingProvider and vector_store.py's ChromaVectorStore). This is the
     # active default retrieval path as of the RAG embeddings/ChromaDB migration -- see
-    # docs/ask_janmitra_rag_architecture.md.
+    # docs/ask_sarthi_rag_architecture.md.
     EMBEDDING_MODEL_NAME: str = os.getenv("EMBEDDING_MODEL_NAME", "intfloat/multilingual-e5-small")
 
     # Ask Sarthi image understanding (see backend/services/vision_service.py). Originally a small
@@ -141,7 +141,7 @@ class Settings:
     CHROMA_PERSIST_DIR: Path = Path(os.getenv("CHROMA_PERSIST_DIR", str(BASE_DIR / "data" / "rag_knowledge_base" / "chroma")))
     CHROMA_COLLECTION_NAME: str = os.getenv("CHROMA_COLLECTION_NAME", "janmitra_knowledge")
     # Chosen from two rounds of actual measurement, not a round-number guess -- see
-    # docs/ask_janmitra_rag_architecture.md's threshold-calibration section for the full data.
+    # docs/ask_sarthi_rag_architecture.md's threshold-calibration section for the full data.
     #
     # Round 1 (raw/unfiltered search, no category or location restriction): this model's cosine
     # similarity scores for this corpus cluster narrowly (~0.72-0.85) regardless of true
@@ -175,7 +175,7 @@ class Settings:
     # before similarity ranking -- this threshold is a secondary, but now-verified-effective,
     # safeguard on top of those, not a replacement for them. The separation margin (~0.01-0.03) is
     # narrow enough that a genuinely borderline real question could go either way -- documented as
-    # a known limitation, not hidden (see docs/ask_janmitra_rag_architecture.md).
+    # a known limitation, not hidden (see docs/ask_sarthi_rag_architecture.md).
     RAG_EMBEDDING_RELEVANCE_THRESHOLD: float = float(os.getenv("RAG_EMBEDDING_RELEVANCE_THRESHOLD", "0.79"))
 
     # A separate, lower floor for VERIFIED chunks specifically (see rag_retriever.py's own
@@ -200,7 +200,7 @@ class Settings:
     # full corpus, so the per-query cost stays small regardless of KB size. OFF by default, same
     # "off unless explicitly configured" pattern as every other optional AI component in this file
     # (LANGSMITH_TRACING, PHOENIX_TRACING, GEMINI_API_KEY, SENTRY_DSN): this project's own
-    # extensive existing RAG test suite (tests/test_ask_janmitra.py and siblings) was written and
+    # extensive existing RAG test suite (tests/test_ask_sarthi.py and siblings) was written and
     # measured against the pre-existing heuristic-only rerank -- enabling a genuinely different
     # ranking model by default would silently change already-verified retrieval behavior across
     # that whole suite rather than layering on top of it, exactly the risk this project's own
@@ -304,7 +304,7 @@ class Settings:
     # require_login_rate_limit/require_ai_rate_limit) -- a small, in-process, stdlib-only sliding
     # window, matching this codebase's existing preference for hand-rolled-over-new-dependency
     # (see auth_service.py's own docstring on why JWT is hand-rolled here). Protects POST
-    # /auth/login (brute-force) and the three POST /ask-janmitra* endpoints (expensive Sarvam/LLM/
+    # /auth/login (brute-force) and the three POST /ask-sarthi* endpoints (expensive Sarvam/LLM/
     # vision calls) -- see docs/RATE_LIMITING.md for the full design and its single-process
     # limitation.
     #
@@ -356,7 +356,7 @@ class Settings:
     TRUST_PROXY_HEADERS: bool = os.getenv("TRUST_PROXY_HEADERS", "false").strip().lower() == "true"
 
     # LangSmith observability (see backend/services/observability/tracing.py and
-    # docs/ask_janmitra_langsmith_observability.md) -- a pure observability layer around the
+    # docs/ask_sarthi_langsmith_observability.md) -- a pure observability layer around the
     # existing LangGraph/RAG pipeline; OFF by default, and the app must behave identically
     # whether or not it's configured (see that doc's "failure behavior" section). Tracing is
     # only actually attempted when BOTH LANGSMITH_TRACING is true AND an API key is set --
@@ -409,7 +409,7 @@ class Settings:
     SENTRY_ENABLE_LOGS: bool = os.getenv("SENTRY_ENABLE_LOGS", "false").strip().lower() == "true"
     # Enables sentry_sdk.metrics (count/gauge/distribution) -- see the small set of business
     # metrics this actually powers: complaint creation (routes/complaints.py), Ask Sarthi request
-    # volume (routes/ask_janmitra.py), and rate-limit trips (middleware.py, deps.py). Those calls
+    # volume (routes/ask_sarthi.py), and rate-limit trips (middleware.py, deps.py). Those calls
     # are always present in the code (calling them with this off is a harmless no-op, confirmed
     # directly against the SDK) -- this flag only controls whether they actually get sent.
     SENTRY_ENABLE_METRICS: bool = os.getenv("SENTRY_ENABLE_METRICS", "false").strip().lower() == "true"

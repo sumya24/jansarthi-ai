@@ -7,7 +7,7 @@ Maps EXISTING free-text `ward` values (on `users` and `complaints`) onto the str
 ## Summary
 - Worker rows with a ward set: 108 -- matched: 36, unmapped: 72
 - Complaint rows with a ward set: 58 -- matched: 58, unmapped: 0
-- Citizens: 0 considered -- `users.ward` is confirmed unused for the citizen role (see docs/location_data_audit.md §2), so there is nothing to migrate for citizens in this pass.
+- Citizens: 0 considered -- `users.ward` is confirmed unused for the citizen role, so there is nothing to migrate for citizens in this pass.
 - `home_*_id` (home/registered location -- a different concept from the operational `ward_id` this script populates) is untouched by this script and remains entirely null for every user, worker and citizen alike, until a future opt-in profile-location feature is built.
 - No row was deleted, no `ward` text value was changed, and no record was created for a location this project has no basis to assert.
 

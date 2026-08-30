@@ -62,7 +62,7 @@ export function filterWardsToOwnCity(allWards: string[], citizenWard: string | n
 // scoping -- then returns the scoped entry's own exact string (never citizenWard itself), since that's
 // the literal value a <select>'s <option> actually holds and the only string that will render as
 // selected. Returns null (no pre-fill) rather than guess when nothing matches -- see
-// ReportIssue.tsx / AskJanMitra.tsx for why a wrong guess here is worse than no guess.
+// ReportIssue.tsx / AskSarthi.tsx for why a wrong guess here is worse than no guess.
 export function findWardMatch(scoped: string[], citizenWard: string | null | undefined): string | null {
   if (!citizenWard) return null;
   const parts = citizenWard.split(",");

@@ -566,7 +566,7 @@ class AiRequestLog(Base):
     backend/repositories/ai_request_log_repository.py).
 
     Deliberately NOT read back from LangSmith: PostgreSQL remains the operational source of
-    truth (see docs/ask_janmitra_langsmith_observability.md), and the admin dashboard must keep
+    truth (see docs/ask_sarthi_langsmith_observability.md), and the admin dashboard must keep
     working even when LangSmith is unreachable or unconfigured (see
     backend/services/observability/tracing.py's module docstring). `langsmith_trace_id` is
     stored only as a pointer for the optional "View Trace" link -- this table is never populated
@@ -583,13 +583,13 @@ class AiRequestLog(Base):
             Phoenix tracing was disabled/unavailable. A different id space from
             langsmith_trace_id above -- see tracing.py's get_phoenix_trace_id() docstring.
         conversation_id: Client-supplied conversation identifier, if any -- currently always
-            None (see AskJanMitraRequest/GraphState's conversation_id field; this app has no
+            None (see AskSarthiRequest/GraphState's conversation_id field; this app has no
             server-side session/conversation id yet, so this column is forward-compatible
             plumbing, not something populated today).
         intent: QuestionIntent.value the request was classified as, or None if the request
             failed before classification completed.
         service_category: ServiceCategory.value, or None.
-        routed_to: Same value as AskJanMitraResponse.routed_to, or "ERROR" if the request raised
+        routed_to: Same value as AskSarthiResponse.routed_to, or "ERROR" if the request raised
             an exception before a route was decided.
         success: False if handling this request raised an exception.
         error_type: The exception's class name only (e.g. "AIServiceError") -- never its message,

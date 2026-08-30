@@ -79,7 +79,7 @@
 /* Bottom padding was 60px -- comfortable everywhere except the one case that matters most: a
    citizen page whose last card (very often the Feedback form -- CitizenComplaintDetail.tsx) ends
    up sitting almost flush against the viewport's bottom edge once scrolled all the way down,
-   which is exactly where the fixed Ask Sarthi FAB (bottom: 24px, see AskJanMitraWidget.css) also
+   which is exactly where the fixed Ask Sarthi FAB (bottom: 24px, see AskSarthiWidget.css) also
    sits. The two weren't reliably overlapping, but were close enough (sub-10px in testing) that
    translated text or a slightly taller row would tip it into a real overlap with the feedback
    submit button. 60 -> 108px gives the FAB's ~80-90px footprint genuine clearance from the last
@@ -103,7 +103,7 @@
 .overlay {
   position: fixed; inset: 0; background: rgba(15,23,20,0.45); display: flex; align-items: center; justify-content: center;
   /* Was 50 -- the lowest z-index of any fixed overlay in the app (nav-drawer 70-75, evidence
-     lightbox 80, Ask Sarthi widget 90-96, see global.css/AskJanMitraWidget.css), so any of those
+     lightbox 80, Ask Sarthi widget 90-96, see global.css/AskSarthiWidget.css), so any of those
      already-open elements rendered on top of a blocking modal dialog instead of behind it --
      most visibly the Ask Sarthi FAB/greeting bubble sitting over SettingsModal (and every other
      modal built on this same .overlay/.modal pair) on citizen pages, where that widget is always

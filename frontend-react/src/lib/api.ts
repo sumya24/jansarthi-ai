@@ -1,4 +1,4 @@
-import type { AskJanMitraConversationTurn, AskJanMitraResponse, AskVoiceResponse, ServiceCategory } from "./ragTypes";
+import type { AskSarthiConversationTurn, AskSarthiResponse, AskVoiceResponse, ServiceCategory } from "./ragTypes";
 
 // Falls back to "" (same-origin, relative requests) when unset -- the production Docker build
 // deliberately leaves VITE_API_URL unset so requests go through Caddy's same-origin reverse
@@ -115,7 +115,7 @@ async function _fetchJson(
       method, headers, body, signal: options.signal, credentials: "include",
     });
   } catch (err) {
-    // A deliberate cancellation (see AskJanMitra.tsx's stop-generation button) rejects `fetch`
+    // A deliberate cancellation (see AskSarthi.tsx's stop-generation button) rejects `fetch`
     // with a DOMException named "AbortError" -- re-thrown as-is, not wrapped in ApiError, so the
     // caller can tell "the citizen chose to stop this" apart from "the network genuinely failed"
     // and skip showing an error bubble for the former.
@@ -460,7 +460,7 @@ export interface AssignComplaintResult {
 }
 
 // AI Monitoring (Admin dashboard) -- see backend/routes/admin.py's /admin/ai-monitoring*
-// endpoints and docs/ask_janmitra_langsmith_observability.md. Sourced entirely from the app's
+// endpoints and docs/ask_sarthi_langsmith_observability.md. Sourced entirely from the app's
 // own database (AiRequestLog), never from LangSmith directly -- this keeps working even when
 // LangSmith isn't configured; `trace_url` is the only field that ever comes from LangSmith
 // config, and it's just a locally-built string, not a live LangSmith API call.
@@ -899,7 +899,7 @@ export const api = {
     return requestPaginated<AiRequestLogEntry>(`/admin/ai-monitoring/requests?${qs}`, { token });
   },
 
-  askJanMitra: (
+  askSarthi: (
     token: string,
     body: {
       question: string;
@@ -907,24 +907,24 @@ export const api = {
       latitude?: number | null;
       longitude?: number | null;
       location_text?: string | null;
-      conversation_history?: AskJanMitraConversationTurn[];
+      conversation_history?: AskSarthiConversationTurn[];
       // Purely an observability signal (see backend/services/observability/tracing.py) -- groups
       // every turn of one chat into the same Phoenix "session" instead of unrelated traces. Never
       // read back by the app, never changes routing/behavior.
       conversation_id?: string;
       // True when `question` came from Mic 1 rather than typing -- an observability signal only
-      // (see backend/schemas/ask_janmitra.py's AskJanMitraRequest.was_voice_input); never changes
+      // (see backend/schemas/ask_sarthi.py's AskSarthiRequest.was_voice_input); never changes
       // routing/behavior.
       was_voice_input?: boolean;
     },
     signal?: AbortSignal
-  ) => request<AskJanMitraResponse>("/ask-janmitra", { method: "POST", token, body, signal }),
+  ) => request<AskSarthiResponse>("/ask-sarthi", { method: "POST", token, body, signal }),
 
-  // Same request as askJanMitra(), plus one attached photo -- multipart because it carries a
-  // file (see backend/routes/ask_janmitra.py's POST /ask-janmitra/image). conversation_history
+  // Same request as askSarthi(), plus one attached photo -- multipart because it carries a
+  // file (see backend/routes/ask_sarthi.py's POST /ask-sarthi/image). conversation_history
   // is JSON-encoded into its own form field since multipart can't nest structured values, same
   // shape the JSON endpoint already validates.
-  askJanMitraWithImage: (
+  askSarthiWithImage: (
     token: string,
     body: {
       question: string;
@@ -932,7 +932,7 @@ export const api = {
       latitude?: number | null;
       longitude?: number | null;
       location_text?: string | null;
-      conversation_history?: AskJanMitraConversationTurn[];
+      conversation_history?: AskSarthiConversationTurn[];
       conversation_id?: string;
       image: File;
       was_voice_input?: boolean;
@@ -949,21 +949,21 @@ export const api = {
     if (body.conversation_id) form.append("conversation_id", body.conversation_id);
     if (body.was_voice_input) form.append("was_voice_input", "true");
     form.append("image", body.image);
-    return request<AskJanMitraResponse>("/ask-janmitra/image", { method: "POST", token, formData: form, signal });
+    return request<AskSarthiResponse>("/ask-sarthi/image", { method: "POST", token, formData: form, signal });
   },
 
   // The voice-to-voice assistant turn ("Mic 2") -- one or more recorded audio segments (see
   // lib/useAudioRecorder.ts, the same chunked-recording hook the complaint-creation voice flow
   // already uses) in, a real transcript + real spoken answer out. `image` is optional (a
-  // combined voice+image turn), matching askJanMitraWithImage()'s same file-attach shape.
-  askJanMitraVoice: (
+  // combined voice+image turn), matching askSarthiWithImage()'s same file-attach shape.
+  askSarthiVoice: (
     token: string,
     body: {
       language: string;
       latitude?: number | null;
       longitude?: number | null;
       location_text?: string | null;
-      conversation_history?: AskJanMitraConversationTurn[];
+      conversation_history?: AskSarthiConversationTurn[];
       conversation_id?: string;
       audioSegments: Blob[];
       image?: File | null;
@@ -978,7 +978,7 @@ export const api = {
     if (body.conversation_id) form.append("conversation_id", body.conversation_id);
     body.audioSegments.forEach((segment, i) => form.append("audio", segment, `segment_${i}.webm`));
     if (body.image) form.append("image", body.image);
-    return request<AskVoiceResponse>("/ask-janmitra/voice", { method: "POST", token, formData: form });
+    return request<AskVoiceResponse>("/ask-sarthi/voice", { method: "POST", token, formData: form });
   },
 
   photoUrl: (filename: string) => `${API_URL}/uploads/${filename}`,

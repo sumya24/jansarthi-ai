@@ -90,6 +90,28 @@ Every single route here is gated with `Depends(require_role("admin"))`. Two endp
 - `POST /complaints/{id}/accept` / `/reject` / `/resolve` — each checks the complaint is actually assigned to *this* worker and in the right status before doing anything (`_get_owned_complaint`), so a worker can't accept a complaint that isn't theirs just by guessing an ID in the URL.
 - `POST /complaints/{id}/feedback` — same ownership check, but for the citizen who filed it, and only once it's resolved.
 
+### PDF reports — translated, and actually readable in every supported script
+
+`GET /complaints/{id}/report/view` / `.../report/download` (both accept an optional `?lang=` query
+param) generate a resolved complaint's report as a real PDF via **ReportLab**. Two non-obvious
+things worth knowing if you ever touch this code:
+
+- **Font registration, not just a language string.** ReportLab's default font (Helvetica) has no
+  Devanagari/Bengali/Gujarati/Oriya glyphs — text in those scripts rendered as literally nothing,
+  not even placeholder boxes, until Google's **Noto Sans** fonts were registered per script
+  (`backend/assets/fonts/`, OFL-licensed). One subtlety: a script-specific Noto font only covers
+  its own script plus Latin, not general symbols — the ✓ and → glyphs used in the status timeline
+  went missing until those two characters specifically were pinned to Helvetica instead.
+- **Auto-detecting translation, not an assumed source language.** Worker notes are translated via
+  `translate_auto_detecting_source()` (`backend/services/translation_service.py`), which uses
+  Sarvam's `mayura:v1` model with `source_language_code="auto"` — genuinely detecting the language
+  a note was written in, rather than assuming it matches the worker's `preferred_language` (a real
+  bug found in practice: a worker's profile language was Marathi, but a specific note they'd typed
+  was actually in English — the naive assumption mistranslated it). Sarvam's other translation
+  model, `sarvam-translate:v1`, doesn't support auto-detection. `ComplaintUpdateTranslation`
+  caching checks the database for an existing translation before ever calling the API, same
+  "compute once, cache, serve from cache" pattern as [`docs/DATABASE.md §4`](DATABASE.md#4-the-translation-cache--a-real-caching-pattern).
+
 ---
 
 ## 5. CORS — why the backend needs to explicitly allow the frontend

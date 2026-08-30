@@ -2,7 +2,7 @@
 
 LIVE-REPORTED CONCERN: every photo attached in Ask Sarthi chat is written to
 `settings.UPLOAD_FOLDER` immediately, the moment it's uploaded -- needed so the vision model can
-caption it right away (see ask_janmitra_service.py's `_process_image()`), well before the citizen
+caption it right away (see ask_sarthi_service.py's `_process_image()`), well before the citizen
 ever decides whether to file a complaint from it. A citizen who attaches a photo and then abandons
 the conversation (asks something else, closes the tab, never confirms) leaves that file on disk
 with nothing ever pointing back to it -- unlike the dedicated "Report an Issue" form, which only
