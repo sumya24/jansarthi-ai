@@ -9,16 +9,16 @@ garbage collection complaints in Pune?" or "What are the rules for streetlight r
 -- was silently converted into a REAL, committed, auto-assigned complaint, with zero confirmation.
 
 SIMPLIFIED (post-hoc review): this file originally carried 14 tests tracing to 15 named
-scenarios from the fix's own spec. A direct comparison against tests/test_ask_janmitra.py,
-tests/test_complaint_ward_and_confirmation_safety.py, and tests/test_ask_janmitra_agent_
+scenarios from the fix's own spec. A direct comparison against tests/test_ask_sarthi.py,
+tests/test_complaint_ward_and_confirmation_safety.py, and tests/test_ask_sarthi_agent_
 architecture.py found 7 of those 14 were true duplicates -- same input shape, same safety
 property, already asserted (often more thoroughly) elsewhere:
-  - the basic draft-then-confirm-creates-a-complaint flow -> test_ask_janmitra.py::
+  - the basic draft-then-confirm-creates-a-complaint flow -> test_ask_sarthi.py::
     test_type_a_complaint_creates_and_assigns_complaint and test_complaint_ward_and_
     confirmation_safety.py's B2
-  - a category-only complaint with no location asking for clarification -> test_ask_janmitra.py::
+  - a category-only complaint with no location asking for clarification -> test_ask_sarthi.py::
     test_missing_location_asks_for_clarification
-  - a greeting never starting a complaint -> test_ask_janmitra_agent_architecture.py::
+  - a greeting never starting a complaint -> test_ask_sarthi_agent_architecture.py::
     test_greeting_hello_gets_a_greeting_not_the_generic_unclear_reply (same exact input, stronger
     assertions)
   - an unsupported/unserved location's honest refusal -> test_complaint_ward_and_confirmation_
@@ -26,8 +26,8 @@ property, already asserted (often more thoroughly) elsewhere:
   - garbage/unparseable location text being rejected -> that same file's A4 (same exact input,
     stronger assertions)
   - explicit cancellation never creating a complaint -> that file's B3/B4 and several tests in
-    test_ask_janmitra_agent_architecture.py
-  - an ambiguous "okay" reply never confirming -> that file's B5/C1-C5 and test_ask_janmitra_
+    test_ask_sarthi_agent_architecture.py
+  - an ambiguous "okay" reply never confirming -> that file's B5/C1-C5 and test_ask_sarthi_
     agent_architecture.py's own parametrized ambiguous-reply test
 The 7 tests below are the ones that survived that comparison -- each exercises a scenario (or a
 state/wording variant) genuinely not covered by those other files. Every test in this file still
@@ -35,15 +35,15 @@ traces to a real named scenario from the fix's own spec; see this docstring's ow
 blame for the fuller original numbering if needed.
 
 Reuses the same real-Chroma-retrieval / fake-LLM / fake-complaint-agent pattern already
-established in tests/test_ask_janmitra.py (see that module's own docstring) -- no new mocking
+established in tests/test_ask_sarthi.py (see that module's own docstring) -- no new mocking
 convention introduced here.
 """
 
 from __future__ import annotations
 
 from backend.models import Complaint
-from backend.schemas.ask_janmitra import ConversationTurn
-from tests.test_ask_janmitra import _ask, _install_real_service
+from backend.schemas.ask_sarthi import ConversationTurn
+from tests.test_ask_sarthi import _ask, _install_real_service
 
 
 def _turn(role: str, content: str) -> dict:
@@ -127,7 +127,7 @@ def test_civic_schedule_time_question_is_service_info(client, monkeypatch, make_
 
 # --- context break / context switch mid-complaint-flow must not be swallowed as location text or
 # complaint data, and must not create a complaint. Distinct from the similarly-named tests in
-# test_ask_janmitra_agent_architecture.py: those exercise a citizen replying while
+# test_ask_sarthi_agent_architecture.py: those exercise a citizen replying while
 # AWAITING_CONFIRMATION (category+location already resolved); these exercise a citizen replying
 # while still in DRAFT (category known, location not yet given) -- a different
 # complaint_workflow_state. ---
@@ -182,7 +182,7 @@ def test_context_switch_driving_licence_mid_complaint_flow_is_not_complaint_data
 
 # --- false-completion safety -- insufficient complaint data must never produce a success claim,
 # and complaint_id must be null. A real end-to-end case, distinct from the unit-level grounding-
-# check tests in test_ask_janmitra_agent_architecture.py (those call _run_grounding_checks
+# check tests in test_ask_sarthi_agent_architecture.py (those call _run_grounding_checks
 # directly against synthetic state; this proves the real pipeline never reaches that failure mode
 # for an actual under-specified complaint in the first place). ---
 

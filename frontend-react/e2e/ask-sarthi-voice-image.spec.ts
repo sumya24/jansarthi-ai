@@ -9,11 +9,11 @@ import { verifySignupEmail, fillHomeLocationPicker, uniqueEmail, uniquePhone } f
  *
  * The full real-model round trip for a combined voice+image turn (real STT + real vision
  * captioning + real graph + real TTS) is proven at the backend level instead
- * (tests/test_ask_janmitra_voice.py's phase-7 tests, 12 passing, covering caption folding,
+ * (tests/test_ask_sarthi_voice.py's phase-7 tests, 12 passing, covering caption folding,
  * image-with-no-speech clarification with real TTS, caption-failure resilience, and
  * complaint+evidence creation) -- the real vision model's multi-minute cold-load cost was already
  * paid and independently verified through the browser for image-only turns
- * (ask-janmitra-image.spec.ts) and for voice-only turns (ask-janmitra-voice.spec.ts); this test
+ * (ask-sarthi-image.spec.ts) and for voice-only turns (ask-sarthi-voice.spec.ts); this test
  * only needs to prove the two real, separately-verified paths are wired together correctly in
  * the UI, not re-prove either one's own AI call is real.
  */

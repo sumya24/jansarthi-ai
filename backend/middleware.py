@@ -2,7 +2,7 @@
 
 See backend/services/rate_limiter.py (the limiter itself) and backend/deps.py's
 require_login_rate_limit/require_ai_rate_limit (the two stricter, purpose-specific limits already
-on POST /auth/login and POST /ask-janmitra*). This module is what gives every OTHER route
+on POST /auth/login and POST /ask-sarthi*). This module is what gives every OTHER route
 (complaint creation, uploads, worker/admin actions, etc.) baseline coverage too, without hand-
 wiring a dependency into each one individually -- registered once in main.py, applies
 automatically to every request.

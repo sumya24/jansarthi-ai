@@ -109,7 +109,7 @@ def test_ambiguous_words_still_correctly_excluded_after_the_expansion():
 
 
 # --- detect_multiple_categories() -- the multi-category supervisor gate (orchestration/
-# nodes.py's agent_flow_node, see docs/ask_janmitra_orchestration.md §17) --------------------
+# nodes.py's agent_flow_node, see docs/ask_sarthi_orchestration.md §17) --------------------
 
 
 def test_detects_two_genuinely_distinct_categories():

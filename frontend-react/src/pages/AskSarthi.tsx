@@ -20,12 +20,12 @@ import { useAuth } from "../lib/auth";
 import { t, toLangCode } from "../lib/i18n";
 import { api, ApiError } from "../lib/api";
 import { useSpeechToText } from "../lib/useSpeechToText";
-import type { AskJanMitraResponse, AskJanMitraConversationTurn, PhotoEvidenceRef } from "../lib/ragTypes";
+import type { AskSarthiResponse, AskSarthiConversationTurn, PhotoEvidenceRef } from "../lib/ragTypes";
 import { filterWardsToOwnCity } from "../lib/wardFilter";
 
 const SUGGESTED_KEYS = ["waterLeak", "pothole", "garbage", "streetlight"] as const;
 
-/** One turn in the visible chat log. `history` sent to the backend (AskJanMitraConversationTurn[])
+/** One turn in the visible chat log. `history` sent to the backend (AskSarthiConversationTurn[])
  * is always derived from this array (role + text only) rather than kept as a second, parallel
  * list -- one source of truth for what the citizen sees AND what gets resent as context. */
 interface ChatMessage {
@@ -68,7 +68,7 @@ interface ChatMessage {
   historyContent?: string;
   /** Assistant messages only -- the full backend response, so sources/follow-up/complaint
    * outcome can render without a second shape to keep in sync with `text`. */
-  response?: AskJanMitraResponse;
+  response?: AskSarthiResponse;
   /** Assistant messages only -- the user question this response is answering, captured at
    * creation time. Needed so a follow-up option clicked later (e.g. "Use current location")
    * can resend the SAME original question with added location info, exactly like the previous
@@ -97,15 +97,15 @@ interface ChatMessage {
  * real backend, same real Mic 1 (useSpeechToText.ts)/Mic 2 (VoiceAssistantOverlay.tsx)/image
  * attach (MultiPhotoUpload.tsx)/mascot (Mascot.tsx) as before -- this file only changes how the
  * conversation is *laid out*, not what powers it. `conversationHistory` is resent with every
- * request (the API is stateless server-side, see backend/schemas/ask_janmitra.py's
+ * request (the API is stateless server-side, see backend/schemas/ask_sarthi.py's
  * ConversationTurn docstring) so a follow-up ("street light not working" after already having
  * said "I'm in Mohali") doesn't make the citizen repeat their location -- now derived from the
  * full visible `messages` transcript instead of a separate parallel list.
  *
- * Split into two exports: `AskJanMitraContent` is the actual chat UI (message list + composer)
+ * Split into two exports: `AskSarthiContent` is the actual chat UI (message list + composer)
  * with no assumptions about what wraps it -- its root fills whatever height its parent flex
  * container provides, which is what lets the exact same component work both as the standalone
- * page below (a fixed-height flex column under TopBar) and inside AskJanMitraWidget.tsx's
+ * page below (a fixed-height flex column under TopBar) and inside AskSarthiWidget.tsx's
  * slide-out panel (already its own flex column) without needing to know which one it's in.
  */
 
@@ -260,13 +260,13 @@ function formatClockTime(ms: number): string {
 /** Imperative surface for the one action a parent legitimately needs to trigger from outside --
  * see the `hideNewChatBar` prop below for why. Deliberately just one method, not a general
  * escape hatch: everything else about this chat stays fully encapsulated. */
-export interface AskJanMitraHandle {
+export interface AskSarthiHandle {
   newChat: () => void;
 }
 
-interface AskJanMitraContentProps {
-  /** True only for AskJanMitraWidget.tsx's slide-out panel. The panel already has its own close
-   * (X) button sitting in its own top-right corner (AskJanMitraWidget.tsx's `.ask-widget-panel-
+interface AskSarthiContentProps {
+  /** True only for AskSarthiWidget.tsx's slide-out panel. The panel already has its own close
+   * (X) button sitting in its own top-right corner (AskSarthiWidget.tsx's `.ask-widget-panel-
    * head`); this component's own internal "New chat" bar is ALSO right-aligned at the very top,
    * so inside the widget the two stacked into two separate corner toolbars instead of one clean
    * row -- a real, reported "doesn't look clean" issue. When true, this component renders no
@@ -277,7 +277,7 @@ interface AskJanMitraContentProps {
   hideNewChatBar?: boolean;
 }
 
-export const AskJanMitraContent = forwardRef<AskJanMitraHandle, AskJanMitraContentProps>(function AskJanMitraContent(
+export const AskSarthiContent = forwardRef<AskSarthiHandle, AskSarthiContentProps>(function AskSarthiContent(
   { hideNewChatBar },
   ref
 ) {
@@ -308,7 +308,7 @@ export const AskJanMitraContent = forwardRef<AskJanMitraHandle, AskJanMitraConte
   const [voiceOverlayOpen, setVoiceOverlayOpen] = useState(false);
   // True while `question`'s current text came from Mic 1 rather than typing -- sent as
   // `was_voice_input` so the backend's LangSmith metadata can distinguish "TEXT"/"IMAGE" from
-  // "STT"/"IMAGE_STT" (see ask_janmitra_service.py). Purely an observability signal; never
+  // "STT"/"IMAGE_STT" (see ask_sarthi_service.py). Purely an observability signal; never
   // changes what gets asked or how it's routed.
   const [questionFromVoice, setQuestionFromVoice] = useState(false);
 
@@ -366,13 +366,13 @@ export const AskJanMitraContent = forwardRef<AskJanMitraHandle, AskJanMitraConte
     }
   }
 
-  // The only thing AskJanMitraWidget.tsx needs to reach in from outside -- see
-  // AskJanMitraHandle's docstring above.
+  // The only thing AskSarthiWidget.tsx needs to reach in from outside -- see
+  // AskSarthiHandle's docstring above.
   useImperativeHandle(ref, () => ({ newChat: handleNewChat }));
 
   // Live transcript -> the same editable composer text typed questions use, so by the time the
   // citizen hits Send it's an ordinary text request (see useSpeechToText.ts's docstring on why
-  // this is the only way to route chat speech at all -- /ask-janmitra has no audio field).
+  // this is the only way to route chat speech at all -- /ask-sarthi has no audio field).
   useEffect(() => {
     if (speech.status === "recording" && speech.transcript) {
       setQuestion(speech.transcript);
@@ -476,7 +476,7 @@ export const AskJanMitraContent = forwardRef<AskJanMitraHandle, AskJanMitraConte
     // a complaint filed in one city, then a brand-new complaint described in a DIFFERENT city
     // right after (same chat, no "New chat" click), silently reused the FIRST one's already-closed
     // ward/category instead of resolving fresh.
-    const historyForRequest: AskJanMitraConversationTurn[] = messages.map((m) => ({
+    const historyForRequest: AskSarthiConversationTurn[] = messages.map((m) => ({
       role: m.role,
       content: m.historyContent ?? m.text,
       photo_evidence: m.role === "assistant" ? m.response?.photo_evidence ?? undefined : undefined,
@@ -535,7 +535,7 @@ export const AskJanMitraContent = forwardRef<AskJanMitraHandle, AskJanMitraConte
 
     try {
       const result = imageToSend
-        ? await api.askJanMitraWithImage(
+        ? await api.askSarthiWithImage(
             token,
             {
               question: trimmed,
@@ -550,7 +550,7 @@ export const AskJanMitraContent = forwardRef<AskJanMitraHandle, AskJanMitraConte
             },
             controller.signal
           )
-        : await api.askJanMitra(
+        : await api.askSarthi(
             token,
             {
               question: trimmed,
@@ -1081,14 +1081,14 @@ export const AskJanMitraContent = forwardRef<AskJanMitraHandle, AskJanMitraConte
 
 /** The standalone full-page route (/citizen/ask) -- TopBar + the same chat content the floating
  * widget renders, so a direct link/bookmark/browser-back still lands somewhere real. Gives
- * AskJanMitraContent a fixed, viewport-relative height to fill (100dvh minus TopBar) so its
+ * AskSarthiContent a fixed, viewport-relative height to fill (100dvh minus TopBar) so its
  * composer stays anchored near the bottom instead of just trailing off at the end of a long page. */
-export default function AskJanMitra() {
+export default function AskSarthi() {
   return (
     <div className="ask-page-viewport">
       <TopBar />
       <div className="page ask-page">
-        <AskJanMitraContent />
+        <AskSarthiContent />
       </div>
     </div>
   );

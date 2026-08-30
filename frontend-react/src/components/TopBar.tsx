@@ -7,7 +7,7 @@ import SettingsModal from "./SettingsModal";
 import ThemeToggle from "./ThemeToggle";
 import NotificationBell from "./NotificationBell";
 import NavDrawer from "./NavDrawer";
-import AskJanMitraWidget from "./AskJanMitraWidget";
+import AskSarthiWidget from "./AskSarthiWidget";
 import "./TopBar.css";
 
 // "JanSarthi AI" is the product name, kept as-is in every language per the brand guide —
@@ -83,7 +83,7 @@ export default function TopBar() {
       {/* Citizen-only floating helper -- unrelated to page navigation, kept out of NavDrawer
           (which is now shared across all three roles) and rendered here instead, same
           role-gated pattern the rest of this header already uses. */}
-      {user.role === "citizen" && <AskJanMitraWidget />}
+      {user.role === "citizen" && <AskSarthiWidget />}
       {showSettings && <SettingsModal onClose={() => setShowSettings(false)} onLogout={handleLogout} />}
     </>
   );

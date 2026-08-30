@@ -16,7 +16,7 @@ Everything runs on a single VM: two Docker containers, one reverse proxy in fron
   browser ── :80/:443 ──▶  caddy container                                              │
                         │  - serves the built React SPA (static files)                  │
                         │  - reverse-proxies /auth, /admin, /complaints, /notifications, │
-                        │    /ask-janmitra, /uploads, /health  ──▶  backend:8000         │
+                        │    /ask-sarthi, /uploads, /health  ──▶  backend:8000           │
                         │  - auto HTTPS via Let's Encrypt once a domain is set           │
                         │                                                                │
                         │  backend container (FastAPI + torch + sentence-transformers    │
@@ -124,7 +124,7 @@ day-to-day once it's live (rollback, logs, backups).
 
 **A large amount of the current work is uncommitted and/or untracked** (`git status` shows ~30
 modified files and ~90 new untracked files, including the entire Ask Sarthi feature —
-`backend/routes/ask_janmitra.py`, `backend/services/{rag_retriever,vector_store,...}.py`,
+`backend/routes/ask_sarthi.py`, `backend/services/{rag_retriever,vector_store,...}.py`,
 `backend/schemas/`, the RAG data under `data/rag_knowledge_base/`, and matching tests). Neither
 CI nor CD in this setup can see any of that until it's committed and pushed — they operate on
 what's in the GitHub repo, not your local working tree. In particular `data/rag_knowledge_base/

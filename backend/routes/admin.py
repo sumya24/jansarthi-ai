@@ -715,11 +715,11 @@ def assign_complaint(
 
 # ------------------------------------------------------------------
 # AI Monitoring -- application-level observability for the Ask Sarthi LangGraph pipeline (see
-# backend/services/observability/tracing.py and docs/ask_janmitra_langsmith_observability.md).
+# backend/services/observability/tracing.py and docs/ask_sarthi_langsmith_observability.md).
 #
 # Deliberately NOT a LangSmith dashboard reimplementation: these two endpoints read only
 # `AiRequestLog` (see backend/repositories/ai_request_log_repository.py), a local table populated
-# by every `/ask-janmitra` call regardless of whether LangSmith tracing is configured -- so this
+# by every `/ask-sarthi` call regardless of whether LangSmith tracing is configured -- so this
 # section of the Admin dashboard keeps working identically whether LangSmith is fully wired up,
 # misconfigured, or not set up at all. `trace_url` on each request is the only place LangSmith
 # enters the picture, and even that is a locally-built string (see `tracing.get_trace_url()`) --

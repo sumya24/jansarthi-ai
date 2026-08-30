@@ -20,7 +20,7 @@ the app doesn't otherwise handle), and `img.load()` forces a full decode -- catc
 header looks right but whose body is truncated/corrupted, which a header-only open() can miss
 (verified directly: a JPEG truncated only in its tail scan data opens fine but fails exactly at
 `.load()`). This all happens BEFORE anything is written to disk and BEFORE
-`ask_janmitra_service.py`'s `_process_image()` ever hands bytes to VisionService/Moondream2 -- an
+`ask_sarthi_service.py`'s `_process_image()` ever hands bytes to VisionService/Moondream2 -- an
 invalid file is rejected here, it never reaches either.
 """
 

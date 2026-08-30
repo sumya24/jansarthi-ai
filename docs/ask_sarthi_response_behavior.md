@@ -4,9 +4,9 @@
 architecture guidance ("no chat UI, retrieval endpoint, embeddings, or vector store exist yet")
 so the data/schema decisions made at the time wouldn't have to be reworked once that phase
 started. All of that has since been built, tested, and is live — see
-[`docs/ask_janmitra_rag_architecture.md`](ask_janmitra_rag_architecture.md),
-[`docs/ask_janmitra_orchestration.md`](ask_janmitra_orchestration.md), and
-[`docs/ask_janmitra_service_flow.md`](ask_janmitra_service_flow.md) for what's actually
+[`docs/ask_sarthi_rag_architecture.md`](ask_sarthi_rag_architecture.md),
+[`docs/ask_sarthi_orchestration.md`](ask_sarthi_orchestration.md), and
+[`docs/ask_sarthi_service_flow.md`](ask_sarthi_service_flow.md) for what's actually
 implemented today; those three are the current source of truth. Kept here as the original design
 intent, not rewritten to match the current implementation — the location-clarification flow in
 particular has since gone through several real, live-reported bug fixes not reflected below (see

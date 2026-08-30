@@ -20,7 +20,7 @@
 	# top-level page load and can't be overridden by JS, so "path matches AND it's not a real page
 	# load" is what actually means "proxy this to the backend."
 	@backend {
-		path /auth* /admin* /complaints* /notifications* /ask-janmitra* /locations* /uploads* /health
+		path /auth* /admin* /complaints* /notifications* /ask-sarthi* /locations* /uploads* /health
 		not header Sec-Fetch-Mode navigate
 	}
 	handle @backend {

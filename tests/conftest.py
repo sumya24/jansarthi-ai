@@ -67,8 +67,8 @@ def _stub_real_language_detection(request, monkeypatch):
     a real SARVAM_API_KEY is configured -- and pytest loads that same real key from a developer's
     own .env (backend/config.py's load_dotenv()), same class of leak _force_email_dev_mode_off
     above already guards against. It's reached from over a dozen test files' worth of "real
-    service" builders (test_ask_janmitra.py's _real_ask_janmitra_service() and its counterparts
-    across test_ask_janmitra_agent_architecture.py, test_orchestration_graph.py, etc.) -- almost
+    service" builders (test_ask_sarthi.py's _real_ask_sarthi_service() and its counterparts
+    across test_ask_sarthi_agent_architecture.py, test_orchestration_graph.py, etc.) -- almost
     none of which actually care what language gets detected, they only want the real RAG/graph
     logic exercised. Without this, running the full local suite silently burns real Sarvam
     credits every single run, and a funded CI key would drain fast for the same reason (see
@@ -237,7 +237,7 @@ def make_worker(client, make_admin):
         # with a test that also calls make_admin() directly with the default phone.
         #
         # BUG FIX: a test that calls make_worker() more than once (to seed two workers in two
-        # different wards/cities -- a real, now-existing need, see test_ask_janmitra.py's "Change
+        # different wards/cities -- a real, now-existing need, see test_ask_sarthi.py's "Change
         # location" tests) previously hit a UNIQUE constraint on `users.phone` the second time,
         # since this fixture created a brand-new bootstrap admin on every call with the same
         # hardcoded phone. Only create/log in as the bootstrap admin ONCE per test (cached in this

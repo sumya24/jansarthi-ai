@@ -7,8 +7,8 @@ document frequency) bag-of-words vectors, pure Python, zero dependencies beyond 
 library. This was the original implementation (chosen when this project deliberately avoided a
 neural embedding stack, back when it was still a lightweight prototype — see git history for that
 reasoning). Kept in this file, not deleted, specifically so the before/after retrieval comparison
-in docs/ask_janmitra_rag_architecture.md is reproducible — but no longer imported by
-`ask_janmitra_service.py`'s default wiring. Its honest limitation, unchanged: TF-IDF has no notion
+in docs/ask_sarthi_rag_architecture.md is reproducible — but no longer imported by
+`ask_sarthi_service.py`'s default wiring. Its honest limitation, unchanged: TF-IDF has no notion
 of synonyms or semantic paraphrase — "bin collection" will not match a chunk that only says "solid
 waste" unless a shared keyword links them.
 
@@ -26,7 +26,7 @@ considered:
   MIT-licensed, (b) it downloads from HuggingFace (confirmed reachable from this environment,
   HTTP 200), (c) it's trained on mC4 (~100 languages), which empirically covers Odia noticeably
   better than the more common "50-language" LaBSE-style multilingual models (verified directly --
-  see the model-selection test transcript in docs/ask_janmitra_rag_architecture.md, not assumed
+  see the model-selection test transcript in docs/ask_sarthi_rag_architecture.md, not assumed
   from the model card alone), (d) "small" variant (384 dimensions, ~118M params) runs acceptably
   on CPU on this dev machine with no GPU.
 
@@ -157,7 +157,7 @@ logger = logging.getLogger(__name__)
 class SentenceTransformerEmbeddingProvider:
     """Real neural sentence embeddings via `sentence-transformers` -- the active default
     embedding provider (see module docstring). Loaded lazily (model load takes real time, ~30s+
-    even from local cache -- see docs/ask_janmitra_rag_architecture.md's performance section) so
+    even from local cache -- see docs/ask_sarthi_rag_architecture.md's performance section) so
     importing this module never pays that cost, only actually constructing/using a provider does.
 
     E5-family models (intfloat/multilingual-e5-*) require a "query: " / "passage: " text prefix

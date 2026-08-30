@@ -2,7 +2,7 @@
 existing LocationResolver -- against the RAG knowledge base's OWN gazetteer of city/state names.
 
 This closes a gap the prior location-migration audit explicitly flagged as unintegrated
-(docs/ask_janmitra_response_behavior.md §3): `LocationResolver.resolve_coordinates()` resolves
+(docs/ask_sarthi_response_behavior.md §3): `LocationResolver.resolve_coordinates()` resolves
 GPS to a city/state *name* matched against the app's `states/districts/ulbs` tables (6 cities);
 the RAG knowledge base's `state`/`city` fields are separate, denormalized text on each `Chunk`
 (30 cities). Nothing previously matched one against the other. `resolve_from_coordinates()` below

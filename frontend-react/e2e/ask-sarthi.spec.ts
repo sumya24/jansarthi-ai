@@ -2,7 +2,7 @@ import { test, expect } from "@playwright/test";
 import { verifySignupEmail, fillHomeLocationPicker, uniqueEmail, uniquePhone } from "./helpers";
 
 /**
- * E2E coverage for Ask Sarthi against the REAL backend (POST /ask-janmitra) — not a mock.
+ * E2E coverage for Ask Sarthi against the REAL backend (POST /ask-sarthi) — not a mock.
  * This is the RAG retrieval + location-aware AI foundation phase's Playwright requirement:
  * "At minimum verify: ... Ask Sarthi ... location ... source links".
  *
@@ -35,7 +35,7 @@ test("Ask Sarthi: a located, in-scope information question returns a grounded an
 
   await signUpAndReachCitizenHome(page);
   // Ask Sarthi is a floating widget (opens a slide-out panel), not a nav tab -- see
-  // CitizenNav.tsx/AskJanMitraWidget.tsx. No route change on open, so no toHaveURL assertion
+  // CitizenNav.tsx/AskSarthiWidget.tsx. No route change on open, so no toHaveURL assertion
   // here the way there used to be.
   await page.getByRole("button", { name: "Ask Sarthi" }).click();
   // Deliberately a TYPE_B (service-information) phrasing, not a "...is not working" complaint-
@@ -65,12 +65,12 @@ test("Ask Sarthi: a complaint-shaped question with location files a real complai
 
   await signUpAndReachCitizenHome(page);
   // Ask Sarthi is a floating widget (opens a slide-out panel), not a nav tab -- see
-  // CitizenNav.tsx/AskJanMitraWidget.tsx. No route change on open, so no toHaveURL assertion
+  // CitizenNav.tsx/AskSarthiWidget.tsx. No route change on open, so no toHaveURL assertion
   // here the way there used to be.
   await page.getByRole("button", { name: "Ask Sarthi" }).click();
   // A genuinely complaint-shaped ("...is not working") question with a resolvable location now
   // files a real complaint via the LangGraph orchestrator's complaint_flow (see
-  // docs/ask_janmitra_orchestration.md) instead of answering from RAG -- confirmed deliberate
+  // docs/ask_sarthi_orchestration.md) instead of answering from RAG -- confirmed deliberate
   // behavior change, see backend/services/orchestration/nodes.py's module docstring.
   await page.getByPlaceholder(/Ask about a civic service/i).fill("Street light not working in Mohali.");
   // exact: true -- Playwright's accessible-name matching is substring by default, and "Ask"
@@ -125,7 +125,7 @@ test("Ask Sarthi: a question with no location asks for clarification instead of 
   await expect(page).toHaveURL(/\/citizen$/);
 
   // Ask Sarthi is a floating widget (opens a slide-out panel), not a nav tab -- see
-  // CitizenNav.tsx/AskJanMitraWidget.tsx. No route change on open, so no toHaveURL assertion
+  // CitizenNav.tsx/AskSarthiWidget.tsx. No route change on open, so no toHaveURL assertion
   // here the way there used to be.
   await page.getByRole("button", { name: "Ask Sarthi" }).click();
 
@@ -155,7 +155,7 @@ test("Ask Sarthi: the floating widget shows the mascot, and voice input toggles 
   await signUpAndReachCitizenHome(page);
 
   // The FAB's icon is the mascot (Mascot.tsx) now, not the old chat-bubble-with-dots icon --
-  // see AskJanMitraWidget.tsx.
+  // see AskSarthiWidget.tsx.
   await expect(page.locator(".ask-widget-fab img.mascot")).toBeVisible();
 
   await page.getByRole("button", { name: "Ask Sarthi" }).click();
@@ -184,7 +184,7 @@ test("Ask Sarthi: the floating widget shows the mascot, and voice input toggles 
 
   await micButton.click();
   // Real recording state, not a fake indicator -- the button itself flips to "pressed", driven
-  // by useSpeechToText's actual status (see AskJanMitra.tsx's mascotState derivation). The
+  // by useSpeechToText's actual status (see AskSarthi.tsx's mascotState derivation). The
   // composer's own persistent mascot indicator this used to also assert on (ask-chat-composer-
   // mascot) was intentionally removed from the composer row per explicit product direction --
   // only the welcome-screen mascot and per-message avatars remain, neither of which reflects a
@@ -199,7 +199,7 @@ test("Ask Sarthi: the floating widget shows the mascot, and voice input toggles 
 test("Ask Sarthi: an out-of-scope service question says so honestly, with no fabricated source", async ({ page }) => {
   await signUpAndReachCitizenHome(page);
   // Ask Sarthi is a floating widget (opens a slide-out panel), not a nav tab -- see
-  // CitizenNav.tsx/AskJanMitraWidget.tsx. No route change on open, so no toHaveURL assertion
+  // CitizenNav.tsx/AskSarthiWidget.tsx. No route change on open, so no toHaveURL assertion
   // here the way there used to be.
   await page.getByRole("button", { name: "Ask Sarthi" }).click();
 

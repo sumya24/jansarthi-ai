@@ -1,8 +1,8 @@
-"""Tests for POST /ask-janmitra/voice (Ask JanMitra voice-to-voice assistant, phases 5 and 7).
+"""Tests for POST /ask-sarthi/voice (Ask JanMitra voice-to-voice assistant, phases 5 and 7).
 
 Real ChromaDB retrieval + real graph routing, with the LLM answer-generation, complaint-agent,
 vision, and Sarvam STT/TTS calls all swapped for deterministic fakes -- same no-real-network-call
-convention as test_ask_janmitra.py/test_ask_janmitra_image.py. STT is faked at the SarvamClient
+convention as test_ask_sarthi.py/test_ask_sarthi_image.py. STT is faked at the SarvamClient
 level (not the whole stt_service module) so the real chunk-stitching/retry logic in
 backend/services/stt_service.py is still genuinely exercised.
 
@@ -15,11 +15,11 @@ end to end, including the "image with no spoken text" clarification path.
 import json
 from unittest.mock import Mock
 
-import backend.routes.ask_janmitra as ask_janmitra_module
+import backend.routes.ask_sarthi as ask_sarthi_module
 import backend.services.observability.tracing as tracing_module
 from backend.config import settings
 from backend.models import Complaint
-from backend.services.ask_janmitra_service import AskJanMitraService
+from backend.services.ask_sarthi_service import AskSarthiService
 from backend.services.embedding_provider import SentenceTransformerEmbeddingProvider
 from backend.services.sarvam_client import AIServiceError
 from backend.services.vector_store import ChromaVectorStore
@@ -90,7 +90,7 @@ def _install_real_service(
     else:
         fake_vision.describe_image = Mock(return_value=caption)
 
-    service = AskJanMitraService(
+    service = AskSarthiService(
         vector_store=store,
         embedding_provider=provider,
         answer_service=fake_answers,
@@ -98,7 +98,7 @@ def _install_real_service(
         sarvam_client=fake_sarvam,
         vision_service=fake_vision,
     )
-    monkeypatch.setattr(ask_janmitra_module, "_service", service)
+    monkeypatch.setattr(ask_sarthi_module, "_service", service)
     return fake_sarvam
 
 
@@ -107,7 +107,7 @@ def _ask_voice(client, token, audio_bytes_list=(b"chunk1",), image_bytes=None, *
     files = [("audio", (f"seg{i}.wav", b, "audio/wav")) for i, b in enumerate(audio_bytes_list)]
     if image_bytes is not None:
         files.append(("image", ("photo.jpg", image_bytes, "image/jpeg")))
-    return client.post("/ask-janmitra/voice", headers={"Authorization": f"Bearer {token}"}, data=data, files=files)
+    return client.post("/ask-sarthi/voice", headers={"Authorization": f"Bearer {token}"}, data=data, files=files)
 
 
 def test_voice_returns_real_transcribed_text_and_real_audio(client, monkeypatch, make_citizen):
@@ -204,7 +204,7 @@ def test_voice_requires_at_least_one_audio_segment(client, monkeypatch, make_cit
     token, _ = make_citizen(phone="9000000205")
 
     response = client.post(
-        "/ask-janmitra/voice", headers={"Authorization": f"Bearer {token}"},
+        "/ask-sarthi/voice", headers={"Authorization": f"Bearer {token}"},
         data={"language": "en"}, files=[],
     )
 
@@ -224,7 +224,7 @@ def test_voice_requires_authentication(client, monkeypatch):
     _install_real_service(monkeypatch)
 
     response = client.post(
-        "/ask-janmitra/voice",
+        "/ask-sarthi/voice",
         data={"language": "en"},
         files=[("audio", ("seg0.wav", b"chunk1", "audio/wav"))],
     )
@@ -234,7 +234,7 @@ def test_voice_requires_authentication(client, monkeypatch):
 
 def test_voice_can_file_a_real_complaint_from_the_transcribed_text(client, monkeypatch, make_citizen, db_session, make_worker):
     """P0 SAFETY FIX (production-safety audit): category + location resolving together no longer
-    creates a complaint on the first call -- see tests/test_ask_janmitra.py's
+    creates a complaint on the first call -- see tests/test_ask_sarthi.py's
     test_type_a_complaint_creates_and_assigns_complaint for the full rationale."""
     fake_sarvam = _install_real_service(monkeypatch, transcript="Street light near my home is not working.")
     make_worker(phone="9000099207", ward="Mohali")
@@ -331,7 +331,7 @@ def test_voice_plus_image_can_file_a_real_complaint_with_evidence(client, monkey
     assert response.status_code == 200, response.text
     body = response.json()
     # P0 SAFETY FIX (production-safety audit): confirmation required before creation -- see
-    # tests/test_ask_janmitra.py's test_type_a_complaint_creates_and_assigns_complaint. Image
+    # tests/test_ask_sarthi.py's test_type_a_complaint_creates_and_assigns_complaint. Image
     # re-attached on the confirmation call, matching the backend's per-request statelessness.
     assert body.get("complaint_id") is None
 
@@ -440,7 +440,7 @@ def test_voice_plus_image_request_creates_all_three_child_spans_in_order(client,
     response = _ask_voice(client, token, image_bytes=_JPEG_BYTES)
 
     assert response.status_code == 200, response.text
-    # STT before vision before TTS -- matches docs/ask_janmitra_langsmith_observability.md §9.1's
+    # STT before vision before TTS -- matches docs/ask_sarthi_langsmith_observability.md §9.1's
     # "Ask Sarthi Voice -> STT -> Vision -> LangGraph -> ... -> TTS" diagram.
     assert start_child_calls.index("speech_to_text") < start_child_calls.index("vision_processing")
     assert start_child_calls.index("vision_processing") < start_child_calls.index("text_to_speech")

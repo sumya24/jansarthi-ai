@@ -13,7 +13,7 @@
  * Fixed with a second, tightly-bounded pass scoped to just that pocket per pose. Separately,
  * each source crop was only ~240px tall, under-resolved for common 2-3x device-pixel-ratio
  * screens even at this component's largest real usage (WelcomeMascot's size=130 in
- * AskJanMitra.tsx) well before any user pinch-zoom -- upscaled 2x via Lanczos resampling for
+ * AskSarthi.tsx) well before any user pinch-zoom -- upscaled 2x via Lanczos resampling for
  * real headroom. Aspect ratios (and so the ASPECT table below) are unchanged -- both dimensions
  * scaled by the same factor.
  *
@@ -24,14 +24,14 @@
  * character ALONE; any accompanying text (the greeting bubble, etc.) stays real, translated UI
  * text rendered next to the image, same as before.
  *
- * Each state is real application state, never a proxy -- see AskJanMitraWidget.tsx,
- * AskJanMitra.tsx's AskJanMitraContent, and VoiceAssistantOverlay.tsx for exactly what drives
+ * Each state is real application state, never a proxy -- see AskSarthiWidget.tsx,
+ * AskSarthi.tsx's AskSarthiContent, and VoiceAssistantOverlay.tsx for exactly what drives
  * each one ("speaking" specifically comes from the real HTMLAudioElement's playing/pause/ended
  * events during TTS playback, not a timer). There is deliberately no "error" state: an error is
  * already communicated by the existing text error banner, so the mascot just stays idle rather
  * than performing an emotion this state set doesn't have.
  *
- * Every state gets its own CSS animation (loop or one-shot; see AskJanMitraWidget.css, the sole
+ * Every state gets its own CSS animation (loop or one-shot; see AskSarthiWidget.css, the sole
  * home for `.mascot-*` animation rules regardless of which component renders <Mascot>) so the
  * character reads as alive rather than a static photo swap -- transform/filter only (GPU-
  * friendly), nothing that fakes lip-sync by distorting the whole image, and every animation is
@@ -59,7 +59,7 @@ const ASPECT: Record<MascotState, number> = {
 // existing pose to "actively talking", clearly more so than idle's calm folded-hands look). The
 // two states stay visually and behaviorally distinct through their own CSS animation class
 // (mascot-greeting: one-shot wave, plays once; mascot-speaking: continuous pulse, gated on real
-// TTS <audio> playback -- see AskJanMitraWidget.css and VoiceAssistantOverlay.tsx) even though
+// TTS <audio> playback -- see AskSarthiWidget.css and VoiceAssistantOverlay.tsx) even though
 // they share a picture.
 const IMAGE_FOR_STATE: Record<MascotState, Exclude<MascotState, "speaking">> = {
   idle: "idle",

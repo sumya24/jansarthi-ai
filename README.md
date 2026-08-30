@@ -17,7 +17,7 @@ This README is a quick reference and setup guide. Everything else — the actual
 | Login, passwords, JWTs, and roles — what a JWT actually is and why this project hand-rolled its own | **[`docs/AUTHENTICATION.md`](docs/AUTHENTICATION.md)** |
 | The AI pipeline: speech-to-text, translation, summarization, and the real limits measured against the live Sarvam API | **[`docs/AI_AGENT.md`](docs/AI_AGENT.md)** |
 | Testing strategy: pytest, mocking, property-based tests, Playwright end-to-end tests | **[`docs/TESTING.md`](docs/TESTING.md)** |
-| Tracing (LangSmith), Phoenix, real ₹ cost tracking, and the Admin AI Monitoring alerts | **[`docs/ask_janmitra_langsmith_observability.md`](docs/ask_janmitra_langsmith_observability.md)** + **[`docs/OBSERVABILITY.md`](docs/OBSERVABILITY.md)** |
+| Tracing (LangSmith), Phoenix, real ₹ cost tracking, and the Admin AI Monitoring alerts | **[`docs/ask_sarthi_langsmith_observability.md`](docs/ask_sarthi_langsmith_observability.md)** + **[`docs/OBSERVABILITY.md`](docs/OBSERVABILITY.md)** |
 | What's deliberately out of scope so far | **[`future_work.md`](future_work.md)** |
 
 Every doc in `docs/` ends with a **"Likely interview questions about this part of the project"** section — real questions with real, specific answers grounded in this actual codebase, not generic advice.

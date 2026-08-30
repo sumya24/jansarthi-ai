@@ -12,7 +12,7 @@ Bengaluru) specifically to prove the mechanism has no city-specific branching --
 purely on each chunk's own `verification_status`/`service_category`/`city` metadata and score,
 so it applies identically regardless of which city or category triggered it.
 
-See tests/test_ask_janmitra.py's own `test_synthetic_source_suppressed_when_verified_covers_the_
+See tests/test_ask_sarthi.py's own `test_synthetic_source_suppressed_when_verified_covers_the_
 same_city_and_category` for the end-to-end (real ChromaDB) citation-honesty coverage this
 complements -- these tests isolate the retriever's threshold/rescue arithmetic with fully
 controlled scores, since the checked-in knowledge base doesn't happen to contain a second

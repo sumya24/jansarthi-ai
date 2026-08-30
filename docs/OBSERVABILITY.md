@@ -4,7 +4,7 @@
 
 > Part of the JanSarthi AI documentation set. Start at [`README.md`](../README.md) for the big
 > picture. This document is the sibling of
-> [`ask_janmitra_langsmith_observability.md`](ask_janmitra_langsmith_observability.md) — that one
+> [`ask_sarthi_langsmith_observability.md`](ask_sarthi_langsmith_observability.md) — that one
 > covers LangSmith, this one covers **Arize Phoenix**, the second tracing backend, plus everything
 > built on top of both: real ₹ cost tracking, the Admin AI Monitoring page, and the alerts that
 > watch it. See [`PHOENIX_TRACING_PLAN.md`](../PHOENIX_TRACING_PLAN.md) at the repo root for the
@@ -108,7 +108,7 @@ any future `deploy/Caddyfile` change before it goes anywhere near production.
 Any one real Ask Sarthi request produces **two** distinct entries in Phoenix (and in LangSmith),
 not a duplicate charge or a bug — two different views of the same single event:
 
-1. **`ask_janmitra_graph`** — this app's own hand-built spans (`backend/services/observability/
+1. **`ask_sarthi_graph`** — this app's own hand-built spans (`backend/services/observability/
    tracing.py`): `rag_retrieval`, `answer_generation`, `response_translation`, `text_to_speech`,
    `speech_to_text`, `vision_processing`, `final_response_grounding`. This is the one carrying real
    ₹ cost, model name, and token counts — it's what the "Cost by model" panel (§7) reads.
@@ -137,7 +137,7 @@ before assuming which.**
 Every Sarvam-adjacent call this app makes gets tagged with its real cost in Indian Rupees, computed
 from Sarvam's own published pricing (chat completion, translation, TTS billed per character, STT
 billed per second of audio — see `answer_generation_service.py`/`nodes.py`/
-`ask_janmitra_service.py`'s own cost constants). Gemini and the local vision fallback are tagged
+`ask_sarthi_service.py`'s own cost constants). Gemini and the local vision fallback are tagged
 `model_name` only — genuinely free, no cost to report.
 
 Phoenix's own "Top models by cost" dashboard widget is hard-capped at showing 4 models at a time
@@ -186,7 +186,7 @@ line, with a click-to-sort Latency column header — so an admin can go from "an
 ## 10. Testing
 
 ```bash
-pytest tests/test_langsmith_tracing.py tests/test_ask_janmitra_tracing.py tests/test_ai_monitoring.py -v
+pytest tests/test_langsmith_tracing.py tests/test_ask_sarthi_tracing.py tests/test_ai_monitoring.py -v
 ```
 
 Every function in `tracing.py` is fail-open by design and tested that way: a broken/misconfigured

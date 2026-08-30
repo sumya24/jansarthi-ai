@@ -93,7 +93,7 @@ normal activity, tracked as numbers over time.
 | Counter | What it counts | Why it's useful |
 |---|---|---|
 | `complaint.created` | Every complaint filed, grouped by ward | "Which ward is generating the most complaints this week?" |
-| `ask_janmitra.request` | Every Ask Sarthi question, grouped by text/photo/voice | "Are people using voice more than typing?" |
+| `ask_sarthi.request` | Every Ask Sarthi question, grouped by text/photo/voice | "Are people using voice more than typing?" |
 | `rate_limit.exceeded` | Every time someone got blocked for making too many requests | "Is someone trying to abuse the system?" |
 
 **Switch:** `SENTRY_ENABLE_METRICS=true`.
@@ -156,8 +156,8 @@ If you're curious where in the code a number actually gets counted, here's exact
 
 - `backend/routes/complaints.py` — right after a complaint is successfully saved, one line adds
   1 to the `complaint.created` counter.
-- `backend/routes/ask_janmitra.py` — right when a question comes in (before it's even answered),
-  one line adds 1 to `ask_janmitra.request`.
+- `backend/routes/ask_sarthi.py` — right when a question comes in (before it's even answered),
+  one line adds 1 to `ask_sarthi.request`.
 - `backend/middleware.py` and `backend/deps.py` — right when someone gets blocked by a rate
   limit, one line adds 1 to `rate_limit.exceeded`.
 

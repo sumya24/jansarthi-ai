@@ -1,4 +1,4 @@
-"""POST /ask-janmitra — the Ask Sarthi retrieval endpoint.
+"""POST /ask-sarthi — the Ask Sarthi retrieval endpoint.
 
 Requires authentication (same as every other route in this app — see backend/deps.py) because
 TYPE_C complaint-status questions need to know who's asking (a citizen can only see their own
@@ -19,26 +19,26 @@ from backend.config import settings
 from backend.database import get_db
 from backend.deps import get_current_user, require_ai_rate_limit
 from backend.models import User
-from backend.schemas.ask_janmitra import AskJanMitraRequest, AskJanMitraResponse, AskVoiceResponse, ConversationTurn
+from backend.schemas.ask_sarthi import AskSarthiRequest, AskSarthiResponse, AskVoiceResponse, ConversationTurn
 from backend.services import metrics as sentry_metrics
-from backend.services.ask_janmitra_service import AskJanMitraService
+from backend.services.ask_sarthi_service import AskSarthiService
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/ask-janmitra", tags=["ask-janmitra"])
+router = APIRouter(prefix="/ask-sarthi", tags=["ask-sarthi"])
 
-_service = AskJanMitraService()
+_service = AskSarthiService()
 
 _GENERIC_UNAVAILABLE_DETAIL = "Ask Sarthi is temporarily unavailable. Please try again, or use the complaint form directly."
 
 
-@router.post("", response_model=AskJanMitraResponse, dependencies=[Depends(require_ai_rate_limit)])
-def ask_janmitra(
-    request: AskJanMitraRequest,
+@router.post("", response_model=AskSarthiResponse, dependencies=[Depends(require_ai_rate_limit)])
+def ask_sarthi(
+    request: AskSarthiRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
-) -> AskJanMitraResponse:
+) -> AskSarthiResponse:
     """Ask a civic-service question (complaint-shaped or information-shaped) or check a
-    complaint's status. See backend/services/ask_janmitra_service.py for the full routing logic.
+    complaint's status. See backend/services/ask_sarthi_service.py for the full routing logic.
 
     Rate-limited per authenticated user, shared with the /image and /voice variants below (see
     backend/deps.py's require_ai_rate_limit) -- protects the real, paid Sarvam/LLM calls this
@@ -47,7 +47,7 @@ def ask_janmitra(
     if request.language not in settings.SUPPORTED_LANGUAGES:
         raise HTTPException(status_code=400, detail=f"Unsupported language: {request.language}")
 
-    sentry_metrics.count("ask_janmitra.request", 1, attributes={"channel": "text"})
+    sentry_metrics.count("ask_sarthi.request", 1, attributes={"channel": "text"})
 
     try:
         return _service.ask(db, current_user, request)
@@ -62,7 +62,7 @@ def ask_janmitra(
 def _parse_conversation_history(raw: str) -> list[ConversationTurn]:
     """Multipart form fields can't carry nested JSON structures directly -- the frontend
     JSON-encodes `conversation_history` into one string field, mirroring the exact shape
-    `AskJanMitraRequest.conversation_history` already validates for the plain-JSON endpoint."""
+    `AskSarthiRequest.conversation_history` already validates for the plain-JSON endpoint."""
     try:
         parsed = json.loads(raw) if raw else []
         return [ConversationTurn(**turn) for turn in parsed]
@@ -70,8 +70,8 @@ def _parse_conversation_history(raw: str) -> list[ConversationTurn]:
         raise HTTPException(status_code=400, detail="Invalid conversation_history.") from exc
 
 
-@router.post("/image", response_model=AskJanMitraResponse, dependencies=[Depends(require_ai_rate_limit)])
-def ask_janmitra_with_image(
+@router.post("/image", response_model=AskSarthiResponse, dependencies=[Depends(require_ai_rate_limit)])
+def ask_sarthi_with_image(
     question: str = Form(""),
     language: str = Form("en"),
     latitude: float | None = Form(None),
@@ -83,18 +83,18 @@ def ask_janmitra_with_image(
     image: UploadFile = File(...),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
-) -> AskJanMitraResponse:
-    """Same as `POST /ask-janmitra`, with one attached photo. Multipart (not JSON) because it
+) -> AskSarthiResponse:
+    """Same as `POST /ask-sarthi`, with one attached photo. Multipart (not JSON) because it
     carries a file -- `question` may be empty here (an image with no text at all is a valid,
-    real use case, unlike the plain endpoint's `AskJanMitraRequest.question` which requires
-    non-empty text). See backend/services/ask_janmitra_service.py's `ask_with_image()`.
+    real use case, unlike the plain endpoint's `AskSarthiRequest.question` which requires
+    non-empty text). See backend/services/ask_sarthi_service.py's `ask_with_image()`.
     """
     if language not in settings.SUPPORTED_LANGUAGES:
         raise HTTPException(status_code=400, detail=f"Unsupported language: {language}")
 
     history = _parse_conversation_history(conversation_history)
 
-    sentry_metrics.count("ask_janmitra.request", 1, attributes={"channel": "image"})
+    sentry_metrics.count("ask_sarthi.request", 1, attributes={"channel": "image"})
 
     try:
         return _service.ask_with_image(
@@ -118,7 +118,7 @@ def ask_janmitra_with_image(
 
 
 @router.post("/voice", response_model=AskVoiceResponse, dependencies=[Depends(require_ai_rate_limit)])
-def ask_janmitra_voice(
+def ask_sarthi_voice(
     language: str = Form("en"),
     latitude: float | None = Form(None),
     longitude: float | None = Form(None),
@@ -135,7 +135,7 @@ def ask_janmitra_voice(
     own `audio` field does -- Sarvam's STT endpoint hard-caps a single request at 30 seconds (see
     docs/ai_pipeline_limits.md), so the citizen-facing recorder (useAudioRecorder.ts) splits a
     longer turn into ~28s segments client-side. An optional attached `image` is accepted here too
-    (a combined voice+image turn) -- see backend/services/ask_janmitra_service.py's `ask_voice()`.
+    (a combined voice+image turn) -- see backend/services/ask_sarthi_service.py's `ask_voice()`.
     """
     if language not in settings.SUPPORTED_LANGUAGES:
         raise HTTPException(status_code=400, detail=f"Unsupported language: {language}")
@@ -146,7 +146,7 @@ def ask_janmitra_voice(
 
     history = _parse_conversation_history(conversation_history)
 
-    sentry_metrics.count("ask_janmitra.request", 1, attributes={"channel": "voice"})
+    sentry_metrics.count("ask_sarthi.request", 1, attributes={"channel": "voice"})
 
     try:
         return _service.ask_voice(

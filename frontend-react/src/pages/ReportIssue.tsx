@@ -56,7 +56,7 @@ export default function ReportIssue() {
   // correction is what should be submitted, not a fresh server-side transcription of the raw
   // audio that produced it. Set only by the textarea's own onChange (a real keystroke), never
   // by the live-transcript sync effect below, so it's a reliable "a human actually edited this"
-  // signal, same idea as AskJanMitra.tsx's questionFromVoice.
+  // signal, same idea as AskSarthi.tsx's questionFromVoice.
   const [textEditedManually, setTextEditedManually] = useState(false);
   const [photos, setPhotos] = useState<File[]>([]);
   const [category, setCategory] = useState<ServiceCategoryDef | null>(
@@ -122,7 +122,7 @@ export default function ReportIssue() {
   }, [text]);
 
   // Fills the same box a typed description would use, live, exactly like Ask Sarthi's own mic --
-  // see AskJanMitra.tsx's identical effect. Goes through setText directly rather than the
+  // see AskSarthi.tsx's identical effect. Goes through setText directly rather than the
   // textarea's onChange, so a real keystroke (which does go through onChange) is the only thing
   // that ever sets textEditedManually.
   useEffect(() => {

@@ -5,7 +5,7 @@ that script's own docstring) -- this is Phoenix's equivalent, not a replacement 
 
 Deliberately mirror-only: `AnswerGenerationService` (see
 backend/services/answer_generation_service.py) keeps reading
-prompts/ask_janmitra_system_prompt.txt and prompts/ask_janmitra_answer_prompt.txt directly --
+prompts/ask_sarthi_system_prompt.txt and prompts/ask_sarthi_answer_prompt.txt directly --
 this script never becomes the source of truth for what the running app actually sends to Sarvam.
 Re-running this script after editing either .txt file pushes a new prompt version, so Phoenix's
 own version history tracks every change over time -- purely a visibility/experimentation layer.
@@ -33,13 +33,13 @@ from phoenix.client.types import PromptVersion
 
 from backend.config import settings
 
-PROMPT_NAME = "jansarthi-ask-janmitra-answer-prompt"
+PROMPT_NAME = "jansarthi-ask-sarthi-answer-prompt"
 PHOENIX_BASE_URL = "http://localhost:6006"
 
 
 def main() -> None:
-    system_prompt = (settings.PROMPTS_DIR / "ask_janmitra_system_prompt.txt").read_text(encoding="utf-8")
-    answer_prompt = (settings.PROMPTS_DIR / "ask_janmitra_answer_prompt.txt").read_text(encoding="utf-8")
+    system_prompt = (settings.PROMPTS_DIR / "ask_sarthi_system_prompt.txt").read_text(encoding="utf-8")
+    answer_prompt = (settings.PROMPTS_DIR / "ask_sarthi_answer_prompt.txt").read_text(encoding="utf-8")
 
     # model_provider="OPENAI" is a labeling compromise, not a real vendor claim -- Phoenix has no
     # "SARVAM" option, and Sarvam's own chat completions API is OpenAI-shaped (same
@@ -54,7 +54,7 @@ def main() -> None:
         model_name=settings.LLM_MODEL,
         model_provider="OPENAI",
         description=(
-            "Mirror of prompts/ask_janmitra_system_prompt.txt + ask_janmitra_answer_prompt.txt "
+            "Mirror of prompts/ask_sarthi_system_prompt.txt + ask_sarthi_answer_prompt.txt "
             "(see backend/services/answer_generation_service.py). The running app reads the "
             "local .txt files directly -- this is a versioned copy for Playground testing and "
             "change history, not the source the app actually loads from."

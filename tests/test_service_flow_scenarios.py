@@ -1,6 +1,6 @@
 """Direct, traceable coverage of the SERVICE FLOW + SELECTIVE LANGCHAIN INTEGRATION phase's own
 six example scenarios (its §13) -- one test per example, asserting each reaches the flow the spec
-names. Overlaps in spirit with existing tests/test_ask_janmitra.py and
+names. Overlaps in spirit with existing tests/test_ask_sarthi.py and
 tests/test_orchestration_graph.py coverage, kept separate for direct 1:1 traceability to the
 phase's own worked examples.
 """
@@ -8,8 +8,8 @@ phase's own worked examples.
 from __future__ import annotations
 
 from backend.models import Complaint
-from backend.schemas.ask_janmitra import ConversationTurn
-from tests.test_ask_janmitra import _ask, _install_real_service
+from backend.schemas.ask_sarthi import ConversationTurn
+from tests.test_ask_sarthi import _ask, _install_real_service
 
 
 # 1. "What documents do I need for a water connection?" -> RAG flow
@@ -26,7 +26,7 @@ def test_scenario_1_water_connection_documents_goes_to_rag_flow(client, monkeypa
 # 2. "Streetlight near my home is broken." -> Complaint flow
 def test_scenario_2_streetlight_broken_goes_to_complaint_flow(client, monkeypatch, db_session, make_citizen, make_worker):
     """P0 SAFETY FIX (production-safety audit): category + location resolving together no longer
-    creates a complaint on the same call -- see test_ask_janmitra.py's
+    creates a complaint on the same call -- see test_ask_sarthi.py's
     test_type_a_complaint_creates_and_assigns_complaint for the full rationale. This test now
     verifies the two-call confirmation flow reaches the same end state."""
     _install_real_service(monkeypatch)
@@ -91,11 +91,11 @@ def test_scenario_4_complaint_status_goes_to_status_flow(client, monkeypatch, db
 # 5. "Use my current location." (as a follow-up with GPS) -> Location flow (GPS resolution)
 def test_scenario_5_use_current_location_resolves_via_gps(client, monkeypatch, make_citizen):
     from unittest.mock import Mock
-    import backend.routes.ask_janmitra as ask_janmitra_module
+    import backend.routes.ask_sarthi as ask_sarthi_module
     from backend.services.location_extractor import LocationExtractor, RagGazetteer
     from backend.services.location_resolver import ResolvedLocation
     from backend.config import settings
-    from tests.test_ask_janmitra import _real_ask_janmitra_service
+    from tests.test_ask_sarthi import _real_ask_sarthi_service
 
     fake_resolver = Mock()
     fake_resolver.resolve_coordinates = lambda lat, lng: ResolvedLocation(
@@ -103,8 +103,8 @@ def test_scenario_5_use_current_location_resolves_via_gps(client, monkeypatch, m
     )
     gazetteer = RagGazetteer(settings.RAG_DATA_DIR / "chunks" / "chunks.json")
     extractor = LocationExtractor(gazetteer, location_resolver=fake_resolver)
-    service = _real_ask_janmitra_service(location_extractor=extractor)
-    monkeypatch.setattr(ask_janmitra_module, "_service", service)
+    service = _real_ask_sarthi_service(location_extractor=extractor)
+    monkeypatch.setattr(ask_sarthi_module, "_service", service)
 
     token, _ = make_citizen(phone="9100000044")
     resp = _ask(client, token, "Use my current location.", latitude=30.7, longitude=76.7)
@@ -115,7 +115,7 @@ def test_scenario_5_use_current_location_resolves_via_gps(client, monkeypatch, m
 
 
 # 6. "Tell me something unrelated to civic services." -> a genuinely off-topic message with no
-# civic-service signal at all. Reported honestly (see docs/ask_janmitra_service_flow.md's
+# civic-service signal at all. Reported honestly (see docs/ask_sarthi_service_flow.md's
 # limitations section): this codebase's "out-of-scope" concept is specifically a KNOWN-BUT-
 # UNSUPPORTED civic service (electricity, new-connection) that the classifier explicitly
 # recognizes -- not a general off-topic detector. A message with no civic-service signal at all

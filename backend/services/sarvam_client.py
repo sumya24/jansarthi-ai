@@ -268,7 +268,7 @@ class SarvamClient:
         Raises:
             AIServiceError: If any chunk's Sarvam API call fails -- same fail-open contract as
                 `synthesize_speech()` (the caller already treats a total TTS failure as a
-                text-only degrade, see ask_janmitra_service.py's own TTS call site).
+                text-only degrade, see ask_sarthi_service.py's own TTS call site).
         """
         chunks = _split_text_for_tts(text)
         if len(chunks) <= 1:

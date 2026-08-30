@@ -26,7 +26,7 @@ settings are pointed at) fires the moment something actually breaks.
     setting is on (`backend/main.py`).
   - **Application Metrics** (`SENTRY_ENABLE_METRICS`) -- a small set of business counters already
     wired into the code: `complaint.created` (tagged by ward, `routes/complaints.py`),
-    `ask_janmitra.request` (tagged by channel: text/image/voice, `routes/ask_janmitra.py`), and
+    `ask_sarthi.request` (tagged by channel: text/image/voice, `routes/ask_sarthi.py`), and
     `rate_limit.exceeded` (tagged by which limiter tripped: general/login/ai, `middleware.py` +
     `deps.py`). Every call site goes through `backend/services/metrics.py`, not
     `sentry_sdk.metrics` directly -- same reason as Logs above: the SDK's `enable_metrics=` init()

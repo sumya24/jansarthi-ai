@@ -2,8 +2,8 @@
 
 **Status: implemented and tested.** This document covers the SERVICE FLOW + SELECTIVE LANGCHAIN
 INTEGRATION phase, built on top of the already-complete LangGraph orchestration
-(`docs/ask_janmitra_orchestration.md`) and RAG/embeddings foundation
-(`docs/ask_janmitra_rag_architecture.md`) — neither was rebuilt or replaced. This phase's actual
+(`docs/ask_sarthi_orchestration.md`) and RAG/embeddings foundation
+(`docs/ask_sarthi_rag_architecture.md`) — neither was rebuilt or replaced. This phase's actual
 work: (1) a genuine, evidence-based evaluation of where LangChain would add real value across
 every flow, (2) a concrete database repository layer extracted out of the graph nodes, (3) one
 real classifier bug fix found via the phase's own worked example, (4) tests and documentation.
@@ -34,7 +34,7 @@ what already exists:
 | Candidate | Existing approach | Verdict |
 |---|---|---|
 | Prompt templates | `.txt` files + `str.format()`, via `get_prompt()` (`backend/config.py`) — this codebase's established convention, used by every LLM call site | **Not adopted.** `PromptTemplate` would wrap the same `.format()` call with no new capability. |
-| Retriever interface | `RagRetriever` — category+location metadata filtering, relevance threshold, VERIFIED-preference rerank, all custom and tested (see `docs/ask_janmitra_rag_architecture.md`) | **Not adopted.** Wrapping in LangChain's `BaseRetriever` would risk losing/obscuring the custom rerank and threshold logic for no functional gain — nothing currently needs `RagRetriever` to be interoperable with a LangChain chain. |
+| Retriever interface | `RagRetriever` — category+location metadata filtering, relevance threshold, VERIFIED-preference rerank, all custom and tested (see `docs/ask_sarthi_rag_architecture.md`) | **Not adopted.** Wrapping in LangChain's `BaseRetriever` would risk losing/obscuring the custom rerank and threshold logic for no functional gain — nothing currently needs `RagRetriever` to be interoperable with a LangChain chain. |
 | Structured output | Not used for RAG answers — the answer is free-text prose; citations are built from Chroma metadata directly, **never** from the LLM (a hard requirement, see the RAG doc's citation section) | **Not applicable.** There is nothing structured to extract from the LLM here by design — this is the whole reason citations can never be fabricated. |
 | Context formatting | `"\n\n---\n\n".join(context_chunks)` | **Not adopted.** Trivial; no abstraction earns its cost here. |
 | LLM invocation | `sarvamai` SDK's `client.chat.completions()` directly (`AnswerGenerationService`) | **Not adopted** — see §4 for why, including the live feasibility test that informed this decision. |
@@ -81,7 +81,7 @@ matters more than recall here, and this integration measurably has neither.
 
 **Decision: declined.** `complaint_flow_node`'s category resolution remains 100% the existing
 deterministic path: current-message classification → conversation-history recovery (§ see
-`docs/ask_janmitra_orchestration.md` §9) → clarification if still unknown. No LLM output ever
+`docs/ask_sarthi_orchestration.md` §9) → clarification if still unknown. No LLM output ever
 reaches complaint routing. `langchain-openai` (installed locally only for this evaluation) was
 **not** added to `requirements.txt` — it ships in no production code path, matching the spec's
 "do not add LangChain simply for technology count."
@@ -186,7 +186,7 @@ explicit "Do NOT ask an LLM to calculate distance."
 
 - **Why LangGraph?** Explicit, inspectable, independently-testable routing for a request that has
   five genuinely different outcomes depending on intent/location/completeness — see
-  `docs/ask_janmitra_orchestration.md` §1 for the full reasoning (unchanged this phase).
+  `docs/ask_sarthi_orchestration.md` §1 for the full reasoning (unchanged this phase).
 - **Why LangChain (`langchain-core` only, in production)?** `RunnableConfig` — a direct
   `langgraph` dependency for passing per-request context to nodes. Nothing else, after genuine
   evaluation (§2, §3) found no other use that outperforms what already exists.
@@ -194,7 +194,7 @@ explicit "Do NOT ask an LLM to calculate distance."
   matching, worker assignment) is faster, free, precise, and fully unit-testable as plain code —
   an LLM adds latency, cost, and (measured, §3) real error risk with no offsetting benefit for
   these specific decisions.
-- **Why ChromaDB?** Unchanged — see `docs/ask_janmitra_rag_architecture.md` §4.
+- **Why ChromaDB?** Unchanged — see `docs/ask_sarthi_rag_architecture.md` §4.
 - **Why a database repository layer?** Isolates the fixed, reviewable set of queries a graph node
   needs from the orchestration/business-decision logic around them — and makes the "never LLM →
   SQL" boundary an explicit, visible seam in the codebase rather than an implicit convention.

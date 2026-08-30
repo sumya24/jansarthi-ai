@@ -98,13 +98,13 @@ def _build_pipeline():
 
     BUG FIX (code review): this used to omit `reranker=`/`hybrid_search_enabled=`, silently
     falling back to RagRetriever's own class defaults instead of the SAME settings-driven values
-    AskJanMitraService.__init__ actually uses -- so toggling RAG_RERANKER_ENABLED or
+    AskSarthiService.__init__ actually uses -- so toggling RAG_RERANKER_ENABLED or
     RAG_HYBRID_SEARCH_ENABLED in production would silently stop matching what this script
-    evaluates, with no signal the two had drifted. Reuses AskJanMitraService's own
+    evaluates, with no signal the two had drifted. Reuses AskSarthiService's own
     `_load_default_reranker()` staticmethod rather than re-deriving the same settings-read logic
     a third time (see backend/mcp_server.py's own use of the same staticmethod)."""
     from backend.services.answer_generation_service import AnswerGenerationService
-    from backend.services.ask_janmitra_service import AskJanMitraService
+    from backend.services.ask_sarthi_service import AskSarthiService
     from backend.services.embedding_provider import SentenceTransformerEmbeddingProvider
     from backend.services.rag_retriever import RagRetriever
     from backend.services.vector_store import ChromaVectorStore
@@ -117,7 +117,7 @@ def _build_pipeline():
         store, provider,
         top_k=settings.RAG_TOP_K,
         relevance_threshold=settings.RAG_EMBEDDING_RELEVANCE_THRESHOLD,
-        reranker=AskJanMitraService._load_default_reranker(),
+        reranker=AskSarthiService._load_default_reranker(),
         hybrid_search_enabled=settings.RAG_HYBRID_SEARCH_ENABLED,
     )
     answer_service = AnswerGenerationService()

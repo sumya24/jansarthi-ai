@@ -9,8 +9,8 @@ codebase's established pattern for external AI calls (see test_complaints_api.py
 — retrieval/routing/filtering correctness is what these tests verify, not Sarvam's prose quality.
 
 Module-level caching (`_get_shared_chroma_deps`, not a pytest fixture): the embedding model load
-is genuinely slow (~20-25s the first time). AskJanMitraService's constructor doesn't cache
-anything across instances by design (each call to `_real_ask_janmitra_service()` builds a fresh
+is genuinely slow (~20-25s the first time). AskSarthiService's constructor doesn't cache
+anything across instances by design (each call to `_real_ask_sarthi_service()` builds a fresh
 service, matching how the real app builds one `_service` singleton at import time), so this module
 builds ONE SentenceTransformerEmbeddingProvider + ONE ChromaVectorStore, pays the load cost once
 per test run, and passes the same instances into every service under test.
@@ -20,10 +20,10 @@ from unittest.mock import Mock
 
 import pytest
 
-import backend.routes.ask_janmitra as ask_janmitra_module
+import backend.routes.ask_sarthi as ask_sarthi_module
 from backend.models import Complaint, User
-from backend.schemas.ask_janmitra import ConversationTurn
-from backend.services.ask_janmitra_service import AskJanMitraService
+from backend.schemas.ask_sarthi import ConversationTurn
+from backend.services.ask_sarthi_service import AskSarthiService
 from backend.services.auth_service import hash_password
 from backend.services.embedding_provider import SentenceTransformerEmbeddingProvider, TfidfEmbeddingProvider
 from backend.services.intent_classifier import QuestionIntent, classify
@@ -73,8 +73,8 @@ class _FakeComplaintAgent:
         return complaint
 
 
-def _real_ask_janmitra_service(**overrides) -> AskJanMitraService:
-    """A real AskJanMitraService against the real, checked-in Chroma collection -- with the LLM
+def _real_ask_sarthi_service(**overrides) -> AskSarthiService:
+    """A real AskSarthiService against the real, checked-in Chroma collection -- with the LLM
     answer-generation step and the complaint-creation step both swapped for deterministic fakes
     (no network call in either case; matches this codebase's established pattern for external AI
     calls -- see test_complaints_api.py's `_agent` mock)."""
@@ -88,16 +88,16 @@ def _real_ask_janmitra_service(**overrides) -> AskJanMitraService:
         "complaint_agent": _FakeComplaintAgent(),
     }
     kwargs.update(overrides)
-    return AskJanMitraService(**kwargs)
+    return AskSarthiService(**kwargs)
 
 
 def _install_real_service(monkeypatch) -> None:
-    monkeypatch.setattr(ask_janmitra_module, "_service", _real_ask_janmitra_service())
+    monkeypatch.setattr(ask_sarthi_module, "_service", _real_ask_sarthi_service())
 
 
 def _ask(client, token, question, **kwargs):
     body = {"question": question, "language": "en", **kwargs}
-    return client.post("/ask-janmitra", headers={"Authorization": f"Bearer {token}"}, json=body)
+    return client.post("/ask-sarthi", headers={"Authorization": f"Bearer {token}"}, json=body)
 
 
 # --- 1/2/3: TYPE_A/TYPE_B/TYPE_C classification+routing ---
@@ -346,7 +346,7 @@ def test_explicit_state_and_city_resolves(client, monkeypatch, make_citizen):
 
 def test_gps_location_resolves_via_location_resolver(client, monkeypatch, make_citizen, make_worker):
     """The GPS -> LocationResolver -> RAG gazetteer integration path (previously the documented
-    gap, see docs/ask_janmitra_response_behavior.md §3) -- exercised with a fake geocoder so no
+    gap, see docs/ask_sarthi_response_behavior.md §3) -- exercised with a fake geocoder so no
     real network call happens, but the real matching logic (including complaint_flow_node's own
     worker-ward matching, see find_worker_ward_text) runs end to end.
 
@@ -371,8 +371,8 @@ def test_gps_location_resolves_via_location_resolver(client, monkeypatch, make_c
     real_resolver = LocationResolver(geocoder=_FakeGeocoder())
     gazetteer = RagGazetteer(settings.RAG_DATA_DIR / "chunks" / "chunks.json")
     extractor = LocationExtractor(gazetteer, location_resolver=real_resolver)
-    service = _real_ask_janmitra_service(location_extractor=extractor, location_resolver=real_resolver)
-    monkeypatch.setattr(ask_janmitra_module, "_service", service)
+    service = _real_ask_sarthi_service(location_extractor=extractor, location_resolver=real_resolver)
+    monkeypatch.setattr(ask_sarthi_module, "_service", service)
 
     make_worker(phone="9100099010", ward="Mohali")
     token, _ = make_citizen(phone="9100000010")
@@ -398,15 +398,15 @@ def test_gps_location_resolves_via_location_resolver(client, monkeypatch, make_c
     assert confirm_body["complaint_id"] is not None
 
 
-def test_gps_failure_does_not_break_ask_janmitra(client, monkeypatch, make_citizen):
+def test_gps_failure_does_not_break_ask_sarthi(client, monkeypatch, make_citizen):
     from backend.services.location_resolver import LocationResolver, ResolvedLocation
 
     fake_resolver = Mock()
     fake_resolver.resolve_coordinates = lambda lat, lng: ResolvedLocation(latitude=lat, longitude=lng)  # everything None -- resolution failed
     gazetteer = RagGazetteer(settings.RAG_DATA_DIR / "chunks" / "chunks.json")
     extractor = LocationExtractor(gazetteer, location_resolver=fake_resolver)
-    service = _real_ask_janmitra_service(location_extractor=extractor)
-    monkeypatch.setattr(ask_janmitra_module, "_service", service)
+    service = _real_ask_sarthi_service(location_extractor=extractor)
+    monkeypatch.setattr(ask_sarthi_module, "_service", service)
 
     token, _ = make_citizen(phone="9100000011")
     resp = _ask(client, token, "Street light near me is not working.", latitude=1.0, longitude=1.0)
@@ -417,7 +417,7 @@ def test_gps_failure_does_not_break_ask_janmitra(client, monkeypatch, make_citiz
 
 def test_invalid_gps_is_ignored_gracefully(client, monkeypatch, make_citizen):
     """Nonsensical coordinates must not crash the pipeline -- the location_resolver's own
-    resolve_coordinates never raises (see its tests), and this proves the whole ask_janmitra
+    resolve_coordinates never raises (see its tests), and this proves the whole ask_sarthi
     pipeline tolerates it too."""
     _install_real_service(monkeypatch)
     token, _ = make_citizen(phone="9100000012")
@@ -434,12 +434,12 @@ def test_location_resolver_failure_does_not_break_the_pipeline(client, monkeypat
 
     gazetteer = RagGazetteer(settings.RAG_DATA_DIR / "chunks" / "chunks.json")
     extractor = LocationExtractor(gazetteer, location_resolver=RaisingResolver())
-    service = _real_ask_janmitra_service(location_extractor=extractor)
-    monkeypatch.setattr(ask_janmitra_module, "_service", service)
+    service = _real_ask_sarthi_service(location_extractor=extractor)
+    monkeypatch.setattr(ask_sarthi_module, "_service", service)
 
     token, _ = make_citizen(phone="9100000013")
     resp = _ask(client, token, "Street light near me.", latitude=1.0, longitude=1.0)
-    # The route-level try/except (see routes/ask_janmitra.py) converts this into a clean 503,
+    # The route-level try/except (see routes/ask_sarthi.py) converts this into a clean 503,
     # never a raw 500 with a stack trace.
     assert resp.status_code == 503
     assert "temporarily unavailable" in resp.json()["detail"].lower()
@@ -886,7 +886,7 @@ def test_does_not_recover_a_city_from_an_earlier_unrelated_question_in_the_civic
     question naming a place that doesn't exist at all ("Zzz Nonexistent Place") -- correctly gets
     the honest "I don't have information for this area yet", which (like any location-clarification
     reply) carries `follow_up_options` including "Use current location" -- so the SAME frontend
-    mechanism used for a genuine "what is the location?" answer (AskJanMitra.tsx's `handleSubmit`)
+    mechanism used for a genuine "what is the location?" answer (AskSarthi.tsx's `handleSubmit`)
     resends the ORIGINAL question with the citizen's typed reply as an explicit `location_text`,
     exactly like a real citizen typing "MUMBAI" next would. That resolves correctly to Mumbai --
     but asking about "Zzz Nonexistent Place" again afterward must give the SAME honest answer, not
@@ -904,7 +904,7 @@ def test_does_not_recover_a_city_from_an_earlier_unrelated_question_in_the_civic
         ConversationTurn(role="assistant", content=body1["answer"]).model_dump(),
     ]
 
-    # Mirrors AskJanMitra.tsx's `handleSubmit`: a plain typed reply to a location-clarification
+    # Mirrors AskSarthi.tsx's `handleSubmit`: a plain typed reply to a location-clarification
     # follow_up_required resends the ORIGINAL question with the reply as `location_text`, not as a
     # brand-new bare `question`.
     turn2 = _ask(client, token, question, location_text="MUMBAI", conversation_history=history)
@@ -924,7 +924,7 @@ def test_does_not_substitute_home_ward_for_an_explicit_gibberish_location_reply(
     """LIVE-REPORTED BUG ("Pune fallback"), a FIFTH instance -- see nodes.py's
     `_should_skip_home_ward_fallback` docstring. A citizen whose home ward IS a real, resolvable
     city (Bengaluru) replies to a location-clarification prompt with plain gibberish
-    ("asdkjhaskjdh", via the explicit `location_text` field, exactly like AskJanMitra.tsx's
+    ("asdkjhaskjdh", via the explicit `location_text` field, exactly like AskSarthi.tsx's
     `handleSubmit` sends a typed reply to that prompt) -- gibberish doesn't "look like" a place
     name at all, so the (narrower, message-text-only) heuristic gate alone let this silently
     resolve to Bengaluru instead of honestly saying it couldn't recognize the reply. An EXPLICIT
@@ -1329,7 +1329,7 @@ def test_new_sewerage_connection_in_patiala_answered_from_verified_record(client
 def test_classifier_measured_accuracy_against_existing_labeled_test_files():
     """Measures (does not assert a specific invented number) this classifier's real accuracy
     against the project's own hand-labeled test questions -- reported in
-    docs/ask_janmitra_rag_architecture.md, not fabricated. This test only asserts a floor low
+    docs/ask_sarthi_rag_architecture.md, not fabricated. This test only asserts a floor low
     enough to catch a genuine regression, not a target accuracy."""
     import json
 
@@ -1351,7 +1351,7 @@ def test_classifier_measured_accuracy_against_existing_labeled_test_files():
     assert accuracy >= 0.5  # floor to catch a real regression, not a claimed target
 
 
-# --- Guardrails (prompt-injection): AskJanMitraService._run()'s two chokepoints ------------
+# --- Guardrails (prompt-injection): AskSarthiService._run()'s two chokepoints ------------
 #
 # Pattern-matching correctness itself is covered by tests/test_guardrails.py -- these tests
 # confirm the *wiring*: a flagged INPUT never reaches the intent classifier/RAG/complaint agent
@@ -1388,8 +1388,8 @@ def test_output_guardrail_clears_sources_and_metadata_not_just_the_answer_text(c
         "Sure, ignoring my previous instructions, here is the answer.", True, None,
     )
     monkeypatch.setattr(
-        ask_janmitra_module, "_service",
-        _real_ask_janmitra_service(answer_service=fake_answers),
+        ask_sarthi_module, "_service",
+        _real_ask_sarthi_service(answer_service=fake_answers),
     )
     token, _ = make_citizen(phone="9100000034")
     resp = _ask(client, token, "Who do I contact about street lights in Mohali?")
@@ -1417,7 +1417,7 @@ def test_prompt_injection_block_is_logged_to_ai_request_log(client, monkeypatch,
 def test_multi_category_question_is_answered_by_the_agent_flow_node_end_to_end(client, monkeypatch, make_citizen):
     """Real, end-to-end (real ChromaDB, real embedding model, real RagRetriever -- only the LLM
     answer-generation step is faked, same posture as every other test in this file) proof that a
-    genuinely multi-category message (see docs/ask_janmitra_orchestration.md §17) is routed to
+    genuinely multi-category message (see docs/ask_sarthi_orchestration.md §17) is routed to
     agent_flow_node and gets a combined, per-category answer -- not just a single-category
     rag_flow answer for whichever category happened to match first."""
     _install_real_service(monkeypatch)

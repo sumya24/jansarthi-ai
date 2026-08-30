@@ -5,7 +5,7 @@ calls into an EXISTING service (`classify()`, `LocationExtractor`, `LocationReso
 `RagRetriever`, `AnswerGenerationService`, `ComplaintAgent`, `assign_next_worker`, `Complaint` DB
 queries) -- no node contains business logic that didn't already exist somewhere in this codebase
 before this phase. See `graph.py`'s module docstring for the full node/edge list, and
-`docs/ask_janmitra_orchestration.md` for the architectural reasoning.
+`docs/ask_sarthi_orchestration.md` for the architectural reasoning.
 
 **Deliberate behavior change, confirmed with the user before implementing (see git history /
 session transcript)**: previously, a TYPE_A_COMPLAINT-classified question ("Street light not
@@ -16,7 +16,7 @@ real complaint via the existing `ComplaintAgent`/`assign_next_worker` services a
 complaint ID -- matching this phase's own spec, whose worked complaint-flow example ("Streetlight
 near my home is not working.") is itself a TYPE_A-shaped sentence. TYPE_B_SERVICE_INFO ("who do I
 contact for X", "how do I apply for Y") still routes to `rag_flow_node`, unchanged. This
-necessarily changes several previously-tested TYPE_A cases -- see tests/test_ask_janmitra.py's
+necessarily changes several previously-tested TYPE_A cases -- see tests/test_ask_sarthi.py's
 updated assertions and the final report for the full list.
 
 **"Your saved city" feature (confirmed with the user before implementing)**: `complaint_flow_node`
@@ -136,7 +136,7 @@ class GraphDeps:
     """Static, shared-across-requests dependencies -- built once (expensive: the embedding model
     load, the Chroma collection open) and reused for every graph invocation, matching this
     codebase's existing "construct once in the service constructor" pattern (see
-    ask_janmitra_service.py, which this class's fields were lifted from unchanged)."""
+    ask_sarthi_service.py, which this class's fields were lifted from unchanged)."""
 
     retriever: RagRetriever
     location_extractor: LocationExtractor
@@ -163,7 +163,7 @@ class RequestContext:
     latitude: float | None
     longitude: float | None
     location_text: str | None
-    # Set only by ask_janmitra_service.ask_with_image() -- the already-validated-and-written
+    # Set only by ask_sarthi_service.ask_with_image() -- the already-validated-and-written
     # image file (see backend/services/evidence_service.py), if one was attached. Request
     # plumbing, not conversation data the graph reasons about (same rationale as latitude/
     # longitude above) -- complaint_flow_node reads this to attach real complaint evidence.
@@ -181,7 +181,7 @@ def _ctx(config: RunnableConfig) -> RequestContext:
 def _localize(text: str, state: GraphState, config: RunnableConfig) -> str:
     """Translates a hardcoded English response (clarification questions, out-of-scope notices)
     into the citizen's `response_language`, via the existing `TranslationService`/`SarvamClient`
-    (same service `complaint_agent.py`/`ask_janmitra_service.py` already use for worker-facing
+    (same service `complaint_agent.py`/`ask_sarthi_service.py` already use for worker-facing
     complaint translation -- no new client, no new logic). Unlike `rag_flow_node`'s answers,
     these strings never went through an LLM prompted to answer in the target language in the
     first place, so without this they stay in English even in a fully Marathi/Hindi/etc.
@@ -249,7 +249,7 @@ def _localize_options(options: list[str], state: GraphState, config: RunnableCon
     an English button to answer it.
 
     Deliberately does NOT touch what actually gets SENT when a button is clicked (see
-    AskJanMitraResponse.follow_up_options_labels's own docstring for the display-vs-value split
+    AskSarthiResponse.follow_up_options_labels's own docstring for the display-vs-value split
     this requires) -- `is_explicit_confirmation`/`is_explicit_cancellation` and every category/
     location keyword match in this file are tested against the exact, canonical English strings in
     `follow_up_options` itself; only ever-so-slightly-different translator output for the SAME
@@ -289,11 +289,11 @@ def input_processing_node(state: GraphState, config: RunnableConfig) -> dict[str
     `_route_after_language` in graph.py and `clarification_flow_node` below).
 
     Also where `photo_evidence` gets set (see state.py's own field docstring and schemas/
-    ask_janmitra.py's PhotoEvidenceRef) -- ctx.image_saved is already validated-and-written-to-disk
-    by the time this node runs (ask_janmitra_service.py's `_process_image()`), regardless of
+    ask_sarthi.py's PhotoEvidenceRef) -- ctx.image_saved is already validated-and-written-to-disk
+    by the time this node runs (ask_sarthi_service.py's `_process_image()`), regardless of
     whether this turn ever becomes a complaint; recording the reference here, in the ONE place
     every image-carrying request already passes through, means every later node (and the eventual
-    AskJanMitraResponse) sees it without each caller needing its own copy of this logic."""
+    AskSarthiResponse) sees it without each caller needing its own copy of this logic."""
     message = state.get("user_message", "").strip()
     has_image = bool(state.get("has_image"))
     image_description = state.get("image_description")
@@ -335,7 +335,7 @@ def input_processing_node(state: GraphState, config: RunnableConfig) -> dict[str
 def language_node(state: GraphState, config: RunnableConfig) -> dict[str, Any]:
     """Auto-detects the citizen's ACTUAL input language from this turn's own text and uses that
     for `response_language`, rather than blindly trusting `original_language` (the client-supplied
-    `AskJanMitraRequest.language` -- in practice, the UI's language-toggle setting).
+    `AskSarthiRequest.language` -- in practice, the UI's language-toggle setting).
 
     Live-reported gap this fixes: a citizen's UI language toggle reflects whatever they picked
     once, in general -- it does NOT reliably track what language any ONE message actually is,
@@ -564,7 +564,7 @@ def _last_assistant_turn_matches(conversation_history: list[dict] | None, marker
 def _last_assistant_turn_state(conversation_history: list[dict] | None) -> str | None:
     """BUG FIX (live Marathi validation): the explicit `complaint_workflow_state` a compliant
     caller echoes back on the last assistant turn (see `ConversationTurn.complaint_workflow_state`
-    and `AskJanMitraResponse.complaint_workflow_state`'s own docstrings for the full round-trip).
+    and `AskSarthiResponse.complaint_workflow_state`'s own docstrings for the full round-trip).
     Returns None when the last turn isn't an assistant turn, or the field is absent/None -- either
     because this turn genuinely wasn't complaint-shaped, or because the caller predates this field
     -- both cases fall back to the existing marker-text matching in the callers below, so nothing
@@ -736,7 +736,7 @@ def _should_skip_home_ward_fallback(ctx: RequestContext, text: str) -> bool:
 
 
 def _resolve_location(state: GraphState, config: RunnableConfig) -> LocationResolution:
-    """Same priority order as the pre-graph `AskJanMitraService._resolve_location()` this
+    """Same priority order as the pre-graph `AskSarthiService._resolve_location()` this
     replaces, plus one addition: explicit `location_text` > location named in the message text >
     GPS > a location mentioned in `conversation_history` > the citizen's own registered ward.
     Reuses `LocationExtractor` exactly as before -- this function only sequences the existing
@@ -990,7 +990,7 @@ def _image_context_prefix(state: GraphState) -> str:
     photo but got routed to the category/location/location_ambiguous reason (because they also
     typed text, so the `image_no_text` case below never triggers) would see a generic question
     with no sign the photo was looked at at all -- even though it genuinely was (VisionService
-    already ran, see ask_janmitra_service.py's `_process_image()`). Real, not padding: says
+    already ran, see ask_sarthi_service.py's `_process_image()`). Real, not padding: says
     honestly that the read wasn't clear if captioning failed, never invents a description."""
     if not state.get("has_image"):
         return ""
@@ -1160,7 +1160,7 @@ def status_flow_node(state: GraphState, config: RunnableConfig) -> dict[str, Any
 
 
 # ------------------------------------------------------------------
-# RAG flow -- unchanged retrieval pipeline (see docs/ask_janmitra_rag_architecture.md), this node
+# RAG flow -- unchanged retrieval pipeline (see docs/ask_sarthi_rag_architecture.md), this node
 # only orchestrates the existing RagRetriever + AnswerGenerationService calls.
 # ------------------------------------------------------------------
 
@@ -1336,7 +1336,7 @@ def rag_flow_node(state: GraphState, config: RunnableConfig) -> dict[str, Any]:
     # documents (see this function's own system-prompt rule), so it only ever describes the
     # traditional municipal channel -- it never mentions this app's OWN in-app complaint-filing
     # feature, since that's not something any retrieved document could ever say. The "Report
-    # Issue"/"Track Complaint" buttons are added separately by the frontend (AskJanMitra.tsx), but
+    # Issue"/"Track Complaint" buttons are added separately by the frontend (AskSarthi.tsx), but
     # a citizen who only hears the spoken/TTS answer (no buttons at all, see ask_voice()) or who
     # doesn't notice the buttons never learns the option exists. Appended here, deterministically
     # (never left to the LLM to phrase/decide whether to mention) and localized like every other
@@ -1363,7 +1363,7 @@ def rag_flow_node(state: GraphState, config: RunnableConfig) -> dict[str, Any]:
 
 # ------------------------------------------------------------------
 # agent flow -- the supervisor/multi-agent node for a genuinely multi-category question (see
-# docs/ask_janmitra_orchestration.md §17 for the future-agent integration point this fills, and
+# docs/ask_sarthi_orchestration.md §17 for the future-agent integration point this fills, and
 # intent_classifier.py's detect_multiple_categories() for the deterministic gate that routes here
 # instead of rag_flow -- see graph.py's _route_after_location).
 #
@@ -1997,7 +1997,7 @@ def _resolve_worker_ward_text(
     if worker_ward_text is None and ctx.latitude is not None and ctx.longitude is not None:
         # Same mistake this fix already closed once for the RAG gazetteer -- almost repeated here
         # for GPS: raw coordinate PRESENCE isn't resolution SUCCESS (a real geocoder call can fail
-        # or return nothing usable; test_gps_failure_does_not_break_ask_janmitra exists specifically
+        # or return nothing usable; test_gps_failure_does_not_break_ask_sarthi exists specifically
         # to catch a caller that assumes otherwise). Resolve for real and try to match a worker
         # from whatever city name comes back, exactly like the text-based path above.
         gps_resolved = deps.location_resolver.resolve_coordinates(ctx.latitude, ctx.longitude)
@@ -2513,7 +2513,7 @@ def complaint_flow_node(state: GraphState, config: RunnableConfig) -> dict[str, 
     # confirmation). File the complaint via the EXISTING complaint pipeline -- unchanged from
     # before this fix, except `complaint_text` (the recovered original description) is used
     # instead of this turn's own text (the confirmation word itself). An attached image (see
-    # ctx.image_saved, set by ask_janmitra_service.ask_with_image()) is threaded through exactly
+    # ctx.image_saved, set by ask_sarthi_service.ask_with_image()) is threaded through exactly
     # like the dedicated complaint form does: the legacy single-photo column for backward
     # compatibility, and a real ComplaintEvidence row via the EXISTING evidence_repository -- no
     # second image-storage system (see this module's docstring).
@@ -2663,7 +2663,7 @@ def complaint_flow_node(state: GraphState, config: RunnableConfig) -> dict[str, 
 
 # ------------------------------------------------------------------
 # response_generation -- terminal node. Every flow node above already sets response_text/
-# routed_to/etc.; this node fills in any field a flow node didn't set (so AskJanMitraResponse
+# routed_to/etc.; this node fills in any field a flow node didn't set (so AskSarthiResponse
 # construction never has to guess), then acts as this graph's FINAL RESPONSE GROUNDING /
 # VALIDATION stage (GROUNDING #2 -- see this module's top-of-file docstring for the distinction
 # from GROUNDING #1, the RAG/rules context `rag_flow_node`/`location_node` gather BEFORE
@@ -2706,7 +2706,7 @@ _UNSAFE_COMPLETION_CLAIM_PHRASES = ("has been filed", "has been registered", "ha
 # greeting/unclear/awaiting-confirmation/cancelled/creation-failed/...) must never carry one. This
 # generalizes the text-phrase check above (which only catches an unsafe CLAIM in the wording) into
 # a structural invariant over the actual typed fields the API response is built from (see
-# ask_janmitra_service.py's `_run()`, which reads `complaint_id`/`routed_to` straight off this
+# ask_sarthi_service.py's `_run()`, which reads `complaint_id`/`routed_to` straight off this
 # graph's final state, never inferring either from `response_text`) -- the two checks catch
 # different failure shapes: wording that lies vs. state that disagrees with itself.
 _ROUTED_TO_IMPLYING_COMPLAINT_CREATED = "COMPLAINT_CREATED"

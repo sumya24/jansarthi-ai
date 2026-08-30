@@ -11,7 +11,7 @@ NEVER:
     LangGraph  ->  LLM  ->  generated SQL  ->  DB
 
 Every query here is a fixed, reviewable statement -- no LLM ever constructs or influences a
-database operation in this codebase (see docs/ask_janmitra_service_flow.md's database-architecture
+database operation in this codebase (see docs/ask_sarthi_service_flow.md's database-architecture
 section for why this boundary matters and how it's enforced).
 
 Deliberately thin: this is NOT a generic ORM abstraction layer with speculative CRUD methods --
