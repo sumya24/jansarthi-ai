@@ -23,6 +23,7 @@ from backend.services.orchestration.graph import (
 from backend.services.orchestration.nodes import (
     GraphDeps,
     _recover_text_before_intent_ambiguous_turn,
+    agent_flow_node,
     input_processing_node,
     intent_node,
     language_node,
@@ -408,6 +409,205 @@ def test_rag_flow_node_translates_the_no_llm_fallback_answer_when_llm_answer_gen
     fake_store.assert_not_called()  # a degraded fallback answer must never be frozen into the cache
 
 
+# --- agent_flow_node -- the supervisor/multi-agent node for a genuinely multi-category question
+# (see docs/ask_janmitra_orchestration.md §17) -----------------------------------------------
+
+
+def test_agent_flow_node_calls_the_retriever_once_per_detected_category():
+    fake_retriever = Mock()
+    fake_retriever.retrieve = Mock(return_value=RetrievalOutcome(insufficient_knowledge=True, reason="none"))
+    deps = _minimal_graph_deps(retriever=fake_retriever)
+    config = {"configurable": {"deps": deps}}
+    state = {
+        "normalized_message": "There is garbage piling up and also a pothole on my street.",
+        "response_language": "en",
+    }
+
+    agent_flow_node(state, config)
+
+    assert fake_retriever.retrieve.call_count == 2
+    called_categories = {call.args[1] for call in fake_retriever.retrieve.call_args_list}
+    assert called_categories == {ServiceCategory.WASTE_SANITATION, ServiceCategory.ROADS_POTHOLES}
+
+
+def test_agent_flow_node_combines_per_category_answers_and_merges_sources():
+    waste_chunk = ScoredChunk(
+        chunk_id="w1", score=0.9,
+        metadata={
+            "content": "Garbage is collected every Tuesday and Friday.", "source_id": "WASTE_SRC",
+            "verification_status": "VERIFIED",
+        },
+    )
+    roads_chunk = ScoredChunk(
+        chunk_id="r1", score=0.85,
+        metadata={
+            "content": "Report potholes to the public works department.", "source_id": "ROADS_SRC",
+            "verification_status": "SYNTHETIC",
+        },
+    )
+
+    def fake_retrieve(query, category, city, state_):
+        if category == ServiceCategory.WASTE_SANITATION:
+            return RetrievalOutcome(results=[waste_chunk])
+        if category == ServiceCategory.ROADS_POTHOLES:
+            return RetrievalOutcome(results=[roads_chunk])
+        return RetrievalOutcome(insufficient_knowledge=True)
+
+    fake_retriever = Mock()
+    fake_retriever.retrieve = Mock(side_effect=fake_retrieve)
+    fake_answer_service = Mock()
+    fake_answer_service.generate = Mock(side_effect=lambda q, chunks, lang, context_labels=None: (chunks[0], True, None))
+    deps = _minimal_graph_deps(retriever=fake_retriever, answer_service=fake_answer_service)
+    config = {"configurable": {"deps": deps}}
+    state = {
+        "normalized_message": "There is garbage piling up and also a pothole on my street.",
+        "response_language": "en",
+    }
+
+    result = agent_flow_node(state, config)
+
+    assert result["routed_to"] == "RAG_MULTI_CATEGORY"
+    assert result["insufficient_knowledge"] is False
+    assert "Garbage is collected every Tuesday and Friday." in result["response_text"]
+    assert "Report potholes to the public works department." in result["response_text"]
+    source_ids = {s["source_id"] for s in result["sources"]}
+    assert source_ids == {"WASTE_SRC", "ROADS_SRC"}
+    assert result["verification_status"] == "MIXED"
+    # BUG FIX (code review): agent_flow_node was missing the same "Report Issue" in-app note
+    # rag_flow_node appends for a single-category answer -- a real, live quality gap between the
+    # two paths for what should be an equivalent citizen experience.
+    assert "Report Issue" in result["response_text"]
+
+
+def test_agent_flow_node_skips_the_report_issue_note_when_every_category_is_insufficient():
+    """Matches rag_flow_node's own gate -- nothing to "also report" if nothing was actually
+    answered at all."""
+    fake_retriever = Mock()
+    fake_retriever.retrieve = Mock(return_value=RetrievalOutcome(insufficient_knowledge=True, reason="none"))
+    deps = _minimal_graph_deps(retriever=fake_retriever)
+    config = {"configurable": {"deps": deps}}
+    state = {
+        "normalized_message": "There is garbage piling up and also a pothole on my street.",
+        "response_language": "en",
+    }
+
+    result = agent_flow_node(state, config)
+
+    assert "Report Issue" not in result["response_text"]
+
+
+def test_agent_flow_node_skips_the_report_issue_note_for_a_new_connection_question():
+    waste_chunk = ScoredChunk(
+        chunk_id="w1", score=0.9,
+        metadata={"content": "Garbage is collected every Tuesday.", "source_id": "WASTE_SRC", "verification_status": "VERIFIED"},
+    )
+    fake_retriever = Mock()
+    fake_retriever.retrieve = Mock(return_value=RetrievalOutcome(results=[waste_chunk]))
+    fake_answer_service = Mock()
+    fake_answer_service.generate = Mock(return_value=("Garbage is collected every Tuesday.", True, None))
+    deps = _minimal_graph_deps(retriever=fake_retriever, answer_service=fake_answer_service)
+    config = {"configurable": {"deps": deps}}
+    state = {
+        "normalized_message": "There is garbage piling up and also a pothole on my street.",
+        "response_language": "en",
+        "requests_new_connection": True,
+    }
+
+    result = agent_flow_node(state, config)
+
+    assert "Report Issue" not in result["response_text"]
+
+
+def test_agent_flow_node_is_only_insufficient_when_every_category_has_nothing():
+    fake_retriever = Mock()
+    fake_retriever.retrieve = Mock(return_value=RetrievalOutcome(insufficient_knowledge=True, reason="none"))
+    deps = _minimal_graph_deps(retriever=fake_retriever)
+    config = {"configurable": {"deps": deps}}
+    state = {
+        "normalized_message": "There is garbage piling up and also a pothole on my street.",
+        "response_language": "en",
+    }
+
+    result = agent_flow_node(state, config)
+
+    assert result["insufficient_knowledge"] is True
+    assert result["sources"] == []
+    # Still a real, honest per-category answer for each -- never silently empty.
+    assert "Waste Sanitation" in result["response_text"]
+    assert "Roads Potholes" in result["response_text"]
+
+
+def test_agent_flow_node_partial_coverage_is_not_treated_as_fully_insufficient():
+    """One category answered, one not -- a citizen who reported two issues and got one real
+    answer plus one honest 'don't have that' section still got real help."""
+    waste_chunk = ScoredChunk(
+        chunk_id="w1", score=0.9,
+        metadata={"content": "Garbage is collected every Tuesday.", "source_id": "WASTE_SRC", "verification_status": "VERIFIED"},
+    )
+
+    def fake_retrieve(query, category, city, state_):
+        if category == ServiceCategory.WASTE_SANITATION:
+            return RetrievalOutcome(results=[waste_chunk])
+        return RetrievalOutcome(insufficient_knowledge=True, reason="none")
+
+    fake_retriever = Mock()
+    fake_retriever.retrieve = Mock(side_effect=fake_retrieve)
+    fake_answer_service = Mock()
+    fake_answer_service.generate = Mock(return_value=("Garbage is collected every Tuesday.", True, None))
+    deps = _minimal_graph_deps(retriever=fake_retriever, answer_service=fake_answer_service)
+    config = {"configurable": {"deps": deps}}
+    state = {
+        "normalized_message": "There is garbage piling up and also a pothole on my street.",
+        "response_language": "en",
+    }
+
+    result = agent_flow_node(state, config)
+
+    assert result["insufficient_knowledge"] is False
+    assert len(result["sources"]) == 1
+
+
+def test_agent_flow_node_processes_categories_concurrently_not_sequentially():
+    """BUG FIX (code review, efficiency): each category's retrieve()+generate() pair used to run
+    one after another even though they're fully independent -- a 3-category question took
+    roughly 3x a single category's wall-clock time. Proves the fix with a REAL timing measurement
+    (not just call-count correctness, already covered by the other tests above): a message naming
+    3 categories, each with a fake generate() that sleeps 0.3s, must complete in well under
+    3 x 0.3s = 0.9s if the three are genuinely running concurrently."""
+    import time
+
+    chunk = ScoredChunk(
+        chunk_id="c1", score=0.9,
+        metadata={"content": "Some real content.", "source_id": "SRC", "verification_status": "VERIFIED"},
+    )
+    fake_retriever = Mock()
+    fake_retriever.retrieve = Mock(return_value=RetrievalOutcome(results=[chunk]))
+
+    def slow_generate(question, chunks, language, context_labels=None):
+        time.sleep(0.3)
+        return ("A real answer.", True, None)
+
+    fake_answer_service = Mock()
+    fake_answer_service.generate = Mock(side_effect=slow_generate)
+    deps = _minimal_graph_deps(retriever=fake_retriever, answer_service=fake_answer_service)
+    config = {"configurable": {"deps": deps}}
+    state = {
+        "normalized_message": "There is garbage piling up, a pothole on my street, and the streetlight is broken.",
+        "response_language": "en",
+    }
+
+    start = time.perf_counter()
+    result = agent_flow_node(state, config)
+    elapsed = time.perf_counter() - start
+
+    assert fake_answer_service.generate.call_count == 3
+    # Sequential would be >=0.9s; concurrent should land close to one slot (0.3s) plus overhead.
+    # A generous 0.7s ceiling comfortably distinguishes "ran concurrently" from "ran sequentially"
+    # without being flaky on a loaded CI machine.
+    assert elapsed < 0.7, f"expected concurrent execution (~0.3s), took {elapsed:.2f}s -- looks sequential"
+    assert result["routed_to"] == "RAG_MULTI_CATEGORY"
+
+
 def test_intent_node_wraps_existing_classifier():
     update = intent_node({"normalized_message": "I need a new electricity connection"}, config={})
     assert update["out_of_scope_service"] == "ELECTRICITY"
@@ -468,6 +668,42 @@ def test_route_after_location_type_b_with_location_goes_to_rag():
     assert _route_after_location(state) == "rag_flow"
 
 
+def test_route_after_location_multi_category_goes_to_agent_flow():
+    """See docs/ask_janmitra_orchestration.md §17 and nodes.py's agent_flow_node -- a genuinely
+    multi-category message (garbage AND a pothole named explicitly) routes to agent_flow instead
+    of the single-category rag_flow, once location is resolved."""
+    state = {
+        "intent": QuestionIntent.TYPE_B_SERVICE_INFO.value,
+        "location_city": "Mumbai", "location_state": "Maharashtra",
+        "normalized_message": "There is garbage piling up and also a pothole on my street.",
+    }
+    assert _route_after_location(state) == "agent_flow"
+
+
+def test_route_after_location_single_category_still_goes_to_rag_not_agent_flow():
+    """Regression guard: an ordinary single-category question (even one whose category also
+    happens to name a location-context word) must keep going to rag_flow, not agent_flow --
+    the multi-category gate is deliberately conservative (see detect_multiple_categories())."""
+    state = {
+        "intent": QuestionIntent.TYPE_B_SERVICE_INFO.value,
+        "location_city": "Mumbai", "location_state": "Maharashtra",
+        "normalized_message": "The street light on Main Road near my house is broken.",
+    }
+    assert _route_after_location(state) == "rag_flow"
+
+
+def test_route_after_location_type_a_complaint_never_goes_to_agent_flow_even_if_multi_category():
+    """A TYPE_A complaint always goes to complaint_flow first, regardless of how many categories
+    its text happens to name -- multi-issue complaint filing is a separate, unbuilt feature (see
+    agent_flow_node's own docstring), not something the multi-category gate silently starts doing."""
+    state = {
+        "intent": QuestionIntent.TYPE_A_COMPLAINT.value,
+        "location_city": "Mumbai", "location_state": "Maharashtra",
+        "normalized_message": "There is garbage piling up and also a pothole on my street.",
+    }
+    assert _route_after_location(state) == "complaint_flow"
+
+
 def test_route_after_complaint_needs_clarification():
     assert _route_after_complaint({"needs_clarification": True}) == "clarification_flow"
 
@@ -490,6 +726,10 @@ def test_graph_compiles_with_expected_nodes():
         # docstring/route_after_intent for the new GREETING branch this exhaustive set must stay
         # in sync with.
         "greeting_flow",
+        # Supervisor/multi-agent node (see docs/ask_janmitra_orchestration.md §17 and nodes.py's
+        # agent_flow_node) -- routed to from _route_after_location for a genuinely multi-category
+        # question, this exhaustive set must stay in sync with that addition too.
+        "agent_flow",
         "response_generation", "__end__",
     }
     assert nodes == expected

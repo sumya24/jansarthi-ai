@@ -1,6 +1,13 @@
 """Tests for backend/services/sarvam_client.py's synthesize_speech() -- the new text-to-speech
 method backing Ask Sarthi's voice assistant. Mocks the underlying SarvamAI SDK client, same
 convention as ComplaintAgent's tests mocking SarvamClient itself -- never a real network call.
+
+Also covers transcribe()/translate() (previously untested) and the retry/backoff behavior added
+to all three of transcribe/synthesize_speech/translate -- see sarvam_client.py's own
+_retry_sarvam_call docstring. Retry tests use a real (not mocked) tenacity wait -- the policy's
+own worst case (3 attempts, exponential backoff capped at 2s) adds at most a couple of real
+seconds per test, an acceptable trade-off for testing the actual configured behavior rather than
+a stubbed-out approximation of it.
 """
 
 import base64
@@ -26,6 +33,15 @@ def _client_with_fake_sdk(convert_return=None, convert_side_effect=None) -> Sarv
     else:
         fake_sdk.text_to_speech.convert.return_value = convert_return
     client._client = fake_sdk
+    return client
+
+
+def _bare_client_with_fake_sdk() -> SarvamClient:
+    """Same bypass-__init__ convention as _client_with_fake_sdk, without pre-wiring
+    text_to_speech.convert -- for transcribe()/translate() tests, which call different SDK
+    methods (speech_to_text.transcribe / text.translate)."""
+    client = SarvamClient.__new__(SarvamClient)
+    client._client = Mock()
     return client
 
 
@@ -84,6 +100,32 @@ def test_synthesize_speech_requires_configured_client():
 
     with pytest.raises(AIServiceError):
         client.synthesize_speech("Hello there.", "en-IN")
+
+
+def test_synthesize_speech_retries_a_transient_failure_then_succeeds():
+    """A network blip on the first attempt must not fail the call outright -- the retry policy
+    (see sarvam_client.py's _retry_sarvam_call) should give it a second try before this method's
+    own except-block ever sees a failure."""
+    fake_response = Mock(audios=["abc"])
+    client = _client_with_fake_sdk()
+    client._client.text_to_speech.convert.side_effect = [RuntimeError("transient network error"), fake_response]
+
+    audio = client.synthesize_speech("Hello there.", "en-IN")
+
+    assert audio == "abc"
+    assert client._client.text_to_speech.convert.call_count == 2
+
+
+def test_synthesize_speech_raises_ai_service_error_after_retries_exhausted():
+    """A failure on every attempt must still surface as AIServiceError, not tenacity's own
+    RetryError -- see _retry_sarvam_call's reraise=True."""
+    client = _client_with_fake_sdk(convert_side_effect=RuntimeError("network exploded"))
+
+    with pytest.raises(AIServiceError):
+        client.synthesize_speech("Hello there.", "en-IN")
+
+    # stop_after_attempt(3): the original call plus 2 retries, never more, never fewer.
+    assert client._client.text_to_speech.convert.call_count == 3
 
 
 # --- identify_language() -- backs the auto-detect-response-language fix (see
@@ -205,3 +247,154 @@ def test_synthesize_speech_long_propagates_a_failed_chunk():
     long_text = "First sentence. " * 30  # forces multiple chunks
     with pytest.raises(AIServiceError):
         client.synthesize_speech_long(long_text, "en-IN")
+
+
+# --- transcribe() -- previously had no test coverage in this file at all. ---
+
+
+def test_transcribe_returns_the_transcript_from_the_sdk():
+    client = _bare_client_with_fake_sdk()
+    client._client.speech_to_text.transcribe.return_value = Mock(transcript="pothole on the main road")
+
+    text = client.transcribe(b"fake-wav-bytes", "en-IN")
+
+    assert text == "pothole on the main road"
+    _, kwargs = client._client.speech_to_text.transcribe.call_args
+    assert kwargs["language_code"] == "en-IN"
+    assert kwargs["model"] == "saaras:v3"
+
+
+def test_transcribe_requires_configured_client():
+    client = SarvamClient.__new__(SarvamClient)
+    client._client = None
+
+    with pytest.raises(AIServiceError):
+        client.transcribe(b"fake-wav-bytes", "en-IN")
+
+
+def test_transcribe_raises_ai_service_error_on_sdk_failure():
+    client = _bare_client_with_fake_sdk()
+    client._client.speech_to_text.transcribe.side_effect = RuntimeError("network exploded")
+
+    with pytest.raises(AIServiceError):
+        client.transcribe(b"fake-wav-bytes", "en-IN")
+
+
+def test_transcribe_retries_a_transient_failure_then_succeeds():
+    client = _bare_client_with_fake_sdk()
+    client._client.speech_to_text.transcribe.side_effect = [
+        RuntimeError("transient network error"),
+        Mock(transcript="pothole on the main road"),
+    ]
+
+    text = client.transcribe(b"fake-wav-bytes", "en-IN")
+
+    assert text == "pothole on the main road"
+    assert client._client.speech_to_text.transcribe.call_count == 2
+
+
+def test_transcribe_raises_ai_service_error_after_retries_exhausted():
+    client = _bare_client_with_fake_sdk()
+    client._client.speech_to_text.transcribe.side_effect = RuntimeError("network exploded")
+
+    with pytest.raises(AIServiceError):
+        client.transcribe(b"fake-wav-bytes", "en-IN")
+
+    assert client._client.speech_to_text.transcribe.call_count == 3
+
+
+def test_transcribe_rewinds_the_audio_stream_before_each_retry_attempt():
+    """A failed first attempt must not leave the BytesIO's read cursor consumed for the retry --
+    see _call_transcribe's own seek(0) comment for the real bug this prevents (a silent
+    empty/truncated re-upload on retry instead of an actual retry)."""
+    client = _bare_client_with_fake_sdk()
+    positions_seen_at_call_time = []
+
+    def _fake_transcribe(file, **kwargs):
+        positions_seen_at_call_time.append(file.tell())
+        file.read()  # simulate the SDK consuming the stream while building the multipart upload
+        if len(positions_seen_at_call_time) == 1:
+            raise RuntimeError("transient network error")
+        return Mock(transcript="ok")
+
+    client._client.speech_to_text.transcribe.side_effect = _fake_transcribe
+
+    client.transcribe(b"fake-wav-bytes", "en-IN")
+
+    # Every attempt (including the retry) must have started reading from position 0.
+    assert positions_seen_at_call_time == [0, 0]
+
+
+# --- translate() -- previously had no test coverage in this file at all. ---
+
+
+def test_translate_returns_the_translated_text_from_the_sdk():
+    client = _bare_client_with_fake_sdk()
+    client._client.text.translate.return_value = Mock(translated_text="सड़क पर गड्ढा")
+
+    text = client.translate("pothole on the road", "en-IN", "hi-IN")
+
+    assert text == "सड़क पर गड्ढा"
+    _, kwargs = client._client.text.translate.call_args
+    assert kwargs["source_language_code"] == "en-IN"
+    assert kwargs["target_language_code"] == "hi-IN"
+    assert kwargs["model"] == "sarvam-translate:v1"
+
+
+def test_translate_returns_the_text_unchanged_when_source_and_target_match():
+    """Short-circuits before ever calling the SDK -- see translate()'s own docstring."""
+    client = _bare_client_with_fake_sdk()
+
+    text = client.translate("no-op", "en-IN", "en-IN")
+
+    assert text == "no-op"
+    client._client.text.translate.assert_not_called()
+
+
+def test_translate_uses_mayura_for_auto_source_detection():
+    client = _bare_client_with_fake_sdk()
+    client._client.text.translate.return_value = Mock(translated_text="ok")
+
+    client.translate("some text", "auto", "hi-IN")
+
+    _, kwargs = client._client.text.translate.call_args
+    assert kwargs["model"] == "mayura:v1"
+
+
+def test_translate_requires_configured_client():
+    client = SarvamClient.__new__(SarvamClient)
+    client._client = None
+
+    with pytest.raises(AIServiceError):
+        client.translate("some text", "en-IN", "hi-IN")
+
+
+def test_translate_raises_ai_service_error_on_sdk_failure():
+    client = _bare_client_with_fake_sdk()
+    client._client.text.translate.side_effect = RuntimeError("network exploded")
+
+    with pytest.raises(AIServiceError):
+        client.translate("some text", "en-IN", "hi-IN")
+
+
+def test_translate_retries_a_transient_failure_then_succeeds():
+    client = _bare_client_with_fake_sdk()
+    client._client.text.translate.side_effect = [
+        RuntimeError("transient network error"),
+        Mock(translated_text="सड़क पर गड्ढा"),
+    ]
+
+    text = client.translate("pothole on the road", "en-IN", "hi-IN")
+
+    assert text == "सड़क पर गड्ढा"
+    assert client._client.text.translate.call_count == 2
+
+
+def test_translate_raises_ai_service_error_after_retries_exhausted():
+    client = _bare_client_with_fake_sdk()
+    client._client.text.translate.side_effect = RuntimeError("network exploded")
+
+    with pytest.raises(AIServiceError):
+        client.translate("some text", "en-IN", "hi-IN")
+
+    assert client._client.text.translate.call_count == 3

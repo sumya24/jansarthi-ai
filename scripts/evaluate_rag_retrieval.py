@@ -51,7 +51,14 @@ def _build_new_retriever():
     load_s = time.perf_counter() - t0
     store = ChromaVectorStore(settings.CHROMA_PERSIST_DIR, settings.CHROMA_COLLECTION_NAME)
     store.load()
-    return RagRetriever(store, provider, top_k=5, relevance_threshold=settings.RAG_EMBEDDING_RELEVANCE_THRESHOLD), load_s
+    # BUG FIX (code review): hybrid search (BM25 keyword widening) is itself a scoring-methodology
+    # change, not a filtering one -- reading settings.RAG_HYBRID_SEARCH_ENABLED here (as the OTHER
+    # eval scripts now correctly do, to match live production behavior) would silently reintroduce
+    # exactly the confound this module's own docstring says it isolates against ("embedding/
+    # scoring quality, not filtering logic"). Explicitly disabled on BOTH retrievers below,
+    # deliberately NOT settings-driven, so this comparison stays embedding-vs-TF-IDF only,
+    # regardless of what production has hybrid search set to.
+    return RagRetriever(store, provider, top_k=5, relevance_threshold=settings.RAG_EMBEDDING_RELEVANCE_THRESHOLD, hybrid_search_enabled=False), load_s
 
 
 def _build_old_retriever():
@@ -69,7 +76,9 @@ def _build_old_retriever():
     store.load(settings.RAG_EMBEDDINGS_INDEX_PATH)
     load_s = time.perf_counter() - t0
     provider = TfidfEmbeddingProvider(idf=store.idf)
-    return RagRetriever(store, provider, top_k=5, relevance_threshold=settings.RAG_RELEVANCE_THRESHOLD), load_s
+    # See _build_new_retriever()'s own comment -- hybrid search explicitly OFF here too, for the
+    # same "isolate embedding quality, not scoring methodology" reason.
+    return RagRetriever(store, provider, top_k=5, relevance_threshold=settings.RAG_RELEVANCE_THRESHOLD, hybrid_search_enabled=False), load_s
 
 
 def _run_case(retriever, case: dict) -> dict:

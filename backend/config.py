@@ -194,6 +194,34 @@ class Settings:
     # threshold, which stays exactly as measured/justified above for everything else.
     RAG_VERIFIED_RELEVANCE_THRESHOLD: float = float(os.getenv("RAG_VERIFIED_RELEVANCE_THRESHOLD", "0.74"))
 
+    # Cross-encoder reranker (see backend/services/reranker.py's module docstring for the full
+    # bi-encoder-vs-cross-encoder reasoning) -- applied only to the small, already
+    # threshold-filtered candidate set RagRetriever.retrieve() already narrowed down to, never the
+    # full corpus, so the per-query cost stays small regardless of KB size. OFF by default, same
+    # "off unless explicitly configured" pattern as every other optional AI component in this file
+    # (LANGSMITH_TRACING, PHOENIX_TRACING, GEMINI_API_KEY, SENTRY_DSN): this project's own
+    # extensive existing RAG test suite (tests/test_ask_janmitra.py and siblings) was written and
+    # measured against the pre-existing heuristic-only rerank -- enabling a genuinely different
+    # ranking model by default would silently change already-verified retrieval behavior across
+    # that whole suite rather than layering on top of it, exactly the risk this project's own
+    # hybrid-search design (see rag_retriever.py) was deliberately built to avoid. Turn on
+    # deliberately, then re-verify retrieval quality, rather than as a side effect of upgrading.
+    RAG_RERANKER_ENABLED: bool = os.getenv("RAG_RERANKER_ENABLED", "false").strip().lower() == "true"
+
+    # Hybrid search (BM25 keyword widening -- see rag_retriever.py's module docstring for the
+    # "widen, never replace/fuse" design). ON by default, unlike RAG_RERANKER_ENABLED above -- a
+    # deliberately different default, not an inconsistency: hybrid search only ever ADDS a
+    # candidate that still has to clear the exact same real cosine-similarity threshold as
+    # everything else (never reorders/replaces an existing result the way the reranker does), so
+    # it doesn't carry the same "could silently change already-verified retrieval behavior" risk
+    # that kept the reranker off by default. Still a real env-var escape hatch (a code-review
+    # finding: unlike the reranker, this shipped with no way to disable it at all short of a code
+    # change) -- e.g. to rule it out as a cause during a latency investigation, or to roll back if
+    # the per-request BM25-index cost (see RagRetriever's own _bm25_cache) ever proves too costly
+    # for a given deployment's corpus size.
+    RAG_HYBRID_SEARCH_ENABLED: bool = os.getenv("RAG_HYBRID_SEARCH_ENABLED", "true").strip().lower() == "true"
+    RAG_RERANKER_MODEL_NAME: str = os.getenv("RAG_RERANKER_MODEL_NAME", "cross-encoder/ms-marco-MiniLM-L-6-v2")
+
     # Hardcoded identities (kept only for the legacy Streamlit frontends, which
     # predate real auth and are superseded by the React app + JWT login below)
     HARDCODED_CITIZEN_ID: str = "citizen_001"

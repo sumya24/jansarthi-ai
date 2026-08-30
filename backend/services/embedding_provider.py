@@ -134,6 +134,21 @@ def cosine_similarity(a: SparseVector, b: SparseVector) -> float:
     return sum(weight * larger.get(token, 0.0) for token, weight in smaller.items())
 
 
+def cosine_similarity_any(a: SparseVector | DenseVector, b: SparseVector | DenseVector) -> float:
+    """Same job as `cosine_similarity` above, but works for either vector representation this
+    codebase actually uses -- `SparseVector` (dict, TF-IDF) or `DenseVector` (list, sentence
+    embeddings) -- so callers that don't know (or care) which embedding provider is active, like
+    `RagRetriever`'s hybrid-search candidate scoring, can call one function regardless. Dense
+    vectors are already L2-normalized by both `embed`/`embed_query` implementations (see
+    `SentenceTransformerEmbeddingProvider`'s `normalize_embeddings=True`), so cosine similarity
+    reduces to a plain dot product there exactly as it does for the sparse case."""
+    if isinstance(a, dict) or isinstance(b, dict):
+        return cosine_similarity(a, b)  # type: ignore[arg-type]
+    if not a or not b:
+        return 0.0
+    return sum(x * y for x, y in zip(a, b))
+
+
 DenseVector = list[float]
 
 logger = logging.getLogger(__name__)

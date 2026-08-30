@@ -41,16 +41,20 @@ intent_classification  (wraps intent_classifier.classify())
                                                              v
                               +----------------------------------------------------------+
                               |  TYPE_A_COMPLAINT -----------------------> complaint_flow  |
-                              |  TYPE_B_SERVICE_INFO, location OK -------> rag_flow         |
                               |  TYPE_B_SERVICE_INFO, location missing --> clarification_flow|
+                              |  TYPE_B_SERVICE_INFO, >=2 categories ----> agent_flow      |
+                              |    (see nodes.py's agent_flow_node -- a genuinely multi-   |
+                              |    category question, e.g. a flooded street + a blocked   |
+                              |    drain + a broken streetlight in one message)           |
+                              |  TYPE_B_SERVICE_INFO, else --------------> rag_flow         |
                               +----------------------------------------------------------+
                                                              |
                              complaint_flow --(needs_clarification)--> clarification_flow
                              complaint_flow --(else)-------------------> response_generation
                                      |
                                      v
-   rag_flow / status_flow / clarification_flow / out_of_scope_flow / capabilities_flow /
-                        unclear_flow / complaint_flow
+   rag_flow / agent_flow / status_flow / clarification_flow / out_of_scope_flow /
+                  capabilities_flow / unclear_flow / complaint_flow
                                      |
                                      v
                             response_generation
@@ -78,11 +82,12 @@ from typing import Any
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
-from backend.services.intent_classifier import QuestionIntent
+from backend.services.intent_classifier import QuestionIntent, detect_multiple_categories
 from backend.services.observability import tracing
 from backend.services.orchestration.nodes import (
     GraphDeps,
     RequestContext,
+    agent_flow_node,
     capabilities_flow_node,
     clarification_flow_node,
     complaint_flow_node,
@@ -148,6 +153,17 @@ def _route_after_location(state: GraphState) -> str:
     # pre-graph AskJanMitraService applied before ever calling the retriever.
     if state.get("location_is_ambiguous") or (state.get("location_city") is None and state.get("location_state") is None):
         return "clarification_flow"
+    # Supervisor/multi-agent gate (see docs/ask_janmitra_orchestration.md §17 and nodes.py's
+    # agent_flow_node): a genuinely multi-category question (a flooded street, a blocked drain,
+    # AND a broken streetlight, all in one message) routes to agent_flow instead of the
+    # single-category rag_flow -- deterministic keyword detection decides this, same as every
+    # other routing function in this graph, never an LLM call. Checked only for TYPE_B (an
+    # information question) -- a TYPE_A complaint already went to complaint_flow above, which
+    # files exactly one complaint per turn by design; multi-issue complaint filing is a separate,
+    # unbuilt feature, not something this check silently starts doing.
+    normalized_message = state.get("normalized_message") or state.get("user_message", "")
+    if len(detect_multiple_categories(normalized_message)) >= 2:
+        return "agent_flow"
     return "rag_flow"
 
 
@@ -169,6 +185,7 @@ def build_graph() -> CompiledStateGraph:
     graph.add_node("location_resolution", location_node)
     graph.add_node("complaint_flow", complaint_flow_node)
     graph.add_node("rag_flow", rag_flow_node)
+    graph.add_node("agent_flow", agent_flow_node)
     graph.add_node("status_flow", status_flow_node)
     graph.add_node("clarification_flow", clarification_flow_node)
     graph.add_node("out_of_scope_flow", out_of_scope_flow_node)
@@ -201,7 +218,12 @@ def build_graph() -> CompiledStateGraph:
     graph.add_conditional_edges(
         "location_resolution",
         _route_after_location,
-        {"complaint_flow": "complaint_flow", "rag_flow": "rag_flow", "clarification_flow": "clarification_flow"},
+        {
+            "complaint_flow": "complaint_flow",
+            "rag_flow": "rag_flow",
+            "agent_flow": "agent_flow",
+            "clarification_flow": "clarification_flow",
+        },
     )
     graph.add_conditional_edges(
         "complaint_flow",
@@ -210,6 +232,7 @@ def build_graph() -> CompiledStateGraph:
     )
 
     graph.add_edge("rag_flow", "response_generation")
+    graph.add_edge("agent_flow", "response_generation")
     graph.add_edge("status_flow", "response_generation")
     graph.add_edge("clarification_flow", "response_generation")
     graph.add_edge("out_of_scope_flow", "response_generation")

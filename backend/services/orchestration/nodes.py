@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
 
@@ -57,6 +58,7 @@ from backend.services.intent_classifier import (
     QuestionIntent,
     _looks_like_question,
     classify,
+    detect_multiple_categories,
     is_explicit_cancellation,
     is_explicit_confirmation,
     is_explicit_location_change_request,
@@ -1356,6 +1358,173 @@ def rag_flow_node(state: GraphState, config: RunnableConfig) -> dict[str, Any]:
         "ai_cost_inr": token_usage.get("total_cost_inr") if token_usage else None,
         "ai_model_name": settings.LLM_MODEL if token_usage else None,
         "ai_total_tokens": token_usage.get("total_tokens") if token_usage else None,
+    }
+
+
+# ------------------------------------------------------------------
+# agent flow -- the supervisor/multi-agent node for a genuinely multi-category question (see
+# docs/ask_janmitra_orchestration.md §17 for the future-agent integration point this fills, and
+# intent_classifier.py's detect_multiple_categories() for the deterministic gate that routes here
+# instead of rag_flow -- see graph.py's _route_after_location).
+#
+# Deliberately NOT an autonomous/reasoning agent: no LLM decides which categories to query, how
+# many times, or in what order -- the category list is already decided (by
+# detect_multiple_categories(), before this node ever runs) via the same deterministic keyword
+# matching every other routing decision in this graph already uses (see graph.py §7's "no LLM
+# performs simple routing" discipline). What's genuinely new here is calling RagRetriever/
+# AnswerGenerationService more than once for a single request and combining the results into one
+# response -- not any new tool-selection capability. Deliberately simpler than rag_flow_node in
+# two ways, both documented rather than silently dropped: no RagAnswerCache integration (each
+# category's answer is a fresh generate() call every time) and no "new connection" post-filter
+# (out of scope for a genuinely multi-category message) -- both easy to add later if a real need
+# for them shows up here specifically.
+#
+# BUG FIX (code review, efficiency): each category's retrieve()+generate() pair is completely
+# independent of every other category's -- nothing in one iteration depends on a prior one's
+# result -- so running them one after another made a 3-category question take roughly 3x a
+# single-category question's wall-clock time (each category pays its own real Sarvam network
+# round-trip). Now run concurrently via a thread pool. This is NOT a new class of risk for this
+# codebase: FastAPI already serves multiple SIMULTANEOUS citizen requests by running this exact
+# same shared RagRetriever/AnswerGenerationService singletons concurrently across its own request
+# threadpool -- `_process_one_category()` below just does, within one request, the identical
+# concurrent-call shape this app's services already have to tolerate across requests every day.
+# ------------------------------------------------------------------
+
+
+def _process_one_category(
+    deps: GraphDeps,
+    text: str,
+    category: ServiceCategory,
+    location_city: str | None,
+    location_state: str | None,
+    language_name: str,
+    root: object | None,
+) -> dict[str, Any]:
+    """One category's full retrieve+generate step for `agent_flow_node`, factored out so it can
+    run on its own thread pool worker -- returns a plain, self-contained result dict (never
+    mutates anything shared with other categories), so the caller can safely run several of these
+    concurrently and merge the results afterward."""
+    category_span = tracing.start_child_run(
+        root, f"agent_rag_{category.value.lower()}", "retriever", inputs={"category": category.value},
+    )
+    outcome = deps.retriever.retrieve(text, category, location_city, location_state)
+    tracing.end_run(
+        category_span,
+        outputs={"result_count": len(outcome.results), "insufficient_knowledge": outcome.insufficient_knowledge},
+    )
+    category_label = category.value.replace("_", " ").title()
+    if outcome.insufficient_knowledge or not outcome.results:
+        return {
+            "section": f"**{category_label}**: I don't currently have reliable information for this.",
+            "sources": [], "was_llm_generated": False, "token_usage": None,
+        }
+
+    context_chunks = [r.metadata.get("content", "") for r in outcome.results]
+    context_labels = [chunk_context_label(r) for r in outcome.results]
+    answer_text, was_llm_generated, token_usage = deps.answer_service.generate(
+        text, context_chunks, language_name, context_labels
+    )
+    sources = [
+        {
+            "source_id": r.metadata.get("source_id"),
+            "source_title": r.metadata.get("source_title"),
+            "source_organization": r.metadata.get("source_organization"),
+            "source_url": r.metadata.get("source_url"),
+            "source_type": r.metadata.get("source_type"),
+            "verification_status": r.metadata.get("verification_status"),
+            "geographic_scope": r.metadata.get("geographic_scope"),
+        }
+        for r in outcome.results
+    ]
+    return {
+        "section": f"**{category_label}**: {answer_text}",
+        "sources": sources,
+        "was_llm_generated": was_llm_generated,
+        "token_usage": token_usage,
+    }
+
+
+def agent_flow_node(state: GraphState, config: RunnableConfig) -> dict[str, Any]:
+    deps = _deps(config)
+    root = _trace_root(config)
+    text = state.get("normalized_message") or state.get("user_message", "")
+    categories = detect_multiple_categories(text)
+    language_name = _LANGUAGE_NAMES.get(state.get("response_language") or "en", "English")
+    location_city = state.get("location_city")
+    location_state = state.get("location_state")
+
+    agent_span = tracing.start_child_run(
+        root, "agent_flow", "chain",
+        inputs={"query": tracing.redact_text(text), "categories": [c.value for c in categories]},
+    )
+
+    # ThreadPoolExecutor.map() preserves input order in its results -- sections/source-dedup below
+    # stay in the same deterministic category order as before, even though the work itself now
+    # runs concurrently. max_workers is capped at a small, fixed ceiling (not literally
+    # len(categories)) purely as a sane upper bound -- detect_multiple_categories() never returns
+    # more than a handful of categories in practice.
+    with ThreadPoolExecutor(max_workers=min(len(categories), 8) or 1) as executor:
+        results = list(executor.map(
+            lambda category: _process_one_category(
+                deps, text, category, location_city, location_state, language_name, root,
+            ),
+            categories,
+        ))
+
+    sections: list[str] = []
+    all_sources: list[dict[str, Any]] = []
+    seen_source_ids: set[str] = set()
+    any_llm_generated = False
+    any_cost_known = False
+    total_cost_inr = 0.0
+    total_tokens = 0
+
+    for result in results:
+        sections.append(result["section"])
+        any_llm_generated = any_llm_generated or result["was_llm_generated"]
+        token_usage = result["token_usage"]
+        if token_usage:
+            any_cost_known = True
+            total_cost_inr += token_usage.get("total_cost_inr") or 0.0
+            total_tokens += token_usage.get("total_tokens") or 0
+        for source in result["sources"]:
+            source_id = source["source_id"]
+            if source_id in seen_source_ids:
+                continue
+            seen_source_ids.add(source_id)
+            all_sources.append(source)
+
+    # Only "insufficient" if EVERY category came back with nothing usable -- a citizen who
+    # reported 3 issues and got 2 real answers plus one honest "don't have that" section still
+    # got real, useful help, unlike rag_flow_node's single-category all-or-nothing case.
+    insufficient_knowledge = not all_sources
+    statuses = {s["verification_status"] for s in all_sources}
+    overall_status = "MIXED" if len(statuses) > 1 else next(iter(statuses), None)
+
+    response_text = "\n\n".join(sections)
+    # BUG FIX (code review): this node was missing the same "Report Issue" in-app note
+    # rag_flow_node appends (see that node's own "PRODUCT GAP FIX" comment) -- a real, live
+    # inconsistency where a multi-category question got a lower-quality answer than the
+    # identical sub-question asked alone. Same two gates rag_flow_node uses: skipped for a "new
+    # connection" question (not a "problem" this app's Report Issue flow handles), and skipped
+    # when every category came back insufficient (nothing to "also report" if nothing was
+    # actually answered) -- appended once for the whole combined answer, not per-section.
+    if not state.get("requests_new_connection") and not insufficient_knowledge:
+        in_app_note = "You can also report this directly through JanSarthi AI using the \"Report Issue\" option."
+        response_text = f"{response_text}\n\n{_localize(in_app_note, state, config)}"
+
+    tracing.end_run(agent_span, outputs={"category_count": len(categories), "source_count": len(all_sources)})
+
+    return {
+        "response_text": response_text,
+        "sources": all_sources,
+        "verification_status": overall_status,
+        "routed_to": "RAG_MULTI_CATEGORY",
+        "insufficient_knowledge": insufficient_knowledge,
+        "answer_was_llm_generated": any_llm_generated,
+        "ai_cost_inr": total_cost_inr if any_cost_known else None,
+        "ai_model_name": settings.LLM_MODEL if any_cost_known else None,
+        "ai_total_tokens": total_tokens if any_cost_known else None,
     }
 
 

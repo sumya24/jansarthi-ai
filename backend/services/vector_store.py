@@ -99,6 +99,46 @@ class FlatVectorStore:
         scored.sort(key=lambda c: c.score, reverse=True)
         return scored[:top_k]
 
+    def get_candidates(self, metadata_filter: dict[str, str] | None = None) -> list[tuple[str, str, dict[str, Any], SparseVector]]:
+        """Returns every chunk matching metadata_filter (no ranking, no top_k cap) as
+        `(chunk_id, content, metadata, vector)` -- the full filtered candidate pool a caller
+        builds its own index over. Added for hybrid search (see rag_retriever.py's module
+        docstring): `RagRetriever` builds a BM25 keyword index from this pool, scoped to the exact
+        same metadata filter vector search already applied, so BM25 can surface an exact-keyword
+        match vector search's `top_k * 3` ANN window happened to miss -- without ever widening
+        *which* chunks are eligible in the first place.
+
+        Kept for interface-compatibility/tests (same "full pool" contract as ever) -- `RagRetriever`
+        itself no longer calls this on the hot path (see `get_candidate_texts()`/`get_embeddings()`
+        below, added after a code review flagged this method's per-request cost: it fetches every
+        chunk's embedding for the ENTIRE filtered pool up front, most of which never turn out to
+        be BM25 widening candidates at all)."""
+        texts = self.get_candidate_texts(metadata_filter)
+        if not texts:
+            return []
+        embeddings = self.get_embeddings([chunk_id for chunk_id, _, _ in texts])
+        return [(chunk_id, content, metadata, embeddings[chunk_id]) for chunk_id, content, metadata in texts]
+
+    def get_candidate_texts(self, metadata_filter: dict[str, str] | None = None) -> list[tuple[str, str, dict[str, Any]]]:
+        """Same filtered pool as `get_candidates()`, WITHOUT embeddings -- cheaper for a caller
+        (hybrid search's BM25 tokenization/scoring) that only needs chunk text up front, and only
+        needs a real vector for the small handful of chunks that actually turn out to be BM25
+        widening candidates (see `get_embeddings()` below)."""
+        return [
+            (chunk_id, metadata.get("content", ""), metadata)
+            for chunk_id, vector, metadata in self._vectors
+            if _matches(metadata, metadata_filter)
+        ]
+
+    def get_embeddings(self, chunk_ids: list[str]) -> dict[str, SparseVector]:
+        """Fetches real vectors for a SPECIFIC, small set of chunk ids -- the second half of the
+        `get_candidate_texts()` split above. Chunk ids not found are simply omitted from the
+        returned dict (never raises), matching `get_candidates()`'s own never-raise contract."""
+        if not chunk_ids:
+            return {}
+        wanted = set(chunk_ids)
+        return {chunk_id: vector for chunk_id, vector, _ in self._vectors if chunk_id in wanted}
+
 
 class ChromaVectorStore:
     """Persistent, on-disk vector database via ChromaDB (`chromadb.PersistentClient`) -- the
@@ -172,6 +212,19 @@ class ChromaVectorStore:
         cleaned = [{k: v for k, v in m.items() if v is not None} for m in metadatas]
         self._collection.upsert(ids=chunk_ids, embeddings=vectors, documents=documents, metadatas=cleaned)
 
+    @staticmethod
+    def _build_where(metadata_filter: dict[str, str] | None) -> dict[str, Any] | None:
+        """Translates this codebase's plain `{field: value}` filter dict into Chroma's `where`
+        clause syntax -- shared by `search()` and `get_candidates()` since both need the exact
+        same metadata filter applied, just via different Chroma query methods (see
+        `get_candidates()`'s docstring for why it can't just call `search()` internally)."""
+        if not metadata_filter:
+            return None
+        if len(metadata_filter) == 1:
+            (key, value), = metadata_filter.items()
+            return {key: {"$eq": value}}
+        return {"$and": [{key: {"$eq": value}} for key, value in metadata_filter.items()]}
+
     def search(
         self,
         query_vector: DenseVector,
@@ -183,13 +236,7 @@ class ChromaVectorStore:
         if self._collection.count() == 0:
             return []
 
-        where = None
-        if metadata_filter:
-            if len(metadata_filter) == 1:
-                (key, value), = metadata_filter.items()
-                where = {key: {"$eq": value}}
-            else:
-                where = {"$and": [{key: {"$eq": value}} for key, value in metadata_filter.items()]}
+        where = self._build_where(metadata_filter)
 
         # Chroma can return fewer than n_results if fewer chunks match `where` -- never an error,
         # just fewer candidates, exactly like FlatVectorStore's post-filter behavior.
@@ -220,3 +267,47 @@ class ChromaVectorStore:
             merged_metadata["content"] = document
             scored.append(ScoredChunk(chunk_id=chunk_id, score=score, metadata=merged_metadata))
         return scored
+
+    def get_candidates(self, metadata_filter: dict[str, str] | None = None) -> list[tuple[str, str, dict[str, Any], DenseVector]]:
+        """Same contract as `FlatVectorStore.get_candidates()` -- see that docstring. Uses
+        Chroma's `.get()` (a pure metadata-filtered fetch, no vector ranking at all), not
+        `.query()` (used by `search()` above, which always ranks by vector similarity) -- `.get()`
+        is the only way to retrieve the *entire* filtered pool rather than just a ranked top_k.
+
+        Kept for interface-compatibility/tests -- `RagRetriever` itself no longer calls this on
+        the hot path (see `get_candidate_texts()`/`get_embeddings()` below, added after a code
+        review flagged this method's real per-request cost: a `where`-filtered `.get()` that pulls
+        back every matching chunk's full embedding vector up front, unbounded by `top_k` and
+        regardless of whether BM25 ever actually needs most of them)."""
+        texts = self.get_candidate_texts(metadata_filter)
+        if not texts:
+            return []
+        embeddings = self.get_embeddings([chunk_id for chunk_id, _, _ in texts])
+        return [(chunk_id, content, metadata, embeddings[chunk_id]) for chunk_id, content, metadata in texts]
+
+    def get_candidate_texts(self, metadata_filter: dict[str, str] | None = None) -> list[tuple[str, str, dict[str, Any]]]:
+        """Same filtered pool as `get_candidates()`, WITHOUT embeddings -- a plain `.get()` with
+        `include=["documents","metadatas"]` only, skipping Chroma's (comparatively expensive)
+        embedding deserialization for chunks that will most likely never need a real vector at
+        all (see `get_embeddings()` below for fetching one, only for the few that do)."""
+        if self._collection is None:
+            self.load()
+        if self._collection.count() == 0:
+            return []
+
+        where = self._build_where(metadata_filter)
+        results = self._collection.get(where=where, include=["documents", "metadatas"])
+        return list(zip(results["ids"], results["documents"], results["metadatas"]))
+
+    def get_embeddings(self, chunk_ids: list[str]) -> dict[str, DenseVector]:
+        """Fetches real vectors for a SPECIFIC, small set of chunk ids -- the second half of the
+        `get_candidate_texts()` split above. A single, ids-scoped `.get()` call (Chroma's own
+        cheapest lookup shape -- an exact id match, no `where` filter evaluation needed at all),
+        not a second full-pool scan. Chunk ids not found are simply omitted from the returned
+        dict (never raises), matching `get_candidates()`'s own never-raise contract."""
+        if not chunk_ids:
+            return {}
+        if self._collection is None:
+            self.load()
+        results = self._collection.get(ids=chunk_ids, include=["embeddings"])
+        return {chunk_id: list(embedding) for chunk_id, embedding in zip(results["ids"], results["embeddings"])}

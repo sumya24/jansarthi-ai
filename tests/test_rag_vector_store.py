@@ -370,6 +370,112 @@ def test_synthetic_chunk_never_has_a_source_url_after_round_trip():
     assert all(r.metadata.get("source_url") is None for r in synthetic)
 
 
+# --- M: get_candidates() -- the full metadata-filtered pool hybrid search (rag_retriever.py)
+# builds a BM25 index over -----------------------------------------------------------------
+
+
+def test_get_candidates_returns_the_full_filtered_pool_not_a_ranked_top_k():
+    """Unlike search(), get_candidates() takes no top_k and does no vector ranking at all -- it
+    must return every chunk matching the filter, and its count must match what search() with a
+    generously large top_k already finds (i.e. nothing is silently missing)."""
+    store = _real_store()
+    provider = _get_shared_provider()
+    qv = provider.embed_query("street light not working")
+    metadata_filter = {"service_category": "STREETLIGHTS", "city": MOHALI}
+    ranked = store.search(qv, top_k=1000, metadata_filter=metadata_filter)
+    pool = store.get_candidates(metadata_filter)
+    assert len(pool) == len(ranked)
+    assert {chunk_id for chunk_id, _, _, _ in pool} == {r.chunk_id for r in ranked}
+
+
+def test_get_candidates_includes_content_and_a_real_embedding_per_chunk():
+    store = _real_store()
+    metadata_filter = {"service_category": "STREETLIGHTS", "city": MOHALI}
+    pool = store.get_candidates(metadata_filter)
+    assert len(pool) > 0
+    for chunk_id, content, metadata, vector in pool:
+        assert isinstance(chunk_id, str) and chunk_id
+        assert isinstance(content, str) and content
+        assert metadata["service_category"] == "STREETLIGHTS"
+        assert metadata["city"] == MOHALI
+        # A real dense sentence-embedding vector, not a placeholder -- non-trivial length, real floats.
+        assert len(vector) > 0
+        assert all(isinstance(x, float) for x in vector)
+
+
+def test_get_candidates_respects_the_same_filter_semantics_as_search_single_and_multi_key():
+    """Covers both of ChromaVectorStore's own where-clause branches (single-key vs. $and) --
+    get_candidates() must filter identically to search() in both shapes, not just the common one."""
+    store = _real_store()
+    single_key_pool = store.get_candidates({"service_category": "STREETLIGHTS"})
+    multi_key_pool = store.get_candidates({"service_category": "STREETLIGHTS", "city": MOHALI})
+    assert len(multi_key_pool) > 0
+    assert len(multi_key_pool) < len(single_key_pool)
+    assert all(metadata["city"] == MOHALI for _, _, metadata, _ in multi_key_pool)
+
+
+def test_get_candidates_on_empty_collection_returns_empty_not_a_crash():
+    tmp_dir = Path(tempfile.mkdtemp())
+    try:
+        store = ChromaVectorStore(tmp_dir, "empty_test_collection")
+        store.load()
+        assert store.get_candidates({"service_category": "STREETLIGHTS"}) == []
+        assert store.get_candidates(None) == []
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+# --- N: get_candidate_texts()/get_embeddings() -- the split introduced after a code review
+# flagged get_candidates()'s per-request cost (fetching every embedding in the filtered pool up
+# front, most of which a BM25 widening pass never actually needs) ---------------------------
+
+
+def test_get_candidate_texts_matches_get_candidates_minus_embeddings():
+    store = _real_store()
+    metadata_filter = {"service_category": "STREETLIGHTS", "city": MOHALI}
+    full = store.get_candidates(metadata_filter)
+    texts_only = store.get_candidate_texts(metadata_filter)
+    assert len(texts_only) == len(full)
+    assert {c[0] for c in texts_only} == {c[0] for c in full}
+    for chunk_id, content, metadata in texts_only:
+        assert isinstance(content, str) and content
+        assert metadata["service_category"] == "STREETLIGHTS"
+
+
+def test_get_embeddings_returns_real_vectors_for_requested_ids_only():
+    store = _real_store()
+    pool = store.get_candidate_texts({"service_category": "STREETLIGHTS", "city": MOHALI})
+    assert len(pool) >= 2
+    wanted_ids = [pool[0][0], pool[1][0]]
+    embeddings = store.get_embeddings(wanted_ids)
+    assert set(embeddings.keys()) == set(wanted_ids)
+    for vector in embeddings.values():
+        assert len(vector) == 384
+        assert all(isinstance(x, float) for x in vector)
+
+
+def test_get_embeddings_matches_get_candidates_own_vectors():
+    """The split must not silently change WHICH vector comes back for a given chunk -- fetching
+    it via the new targeted get_embeddings() must agree with the old all-at-once get_candidates()."""
+    store = _real_store()
+    metadata_filter = {"service_category": "STREETLIGHTS", "city": MOHALI}
+    full = store.get_candidates(metadata_filter)
+    chunk_id, _content, _metadata, expected_vector = full[0]
+    targeted = store.get_embeddings([chunk_id])
+    assert targeted[chunk_id] == pytest.approx(expected_vector, abs=1e-9)
+
+
+def test_get_embeddings_empty_id_list_returns_empty_without_a_crash():
+    store = _real_store()
+    assert store.get_embeddings([]) == {}
+
+
+def test_get_embeddings_unknown_id_is_simply_omitted_not_an_error():
+    store = _real_store()
+    result = store.get_embeddings(["this_chunk_id_does_not_exist_12345"])
+    assert result == {}
+
+
 def test_citation_fields_present_for_verified_chunk():
     store = _real_store()
     provider = _get_shared_provider()
