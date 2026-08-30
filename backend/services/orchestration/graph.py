@@ -63,13 +63,13 @@ intent_classification  (wraps intent_classifier.classify())
                                     END
 ```
 
-This graph REPLACES `AskJanMitraService`'s previous single-method if/else routing
+This graph REPLACES `AskSarthiService`'s previous single-method if/else routing
 (`_answer_knowledge_question`/`_answer_status_question`) with the same logic decomposed into
 LangGraph nodes -- every node calls an existing service (see `nodes.py`'s module docstring); no
-routing/business logic was duplicated to build this. `AskJanMitraService.ask()` (see
-`ask_janmitra_service.py`) is now a thin adapter: build the initial `GraphState`, invoke this
-compiled graph, translate the final state back into `AskJanMitraResponse` -- the public API
-contract is unchanged (see `docs/ask_janmitra_orchestration.md`).
+routing/business logic was duplicated to build this. `AskSarthiService.ask()` (see
+`ask_sarthi_service.py`) is now a thin adapter: build the initial `GraphState`, invoke this
+compiled graph, translate the final state back into `AskSarthiResponse` -- the public API
+contract is unchanged (see `docs/ask_sarthi_orchestration.md`).
 """
 
 from __future__ import annotations
@@ -150,10 +150,10 @@ def _route_after_location(state: GraphState) -> str:
         # already has both proceeds straight to creation without a wasted clarification hop.
         return "complaint_flow"
     # TYPE_B_SERVICE_INFO (RAG-answerable) -- gated by the same location-clarification check the
-    # pre-graph AskJanMitraService applied before ever calling the retriever.
+    # pre-graph AskSarthiService applied before ever calling the retriever.
     if state.get("location_is_ambiguous") or (state.get("location_city") is None and state.get("location_state") is None):
         return "clarification_flow"
-    # Supervisor/multi-agent gate (see docs/ask_janmitra_orchestration.md §17 and nodes.py's
+    # Supervisor/multi-agent gate (see docs/ask_sarthi_orchestration.md §17 and nodes.py's
     # agent_flow_node): a genuinely multi-category question (a flooded street, a blocked drain,
     # AND a broken streetlight, all in one message) routes to agent_flow instead of the
     # single-category rag_flow -- deterministic keyword detection decides this, same as every
@@ -175,7 +175,7 @@ def _route_after_complaint(state: GraphState) -> str:
 
 def build_graph() -> CompiledStateGraph:
     """Builds and compiles the graph once -- cheap (pure graph-structure construction, no model
-    loading or I/O), called once per `AskJanMitraService` instance and reused for every request,
+    loading or I/O), called once per `AskSarthiService` instance and reused for every request,
     exactly like that service already does for `RagRetriever`/`ChromaVectorStore`."""
     graph = StateGraph(GraphState)
 
@@ -245,10 +245,10 @@ def build_graph() -> CompiledStateGraph:
 
 
 def root_run_inputs_and_metadata(initial_state: GraphState, request_id: str) -> tuple[dict, dict]:
-    """Shared by `run_graph()`'s own root-run creation and `ask_janmitra_service.py`'s (for the
+    """Shared by `run_graph()`'s own root-run creation and `ask_sarthi_service.py`'s (for the
     image/voice entry points that need the root run to exist BEFORE the graph starts, so vision/
     STT/TTS can attach as real child spans under it -- see those methods and
-    docs/ask_janmitra_langsmith_observability.md §9.1's trace-structure diagrams)."""
+    docs/ask_sarthi_langsmith_observability.md §9.1's trace-structure diagrams)."""
     inputs = {
         "question": tracing.redact_text(initial_state.get("user_message")),
         "language": initial_state.get("original_language"),
@@ -258,7 +258,7 @@ def root_run_inputs_and_metadata(initial_state: GraphState, request_id: str) -> 
     metadata = {
         "request_id": request_id,
         # Categorical signals only -- never the raw image/caption itself (see
-        # docs/ask_janmitra_langsmith_observability.md's redaction policy).
+        # docs/ask_sarthi_langsmith_observability.md's redaction policy).
         "input_mode": initial_state.get("input_mode", "TEXT"),
         "has_image": bool(initial_state.get("has_image")),
         "vision_used": bool(initial_state.get("vision_used")),
@@ -272,7 +272,7 @@ def root_run_inputs_and_metadata(initial_state: GraphState, request_id: str) -> 
 
 
 def root_run_outputs(merged_state: GraphState, total_ms: float) -> dict:
-    """Shared by `run_graph()`'s own root-run end and `ask_janmitra_service.py`'s deferred one
+    """Shared by `run_graph()`'s own root-run end and `ask_sarthi_service.py`'s deferred one
     (`ask_voice()`, which keeps the root run open through its post-graph `text_to_speech` span --
     see `run_graph()`'s `root_run` parameter docstring)."""
     return {
@@ -318,7 +318,7 @@ def run_graph(
 
     `root_run`: normally `None`, in which case this function creates AND ends its own root run
     exactly as before (every existing caller/test keeps working unchanged). The image/voice entry
-    points (`ask_janmitra_service.py`'s `ask_with_image()`/`ask_voice()`) pass an
+    points (`ask_sarthi_service.py`'s `ask_with_image()`/`ask_voice()`) pass an
     already-started root run instead, so their own `vision_processing`/`speech_to_text`/
     `text_to_speech` child spans (created before/after this call) nest under the SAME trace as
     this graph's `rag_retrieval`/`complaint_creation` spans, not a separate one -- when `root_run`
@@ -330,7 +330,7 @@ def run_graph(
     if owns_root_run:
         inputs, metadata = root_run_inputs_and_metadata(initial_state, request_id)
         root_run = tracing.start_root_run(
-            "ask_janmitra_graph", run_id=trace_id, inputs=inputs, metadata=metadata, tags=["ask_janmitra"],
+            "ask_sarthi_graph", run_id=trace_id, inputs=inputs, metadata=metadata, tags=["ask_sarthi"],
         )
     config = {"configurable": {"deps": deps, "ctx": ctx, "trace_root": root_run}}
 
@@ -345,19 +345,19 @@ def run_graph(
                     continue
                 node_elapsed_ms = (time.perf_counter() - start) * 1000
                 logger.info(
-                    "ask_janmitra_graph request_id=%s node=%s fields_updated=%s elapsed_ms=%.1f",
+                    "ask_sarthi_graph request_id=%s node=%s fields_updated=%s elapsed_ms=%.1f",
                     request_id, node_name, list(update.keys()), node_elapsed_ms,
                 )
                 merged.update(update)
     except Exception as exc:
-        logger.exception("ask_janmitra_graph request_id=%s failed unexpectedly", request_id)
+        logger.exception("ask_sarthi_graph request_id=%s failed unexpectedly", request_id)
         if owns_root_run:
             tracing.end_run(root_run, error=str(exc))
         raise
 
     total_ms = (time.perf_counter() - start) * 1000
     logger.info(
-        "ask_janmitra_graph request_id=%s complete intent=%s routed_to=%s total_ms=%.1f",
+        "ask_sarthi_graph request_id=%s complete intent=%s routed_to=%s total_ms=%.1f",
         request_id, merged.get("intent"), merged.get("routed_to"), total_ms,
     )
     if owns_root_run:

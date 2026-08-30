@@ -4,7 +4,7 @@ One `GraphState` flows through every node (see `graph.py`). It is a `TypedDict` 
 model) because LangGraph's `StateGraph` natively merges partial dict returns from each node into
 the running state -- a Pydantic model would need an extra reducer step for no real benefit here,
 since nothing in this state needs field-level validation (each field is already validated at its
-*source* -- `AskJanMitraRequest`, `ClassificationResult`, `LocationResolution` -- before it's
+*source* -- `AskSarthiRequest`, `ClassificationResult`, `LocationResolution` -- before it's
 copied into the graph state as a plain value).
 
 `total=False`: every field is optional. A field simply isn't present until the node that
@@ -43,20 +43,20 @@ class GraphState(TypedDict, total=False):
     conversation_id: str | None
     conversation_history: list[ConversationTurnDict]
 
-    # --- image (optional; captioning happens upstream in ask_janmitra_service.py, same
+    # --- image (optional; captioning happens upstream in ask_sarthi_service.py, same
     #     precedent as input_type's STT-happens-upstream note above) ---
     has_image: bool  # an image was attached at all, regardless of whether captioning succeeded
     image_description: str | None  # VisionService's best-effort caption, or None
     # Set (by input_processing_node) whenever a photo was validated and saved to disk THIS turn
-    # (mirrors evidence_service.SavedFile field-for-field) -- flows into AskJanMitraResponse.
+    # (mirrors evidence_service.SavedFile field-for-field) -- flows into AskSarthiResponse.
     # photo_evidence for the frontend to echo back on the matching ConversationTurn, so a LATER
     # turn with no photo of its own can still recover and attach the SAME real file to a complaint
-    # (see nodes.py's `_recover_photo_evidence_from_history` and schemas/ask_janmitra.py's
+    # (see nodes.py's `_recover_photo_evidence_from_history` and schemas/ask_sarthi.py's
     # PhotoEvidenceRef for the full rationale).
     photo_evidence: dict[str, Any] | None
     # "TEXT" | "STT" | "IMAGE" | "IMAGE_STT" | "VOICE_ASSISTANT" | "IMAGE_VOICE_ASSISTANT" --
     # LangSmith metadata only (see graph.py's run_graph()), never read by routing/business logic.
-    # "STT"/"IMAGE_STT" distinguish Mic-1-produced text from typed text (AskJanMitraRequest.
+    # "STT"/"IMAGE_STT" distinguish Mic-1-produced text from typed text (AskSarthiRequest.
     # was_voice_input); "IMAGE_VOICE_ASSISTANT" is Mic 2 with an attached image.
     input_mode: str
     vision_used: bool  # == has_image; named separately so a LangSmith filter doesn't need to
@@ -64,7 +64,7 @@ class GraphState(TypedDict, total=False):
     tts_used: bool  # this request's mode will attempt TTS (VOICE_ASSISTANT/IMAGE_VOICE_ASSISTANT)
                      # -- whether synthesis actually SUCCEEDED is separately visible via
                      # AskVoiceResponse.audio_base64, not duplicated into tracing (see §7 of
-                     # docs/ask_janmitra_langsmith_observability.md)
+                     # docs/ask_sarthi_langsmith_observability.md)
 
     # --- classification (intent_node) ---
     intent: str  # QuestionIntent.value, e.g. "TYPE_A_COMPLAINT"

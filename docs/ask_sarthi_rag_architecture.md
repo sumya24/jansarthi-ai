@@ -151,7 +151,7 @@ that absence rather than inventing something to fill the gap.
 **A real bug found and fixed during this migration**: `ChromaVectorStore.search()` originally
 built its result metadata from Chroma's `metadatas` only, but chunk *text* is stored separately by
 Chroma as a `document`, not inside `metadatas` — so `metadata["content"]` (which
-`AskJanMitraService` reads to build LLM context) was silently missing on every real query. Fixed
+`AskSarthiService` reads to build LLM context) was silently missing on every real query. Fixed
 by merging the returned `document` into the result metadata under the `"content"` key in
 `vector_store.py`. Caught before it reached production by running an actual end-to-end query
 against the built collection, not just unit-testing each component in isolation.
@@ -351,11 +351,11 @@ category/city (the typical case here).
 
 ## 12. Citation generation — never from the LLM
 
-`AskJanMitraService._answer_knowledge_question()` builds every `Citation` directly from a
+`AskSarthiService._answer_knowledge_question()` builds every `Citation` directly from a
 retrieved chunk's Chroma metadata (`source_id`, `source_title`, `source_organization`,
 `source_url`, `source_type`, `verification_status`, `geographic_scope`) — the LLM is never asked
 to produce a source list, and its output is never parsed for one. The system prompt
-(`prompts/ask_janmitra_system_prompt.txt`) explicitly instructs it not to invent contacts, URLs,
+(`prompts/ask_sarthi_system_prompt.txt`) explicitly instructs it not to invent contacts, URLs,
 or department names. `source_url` is `None` (never a fabricated placeholder) for every SYNTHETIC
 citation — enforced at the schema level (§6) and confirmed end-to-end by
 `test_synthetic_chunk_never_has_a_source_url_after_round_trip` and
@@ -373,8 +373,8 @@ including explicit `None`s, since it's plain Python rather than Chroma's stricte
 ## 13. VERIFIED vs. SYNTHETIC — survives every stage
 
 `KnowledgeRecord` → `Document` → `Chunk` → Chroma metadata → `ScoredChunk` → `Citation` →
-`AskJanMitraResponse.sources[].verification_status` — every stage carries the field through
-explicitly; no stage infers or silently converts it. `AskJanMitraResponse.verification_status` is
+`AskSarthiResponse.sources[].verification_status` — every stage carries the field through
+explicitly; no stage infers or silently converts it. `AskSarthiResponse.verification_status` is
 `"VERIFIED"` only if every cited source is VERIFIED, `"SYNTHETIC"` only if every one is SYNTHETIC,
 `"MIXED"` if both appear, `null` if there are no sources at all. Verified end-to-end by
 `test_verified_citation_preserved`, `test_synthetic_disclosure`, and (at the vector-store layer,
@@ -423,7 +423,7 @@ See §1 for the headline numbers. Full detail (per-case scores for both engines)
 cases: exact-keyword, paraphrase, multilingual, cross-location, and off-topic-rejection — plus 2
 classifier-layer cases excluded from this specific comparison since they're resolved by
 `intent_classifier.py` before either retriever is ever called, and are already covered end-to-end
-by `tests/test_ask_janmitra.py`).
+by `tests/test_ask_sarthi.py`).
 
 **Measured retrieval time**: OLD (TF-IDF, warm) 0.46ms/query average; NEW (embeddings, warm)
 67.74ms/query average. The new path is genuinely slower per-query (a neural forward pass vs. a
@@ -460,7 +460,7 @@ passing):
   back as `None` via `.get()`, never a `KeyError`
   (`test_incomplete_metadata_chunk_does_not_crash_retrieval`).
 
-**A real, measured startup/latency issue found and fixed during validation**: `AskJanMitraService`'s
+**A real, measured startup/latency issue found and fixed during validation**: `AskSarthiService`'s
 embedding provider was originally fully lazy — the model loaded on the *first real request* after
 a backend restart, not at startup. Running the Playwright suite against a freshly-restarted
 backend caught this directly: the first live Ask Sarthi request paid the ~20-25s model-load cost
@@ -482,7 +482,7 @@ final report) — the previously-failing test passed consistently (24.5s, 27.2s)
 | Query embedding generation (warm) | ~part of the 67.74ms/query figure above |
 | ChromaDB query (with metadata filter, 504-chunk collection) | sub-millisecond to low-single-digit ms (included in the 67.74ms figure, which is dominated by the embedding forward pass, not the Chroma lookup) |
 | End-to-end retrieval (embed + filter + search + rerank), warm | ~68ms average |
-| Full `/ask-janmitra` request (retrieval + Sarvam LLM answer generation), warm, real backend | ~2-3s typical, dominated by the LLM call, not retrieval |
+| Full `/ask-sarthi` request (retrieval + Sarvam LLM answer generation), warm, real backend | ~2-3s typical, dominated by the LLM call, not retrieval |
 
 ## 16. The legacy TF-IDF path — isolated, not deleted
 
@@ -490,9 +490,9 @@ Per explicit instruction, the TF-IDF implementation was not removed. It remains 
 (`TfidfEmbeddingProvider` in `embedding_provider.py`, `FlatVectorStore` in `vector_store.py`,
 `python scripts/build_rag_embeddings.py --legacy-tfidf`) and is used exclusively for the
 before/after comparison in §1/§14 and `scripts/evaluate_rag_retrieval.py`. **It is not imported by
-any default-construction code path** — `AskJanMitraService`'s constructor defaults to
+any default-construction code path** — `AskSarthiService`'s constructor defaults to
 `ChromaVectorStore` + `SentenceTransformerEmbeddingProvider` unconditionally
-(`_load_default_store()`/`_load_default_embedding_provider()` in `ask_janmitra_service.py`);
+(`_load_default_store()`/`_load_default_embedding_provider()` in `ask_sarthi_service.py`);
 confirmed by grepping the codebase for every reference to `FlatVectorStore`/`TfidfEmbeddingProvider`
 outside of module docstrings, the legacy-build script path, and the comparison script — none exist
 in the production wiring. **There is exactly one production retrieval path: embeddings + ChromaDB.**
@@ -523,7 +523,7 @@ in the production wiring. **There is exactly one production retrieval path: embe
   available; noted as a real, not implemented, optimization opportunity.
 - **Intent classification remains keyword-based** (unchanged this phase) — real-world phrasing
   this project hasn't anticipated will not always match; see
-  [`docs/ask_janmitra_orchestration.md`](ask_janmitra_orchestration.md) for that component's
+  [`docs/ask_sarthi_orchestration.md`](ask_sarthi_orchestration.md) for that component's
   current, real routing behavior.
 
 ## 18. Future scalability
@@ -552,7 +552,7 @@ in the production wiring. **There is exactly one production retrieval path: embe
                            │
                            ▼
                      ASK SARTHI
-              (POST /ask-janmitra, backend/routes/ask_janmitra.py)
+              (POST /ask-sarthi, backend/routes/ask_sarthi.py)
                            │
                            ▼
                   INTENT CLASSIFIER
@@ -621,11 +621,11 @@ in the production wiring. **There is exactly one production retrieval path: embe
              \                    /
               \                  /
                ▼                ▼
-             AskJanMitraResponse
-          (backend/schemas/ask_janmitra.py)
+             AskSarthiResponse
+          (backend/schemas/ask_sarthi.py)
                        │
                        ▼
-         frontend-react/src/pages/AskJanMitra.tsx
+         frontend-react/src/pages/AskSarthi.tsx
 ```
 
 ## 20. How to rebuild the index / run tests
@@ -635,7 +635,7 @@ python scripts/build_rag_knowledge_base.py           # knowledge_records/ -> doc
 python scripts/build_rag_embeddings.py                # chunks.json -> ChromaDB (production path)
 python scripts/build_rag_embeddings.py --legacy-tfidf  # chunks.json -> embeddings/index.json (comparison only)
 python scripts/evaluate_rag_retrieval.py               # OLD vs NEW retrieval comparison (needs both indices built)
-python -m pytest tests/test_ask_janmitra.py tests/test_rag_vector_store.py -v -p no:cacheprovider
+python -m pytest tests/test_ask_sarthi.py tests/test_rag_vector_store.py -v -p no:cacheprovider
 ```
 
 ## 21. Configuration (env vars)

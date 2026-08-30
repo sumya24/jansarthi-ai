@@ -611,10 +611,10 @@ h1, h2, h3 { text-wrap: balance; margin: 0; }
 /* ============ Ask Sarthi: chat interface ============
    A continuous ChatGPT-style conversation (scrolling message log + a persistent bottom
    composer), not the earlier single-question-in/single-answer-card-out form this replaced.
-   Same real backend/mascot/Mic1/Mic2/image-attach as before -- see AskJanMitra.tsx's docstring;
+   Same real backend/mascot/Mic1/Mic2/image-attach as before -- see AskSarthi.tsx's docstring;
    this section only carries the new layout, not new behavior. */
 
-/* Standalone /citizen/ask route only (AskJanMitraWidget's own panel already manages its own
+/* Standalone /citizen/ask route only (AskSarthiWidget's own panel already manages its own
    height/scroll) -- gives .ask-chat-shell below a real viewport-relative height to fill, which
    is what keeps the composer anchored near the bottom instead of trailing off at the end of a
    tall page. `.ask-page.page` (two classes) deliberately outranks plain `.page`'s own padding
@@ -642,7 +642,7 @@ h1, h2, h3 { text-wrap: balance; margin: 0; }
 .ask-page.page { flex: 1; min-height: 0; min-width: 0; margin: 0; max-width: none; display: flex; flex-direction: column; padding-top: 18px; padding-bottom: 12px; }
 
 .ask-chat-shell { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
-/* Only rendered once there's a restored/live conversation to leave (see AskJanMitra.tsx's
+/* Only rendered once there's a restored/live conversation to leave (see AskSarthi.tsx's
    handleNewChat) -- an empty chat already offers a fresh start by definition, no button needed. */
 .ask-chat-topbar { flex-shrink: 0; display: flex; justify-content: flex-end; padding: 0 2px 6px; }
 .ask-chat-newchat-btn {
@@ -657,8 +657,8 @@ h1, h2, h3 { text-wrap: balance; margin: 0; }
 .ask-chat-empty { display: flex; flex-direction: column; align-items: center; text-align: center; margin: auto 0; padding: 40px 16px; }
 /* The upward nudge only makes sense against .ask-page-viewport's real 100dvh height (see its own
    comment above) -- it visually re-centers the block against that taller viewport once the
-   fixed-position composer's own height is accounted for. AskJanMitraWidget.tsx's panel never gets
-   that wrapper (its own comment: "AskJanMitraWidget's own panel already manages its own
+   fixed-position composer's own height is accounted for. AskSarthiWidget.tsx's panel never gets
+   that wrapper (its own comment: "AskSarthiWidget's own panel already manages its own
    height/scroll"), so this same nudge was shoving the mascot up past the scrollable panel's own
    top edge -- scroll position can't go negative to compensate, so the top of the mascot rendered
    clipped off-screen instead of just re-centered. Scoped to the standalone route only; the widget
@@ -674,7 +674,7 @@ h1, h2, h3 { text-wrap: balance; margin: 0; }
 .ask-page-viewport .ask-chat-empty { transform: translateY(max(-130px, -12vh)); }
 
 /* Crossfade wrapper for the welcome-screen mascot's idle<->greeting loop (WelcomeMascot in
-   AskJanMitra.tsx) -- the outgoing pose fades+settles out while the incoming one fades+eases in,
+   AskSarthi.tsx) -- the outgoing pose fades+settles out while the incoming one fades+eases in,
    instead of the <img src> hard-swapping instantly, which read as a slideshow, not an animation. */
 .ask-chat-welcome-mascot { position: relative; margin: 0 auto; }
 .ask-chat-welcome-mascot-layer { position: absolute; top: 0; left: 50%; transform: translateX(-50%); }
@@ -785,7 +785,7 @@ h1, h2, h3 { text-wrap: balance; margin: 0; }
 /* ============ Ask Sarthi: composer ============
    Anchored at the bottom of .ask-chat-shell's flex column (a normal last flex child, not
    position:fixed) -- works identically whether the shell is the full standalone page or embedded
-   in AskJanMitraWidget's slide-out panel, since both are already flex columns of their own. */
+   in AskSarthiWidget's slide-out panel, since both are already flex columns of their own. */
 .ask-chat-composer { flex-shrink: 0; padding-top: 8px; }
 /* The "+" attach panel reads as a clean menu row (icon + label, rounded hover highlight, no
    dashed dropzone border) here specifically -- scoped to this one spot rather than restyling

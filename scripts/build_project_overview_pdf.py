@@ -227,7 +227,7 @@ def architecture_diagram():
     d = Drawing(16.6 * cm, 8.6 * cm)
     W = 16.6 * cm
     _box(d, 0, 5.4 * cm, 4.2 * cm, 2.6 * cm, "Browser", ["React + TypeScript SPA", "Citizen / Worker / Admin", "views + Ask Sarthi chat UI"])
-    _box(d, 6.2 * cm, 5.4 * cm, 4.6 * cm, 2.6 * cm, "Caddy (GCP VM)", ["reverse proxy, auto HTTPS", "serves built React files", "/auth /admin /complaints", "/ask-janmitra /uploads"])
+    _box(d, 6.2 * cm, 5.4 * cm, 4.6 * cm, 2.6 * cm, "Caddy (GCP VM)", ["reverse proxy, auto HTTPS", "serves built React files", "/auth /admin /complaints", "/ask-sarthi /uploads"])
     _box(d, 6.2 * cm, 1.6 * cm, 4.6 * cm, 2.6 * cm, "FastAPI backend", ["LangGraph orchestration", "the only piece that", "touches the DB / vector", "store / uploads folder"])
     _box(d, 12.2 * cm, 6.5 * cm, 4.2 * cm, 1.6 * cm, "SQLite", ["jansarthi.db, 22 tables"])
     _box(d, 12.2 * cm, 4.5 * cm, 4.2 * cm, 1.6 * cm, "ChromaDB", ["RAG vector store"])
@@ -427,7 +427,7 @@ def build():
     story.append(h2("Backend (backend/) — highlights"))
     story.append(table([
         ["PIECE", "WHAT IT'S FOR"],
-        ["routes/ask_janmitra.py", "The Ask Sarthi endpoint — the entry point into the LangGraph orchestration"],
+        ["routes/ask_sarthi.py", "The Ask Sarthi endpoint — the entry point into the LangGraph orchestration"],
         ["services/orchestration/graph.py, nodes.py", "The 14-node LangGraph graph and every node's real logic"],
         ["services/rag_retriever.py, vector_store.py", "Embed → search → hybrid BM25 widen → threshold → rerank → tie-break"],
         ["services/guardrails.py", "Prompt-injection input/output scanning, shared by every flow"],
@@ -442,7 +442,7 @@ def build():
     story.append(h2("Frontend (frontend-react/src/) — highlights"))
     story.append(table([
         ["PIECE", "WHAT IT'S FOR"],
-        ["pages/AskJanMitra.tsx", "The actual Ask Sarthi chat UI — citizens' main way of using the app"],
+        ["pages/AskSarthi.tsx", "The actual Ask Sarthi chat UI — citizens' main way of using the app"],
         ["pages/{Citizen,Worker,Admin}Dashboard.tsx", "The three role-scoped dashboards"],
         ["pages/{Citizen,Worker,Admin}ComplaintDetail.tsx", "Full complaint detail, including the location breadcrumb and PDF report"],
         ["components/LocationPicker.tsx", "GPS or manual location capture, with a live reverse-geocoded preview"],

@@ -17,7 +17,7 @@ Two layers, both built on the same small hand-rolled limiter (`backend/services/
 |---|---|---|---|
 | Every route except `/health` | 120 | 60s | authenticated user id, else client IP (general baseline) |
 | `POST /auth/login` | 5 | 60s | client IP |
-| `POST /ask-janmitra`, `/ask-janmitra/image`, `/ask-janmitra/voice` | 10 (shared across all 3) | 60s | authenticated user id |
+| `POST /ask-sarthi`, `/ask-sarthi/image`, `/ask-sarthi/voice` | 10 (shared across all 3) | 60s | authenticated user id |
 
 `/health` is the only exemption -- must stay reachable for monitoring/deploy healthchecks
 regardless of load elsewhere.

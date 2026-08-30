@@ -22,7 +22,7 @@ test.beforeAll(() => {
 /** E2E coverage for the Admin AI Monitoring page against the REAL backend (GET
  * /admin/ai-monitoring + /admin/ai-monitoring/requests) — not a mock. Both endpoints are
  * sourced entirely from the app's own ai_request_logs table (see AdminAiMonitoring.tsx's
- * docstring and docs/ask_janmitra_langsmith_observability.md), so this test asserts on labeled
+ * docstring and docs/ask_sarthi_langsmith_observability.md), so this test asserts on labeled
  * structure and real, already-logged data from earlier tests in this suite — never on specific
  * counts, since those grow as the suite runs. */
 test("admin can view AI Monitoring: real request stats, breakdown, and a recent-requests table", async ({ page }) => {
@@ -57,8 +57,8 @@ test("admin can view AI Monitoring: real request stats, breakdown, and a recent-
 
   await expect(page.getByText("Recent requests", { exact: true })).toBeVisible();
 
-  // By the time this test runs, earlier specs in the suite (ask-janmitra.spec.ts etc.) have
-  // already made real /ask-janmitra calls, so there should be at least one logged row -- assert
+  // By the time this test runs, earlier specs in the suite (ask-sarthi.spec.ts etc.) have
+  // already made real /ask-sarthi calls, so there should be at least one logged row -- assert
   // the table's real structure, not a specific row count.
   const table = page.locator("table");
   await expect(table).toBeVisible();

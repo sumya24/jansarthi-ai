@@ -14,7 +14,7 @@ things per case:
      provider): for answerable cases only, is every factual claim in the generated answer
      actually supported by the retrieved context, or did the model add something not present in
      it? This is the check this project did NOT previously have -- see
-     docs/ask_janmitra_langsmith_observability.md's "Evaluators" section for why it matters (the
+     docs/ask_sarthi_langsmith_observability.md's "Evaluators" section for why it matters (the
      existing hallucination-prevention mechanisms are all upstream of generation -- retrieval
      filtering, prompt constraints, metadata-only citations -- nothing previously scored the
      generated text itself after the fact).
@@ -56,7 +56,7 @@ from backend.schemas.rag_knowledge import ServiceCategory
 from backend.services.intent_classifier import classify
 from backend.services.rag_retriever import chunk_context_label
 
-DATASET_NAME = "janmitra-ask-janmitra-rag-eval"
+DATASET_NAME = "janmitra-ask-sarthi-rag-eval"
 _LANGUAGE_NAMES = {"en": "English", "hi": "Hindi", "mr": "Marathi", "or": "Odia", "gu": "Gujarati", "bn": "Bengali"}
 
 _GROUNDEDNESS_JUDGE_PROMPT = """You are checking whether an AI-generated answer is fully supported by the context it was given.
@@ -79,16 +79,16 @@ def _load_dataset_cases() -> list[dict]:
 
 def _build_pipeline():
     """Builds the real, current production RAG components -- same construction as
-    AskJanMitraService's own defaults (see that class's _load_default_store()/
+    AskSarthiService's own defaults (see that class's _load_default_store()/
     _load_default_embedding_provider()), not a mock. Deliberately slow/one-time (embedding model
     + Chroma collection load) -- built once, reused for every case in the dataset.
 
     BUG FIX (code review): this used to omit `reranker=`/`hybrid_search_enabled=`, so toggling
     RAG_RERANKER_ENABLED/RAG_HYBRID_SEARCH_ENABLED in production silently stopped being reflected
-    here -- this script's own docstring claim of matching "AskJanMitraService's own defaults" is
+    here -- this script's own docstring claim of matching "AskSarthiService's own defaults" is
     only actually true once both are wired the same way."""
     from backend.services.answer_generation_service import AnswerGenerationService
-    from backend.services.ask_janmitra_service import AskJanMitraService
+    from backend.services.ask_sarthi_service import AskSarthiService
     from backend.services.embedding_provider import SentenceTransformerEmbeddingProvider
     from backend.services.rag_retriever import RagRetriever
     from backend.services.vector_store import ChromaVectorStore
@@ -101,7 +101,7 @@ def _build_pipeline():
         store, provider,
         top_k=settings.RAG_TOP_K,
         relevance_threshold=settings.RAG_EMBEDDING_RELEVANCE_THRESHOLD,
-        reranker=AskJanMitraService._load_default_reranker(),
+        reranker=AskSarthiService._load_default_reranker(),
         hybrid_search_enabled=settings.RAG_HYBRID_SEARCH_ENABLED,
     )
     answer_service = AnswerGenerationService()
@@ -229,7 +229,7 @@ def main() -> None:
         make_target(retriever, answer_service),
         data=dataset_name,
         evaluators=[retrieval_correctness, make_groundedness_evaluator(judge_client)],
-        experiment_prefix="ask-janmitra-rag",
+        experiment_prefix="ask-sarthi-rag",
         description="Retrieval correctness + answer groundedness over the RAG eval dataset (see scripts/langsmith_rag_evaluation.py).",
         max_concurrency=2,
     )

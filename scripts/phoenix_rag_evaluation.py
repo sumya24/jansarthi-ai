@@ -50,7 +50,7 @@ from backend.schemas.rag_knowledge import ServiceCategory
 from backend.services.intent_classifier import classify
 from backend.services.rag_retriever import chunk_context_label
 
-DATASET_NAME = "jansarthi-ask-janmitra-rag-eval"
+DATASET_NAME = "jansarthi-ask-sarthi-rag-eval"
 PHOENIX_BASE_URL = "http://localhost:6006"
 _LANGUAGE_NAMES = {"en": "English", "hi": "Hindi", "mr": "Marathi", "or": "Odia", "gu": "Gujarati", "bn": "Bengali"}
 
@@ -77,7 +77,7 @@ def _build_pipeline():
     scripts/langsmith_rag_evaluation.py's own `_build_pipeline()` docstring, identical here
     (including its `reranker=`/`hybrid_search_enabled=` code-review fix)."""
     from backend.services.answer_generation_service import AnswerGenerationService
-    from backend.services.ask_janmitra_service import AskJanMitraService
+    from backend.services.ask_sarthi_service import AskSarthiService
     from backend.services.embedding_provider import SentenceTransformerEmbeddingProvider
     from backend.services.rag_retriever import RagRetriever
     from backend.services.vector_store import ChromaVectorStore
@@ -90,7 +90,7 @@ def _build_pipeline():
         store, provider,
         top_k=settings.RAG_TOP_K,
         relevance_threshold=settings.RAG_EMBEDDING_RELEVANCE_THRESHOLD,
-        reranker=AskJanMitraService._load_default_reranker(),
+        reranker=AskSarthiService._load_default_reranker(),
         hybrid_search_enabled=settings.RAG_HYBRID_SEARCH_ENABLED,
     )
     answer_service = AnswerGenerationService()
@@ -209,7 +209,7 @@ def main() -> None:
         dataset=dataset,
         task=make_task(retriever, answer_service),
         evaluators=[retrieval_correctness, make_groundedness_evaluator(judge_client)],
-        experiment_name="ask-janmitra-rag",
+        experiment_name="ask-sarthi-rag",
         experiment_description="Retrieval correctness + answer groundedness over the RAG eval dataset (see scripts/phoenix_rag_evaluation.py).",
     )
 

@@ -6,13 +6,13 @@ import type { LangCode } from "./i18n";
  * (SpeechRecognition). This is deliberately NOT the Sarvam STT pipeline that
  * ReportIssue.tsx's voice recording uses (see useAudioRecorder.ts) -- that pipeline only exists
  * on the complaint-creation endpoint (POST /complaints accepts multipart `audio` segments,
- * transcribed server-side); POST /ask-janmitra has no audio field at all (see
- * backend/schemas/ask_janmitra.py), so there is no way to route chat speech through it.
+ * transcribed server-side); POST /ask-sarthi has no audio field at all (see
+ * backend/schemas/ask_sarthi.py), so there is no way to route chat speech through it.
  *
  * This hook instead runs recognition entirely client-side in the browser and produces a plain
  * text transcript, which the caller drops into the same editable text input used for typed
  * questions -- so from that point on it's just a normal (already-existing, already-real)
- * /ask-janmitra text request. No backend change, no new capability invented.
+ * /ask-sarthi text request. No backend change, no new capability invented.
  *
  * Not supported in every browser (notably Firefox) -- `supported` is checked once so the
  * caller can render nothing at all rather than a dead button.

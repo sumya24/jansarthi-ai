@@ -18,7 +18,7 @@ as an optional `context_labels` param and folds it into the LLM prompt only (nev
 citizen-facing fallback template -- see `_fallback_answer`).
 
 These tests are deterministic (real, checked-in Chroma index; no live Sarvam call -- matches this
-codebase's established pattern, see test_ask_janmitra.py's own module docstring). The actual live
+codebase's established pattern, see test_ask_sarthi.py's own module docstring). The actual live
 LLM grounding behavior (does the real model now decline instead of hallucinating) was verified
 manually against the real Sarvam API as part of this fix and is reported in the fix's own writeup,
 not re-run here on every CI run.
@@ -31,7 +31,7 @@ from backend.schemas.rag_knowledge import ServiceCategory
 from backend.services.answer_generation_service import AnswerGenerationService
 from backend.services.rag_retriever import RagRetriever, chunk_context_label
 from backend.services.vector_store import ScoredChunk
-from tests.test_ask_janmitra import _get_shared_chroma_deps
+from tests.test_ask_sarthi import _get_shared_chroma_deps
 
 
 def _retriever() -> RagRetriever:

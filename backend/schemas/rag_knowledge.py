@@ -220,7 +220,7 @@ class Document(BaseModel):
     any.
 
     service_category was added during the ChromaDB migration (see
-    docs/ask_janmitra_rag_architecture.md) so metadata filtering can do an exact match on this
+    docs/ask_sarthi_rag_architecture.md) so metadata filtering can do an exact match on this
     field directly, instead of the retriever inferring category from a `service_id` string-prefix
     convention (fragile, and unsupported by ChromaDB's `where` filter syntax, which has no
     string-prefix operator). Always present -- `KnowledgeRecord.service_category` is a required

@@ -25,7 +25,7 @@ jobs:
           pip install --index-url https://download.pytorch.org/whl/cpu torch==2.13.0
           pip install -r requirements.txt
 
-      # backend/routes/ask_janmitra.py builds its service at module import time, which reads
+      # backend/routes/ask_sarthi.py builds its service at module import time, which reads
       # data/rag_knowledge_base/chunks/chunks.json -- a generated file (from knowledge_records/,
       # see build_rag_knowledge_base.py's docstring) deliberately not committed to git, same as
       # backend/Dockerfile's production build already handles. Without this step, just importing
@@ -53,10 +53,10 @@ jobs:
       # "ModuleNotFoundError: No module named 'backend'" even though `backend/__init__.py`
       # exists, since there's no installed package or pytest.ini pythonpath config to cover it.
       #
-      # Expect exactly 1 skip here: test_ask_janmitra.py::test_low_relevance_results_are_rejected_tfidf
+      # Expect exactly 1 skip here: test_ask_sarthi.py::test_low_relevance_results_are_rejected_tfidf
       # self-skips because it needs the LEGACY TF-IDF index (data/rag_knowledge_base/embeddings/),
       # which only gets built by `build_rag_embeddings.py --legacy-tfidf` -- a comparison-only flag
-      # kept so the old-vs-new retrieval threshold comparison in docs/ask_janmitra_rag_architecture.md
+      # kept so the old-vs-new retrieval threshold comparison in docs/ask_sarthi_rag_architecture.md
       # stays reproducible, not part of the real ChromaDB retrieval path this CI job builds above.
       # If the skip count here ever changes, something else broke -- don't assume it's this one.
       #

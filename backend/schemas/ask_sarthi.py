@@ -1,7 +1,7 @@
-"""Request/response contracts for POST /ask-janmitra.
+"""Request/response contracts for POST /ask-sarthi.
 
 Field names/shapes deliberately mirror frontend-react/src/lib/ragTypes.ts's existing
-`SourceRecord`/`AskJanMitraResponse` interfaces (authored by a separate frontend session ahead of
+`SourceRecord`/`AskSarthiResponse` interfaces (authored by a separate frontend session ahead of
 this backend) wherever they overlap, so wiring the real API to that existing UI is closer to a
 drop-in than a remap — see that file's own docstring, which states the same intent in reverse.
 """
@@ -23,7 +23,7 @@ class PhotoEvidenceRef(BaseModel):
     requests -- expects the SAME photo to end up on the complaint, matching how the dedicated
     "Report an Issue" form behaves (single request, so this never came up there). This backend
     has no server-side session (see ConversationTurn's own docstring); the file itself IS already
-    saved (ask_janmitra_service.py's `_process_image()` writes it via the same
+    saved (ask_sarthi_service.py's `_process_image()` writes it via the same
     `evidence_service.validate_and_write()` every photo upload in this app uses, regardless of
     whether a complaint is ever created from that turn) -- what was missing was a way to
     RE-FIND that already-saved file on a later turn. This is that reference, round-tripped as
@@ -39,14 +39,14 @@ class PhotoEvidenceRef(BaseModel):
 class ConversationTurn(BaseModel):
     """One prior turn in a multi-turn Ask Sarthi exchange. The caller (frontend) resends the
     full history with each request — this API is stateless server-side (see
-    docs/ask_janmitra_rag_architecture.md's "why no server-side conversation store" note), which
+    docs/ask_sarthi_rag_architecture.md's "why no server-side conversation store" note), which
     keeps this phase's scope to the retrieval pipeline itself rather than also building session
     storage."""
 
     role: str  # "user" | "assistant"
     content: str
     # BUG FIX (live Marathi validation): optional, explicit echo of THIS turn's own
-    # AskJanMitraResponse.complaint_workflow_state (see that field's own docstring) when `role`
+    # AskSarthiResponse.complaint_workflow_state (see that field's own docstring) when `role`
     # is "assistant" -- lets the caller round-trip Sarthi's own complaint-flow state as DATA
     # instead of the backend having to re-derive "was the last turn a confirmation prompt?" by
     # pattern-matching `content`'s human-readable, LLM-translated text (see orchestration/
@@ -55,19 +55,19 @@ class ConversationTurn(BaseModel):
     # that only ever sent {role, content} keeps working exactly as before, via the same
     # marker-text fallback this field is meant to make unnecessary once adopted.
     complaint_workflow_state: str | None = None
-    # Explicit echo of THIS turn's own AskJanMitraResponse.photo_evidence (when `role` is
+    # Explicit echo of THIS turn's own AskSarthiResponse.photo_evidence (when `role` is
     # "assistant") -- see PhotoEvidenceRef's own docstring for the exact gap this closes.
     photo_evidence: PhotoEvidenceRef | None = None
 
 
-class AskJanMitraRequest(BaseModel):
+class AskSarthiRequest(BaseModel):
     question: str = Field(min_length=1)
     language: str = "en"
     latitude: float | None = None
     longitude: float | None = None
     # Explicit location the citizen typed/picked (e.g. via a "select city" clarification step) —
     # distinct from a location mentioned inline in `question`'s own text; checked first since
-    # it's the most deliberate signal (see ask_janmitra_service.py's location-resolution order).
+    # it's the most deliberate signal (see ask_sarthi_service.py's location-resolution order).
     location_text: str | None = None
     conversation_history: list[ConversationTurn] = Field(default_factory=list)
     # Client-generated id grouping every turn of one chat together -- purely a Phoenix/
@@ -105,7 +105,7 @@ class LocationInfo(BaseModel):
     ambiguous_candidates: list[str] = Field(default_factory=list)
 
 
-class AskJanMitraResponse(BaseModel):
+class AskSarthiResponse(BaseModel):
     answer: str
     intent: QuestionIntent
     service_category: str | None = None
@@ -160,9 +160,9 @@ class AskJanMitraResponse(BaseModel):
     photo_evidence: PhotoEvidenceRef | None = None
 
 
-class AskVoiceResponse(AskJanMitraResponse):
-    """Response for POST /ask-janmitra/voice (the voice-to-voice assistant) — everything
-    AskJanMitraResponse already has, plus the citizen's own transcribed speech (so the overlay
+class AskVoiceResponse(AskSarthiResponse):
+    """Response for POST /ask-sarthi/voice (the voice-to-voice assistant) — everything
+    AskSarthiResponse already has, plus the citizen's own transcribed speech (so the overlay
     can show a real "you said" transcript, not a guess) and the AI's spoken reply as real
     synthesized audio (see backend/services/sarvam_client.py's synthesize_speech()).
     `audio_base64` is None only when TTS itself failed (a real, honest failure, never faked) —

@@ -13,9 +13,9 @@ This README is a quick reference and setup guide. Full depth — written so it m
 | If you want to understand... | Read this |
 |---|---|
 | The big picture: what this app is, how its pieces fit together | **[`docs/PROJECT_OVERVIEW.md`](docs/PROJECT_OVERVIEW.md)** |
-| **Ask Sarthi**: the LangGraph agent, intent classification, stateless orchestration | **[`docs/ask_janmitra_orchestration.md`](docs/ask_janmitra_orchestration.md)** |
-| **RAG**: retrieval, embeddings, hybrid search, the cross-encoder reranker, VERIFIED/SYNTHETIC knowledge tiers | **[`docs/ask_janmitra_rag_architecture.md`](docs/ask_janmitra_rag_architecture.md)** |
-| How a citizen's message actually flows end to end, turn by turn | **[`docs/ask_janmitra_service_flow.md`](docs/ask_janmitra_service_flow.md)** |
+| **Ask Sarthi**: the LangGraph agent, intent classification, stateless orchestration | **[`docs/ask_sarthi_orchestration.md`](docs/ask_sarthi_orchestration.md)** |
+| **RAG**: retrieval, embeddings, hybrid search, the cross-encoder reranker, VERIFIED/SYNTHETIC knowledge tiers | **[`docs/ask_sarthi_rag_architecture.md`](docs/ask_sarthi_rag_architecture.md)** |
+| How a citizen's message actually flows end to end, turn by turn | **[`docs/ask_sarthi_service_flow.md`](docs/ask_sarthi_service_flow.md)** |
 | The backend: FastAPI, why it was chosen, how routes/services/models are layered | **[`docs/BACKEND.md`](docs/BACKEND.md)** |
 | The frontend: React, component structure, state management, routing | **[`docs/FRONTEND.md`](docs/FRONTEND.md)** |
 | The database: SQLAlchemy, the real 22-table schema, why SQLite (and its real limits) | **[`docs/DATABASE.md`](docs/DATABASE.md)** |
@@ -23,7 +23,7 @@ This README is a quick reference and setup guide. Full depth — written so it m
 | Rate limiting: the 4 independent sliding-window limiters | **[`docs/RATE_LIMITING.md`](docs/RATE_LIMITING.md)** |
 | The original complaint-filing AI pipeline (STT/normalize/translate/summarize) | **[`docs/AI_AGENT.md`](docs/AI_AGENT.md)** |
 | Testing strategy: pytest, mocking, Playwright end-to-end tests | **[`docs/TESTING.md`](docs/TESTING.md)** |
-| Tracing (LangSmith + Phoenix), real ₹ cost tracking, Admin AI Monitoring | **[`docs/ask_janmitra_langsmith_observability.md`](docs/ask_janmitra_langsmith_observability.md)** + **[`docs/OBSERVABILITY.md`](docs/OBSERVABILITY.md)** |
+| Tracing (LangSmith + Phoenix), real ₹ cost tracking, Admin AI Monitoring | **[`docs/ask_sarthi_langsmith_observability.md`](docs/ask_sarthi_langsmith_observability.md)** + **[`docs/OBSERVABILITY.md`](docs/OBSERVABILITY.md)** |
 | Error monitoring (Sentry): concepts, then technical reference | **[`docs/ERROR_MONITORING_GUIDE.md`](docs/ERROR_MONITORING_GUIDE.md)** + **[`docs/ERROR_MONITORING.md`](docs/ERROR_MONITORING.md)** |
 | Where LangChain is (and deliberately isn't) used, with the live evidence behind each call | **[`docs/LANGCHAIN_INTEGRATION.md`](docs/LANGCHAIN_INTEGRATION.md)** |
 | CI/CD: the two GitHub Actions workflows, job by job | **[`docs/CI_CD_GITHUB_ACTIONS.md`](docs/CI_CD_GITHUB_ACTIONS.md)** |
@@ -64,7 +64,7 @@ flowchart TB
     API -. traces .-> Obs
 ```
 
-Full diagrams + explanation: [`docs/ask_janmitra_orchestration.md`](docs/ask_janmitra_orchestration.md) (the agent graph), [`docs/ask_janmitra_rag_architecture.md`](docs/ask_janmitra_rag_architecture.md) (retrieval), [`docs/PROJECT_OVERVIEW.md`](docs/PROJECT_OVERVIEW.md) (everything else, including the complaint lifecycle).
+Full diagrams + explanation: [`docs/ask_sarthi_orchestration.md`](docs/ask_sarthi_orchestration.md) (the agent graph), [`docs/ask_sarthi_rag_architecture.md`](docs/ask_sarthi_rag_architecture.md) (retrieval), [`docs/PROJECT_OVERVIEW.md`](docs/PROJECT_OVERVIEW.md) (everything else, including the complaint lifecycle).
 
 ### How one message actually flows through Ask Sarthi
 
@@ -129,11 +129,11 @@ janmitra-ai/
 │   │   ├── complaints.py            # Full complaint lifecycle + PDF reports
 │   │   ├── locations.py             # State/City/Ward/Area cascade, GPS reverse-geocode
 │   │   ├── notifications.py         # Per-user notification feed
-│   │   └── ask_janmitra.py          # Ask Sarthi: text/image/voice entry points
+│   │   └── ask_sarthi.py          # Ask Sarthi: text/image/voice entry points
 │   └── services/
 │       ├── orchestration/           # graph.py, nodes.py, state.py — the LangGraph agent
 │       ├── observability/           # tracing.py — Phoenix/LangSmith spans
-│       ├── ask_janmitra_service.py  # Wires the graph together, guardrails at the edges
+│       ├── ask_sarthi_service.py  # Wires the graph together, guardrails at the edges
 │       ├── rag_retriever.py         # Vector + hybrid search, reranking
 │       ├── reranker.py              # Cross-encoder reranker
 │       ├── vector_store.py / embedding_provider.py
@@ -269,9 +269,9 @@ The real surface is large (40+ routes across 6 modules) — this is a representa
 | `POST` | `/auth/signup` | Anyone | Create a citizen account (requires OTP-verified email) |
 | `POST` | `/auth/login` | Anyone | Log in with phone or email + password |
 | `POST` | `/auth/refresh` | Anyone (valid refresh token) | Exchange a refresh token for a new access token |
-| `POST` | `/ask-janmitra` | Citizen | Ask Sarthi — text: file a complaint, ask a civic question, or check status |
-| `POST` | `/ask-janmitra/voice` | Citizen | Same, from a voice recording (chunked if long) |
-| `POST` | `/ask-janmitra/image` | Citizen | Same, with a photo attached |
+| `POST` | `/ask-sarthi` | Citizen | Ask Sarthi — text: file a complaint, ask a civic question, or check status |
+| `POST` | `/ask-sarthi/voice` | Citizen | Same, from a voice recording (chunked if long) |
+| `POST` | `/ask-sarthi/image` | Citizen | Same, with a photo attached |
 | `POST` | `/complaints` | Citizen | Create a complaint from the traditional form (typed/voice text + optional photo) |
 | `GET` | `/complaints?lang=hi` | Authenticated | List complaints visible to you, translated on read |
 | `POST` | `/complaints/{id}/accept` \| `/reject` \| `/resolve` | Worker | Accept, reject (reassigns), or resolve a complaint |
@@ -297,7 +297,7 @@ npx playwright test
 ## Known limitations
 
 - **No database migrations** — adding a column to an existing table needs a manual one-off script. See [`docs/PROJECT_OVERVIEW.md`](docs/PROJECT_OVERVIEW.md).
-- **AI steps have real, measured limits** — a 30-second-per-request cap on voice input (worked around via chunking), and prompt-injection guardrails are pattern-based (a real floor against known attack shapes, not a semantic guarantee). Full detail: [`docs/AI_AGENT.md`](docs/AI_AGENT.md), [`docs/ask_janmitra_rag_architecture.md`](docs/ask_janmitra_rag_architecture.md).
+- **AI steps have real, measured limits** — a 30-second-per-request cap on voice input (worked around via chunking), and prompt-injection guardrails are pattern-based (a real floor against known attack shapes, not a semantic guarantee). Full detail: [`docs/AI_AGENT.md`](docs/AI_AGENT.md), [`docs/ask_sarthi_rag_architecture.md`](docs/ask_sarthi_rag_architecture.md).
 - **Single-server deployment, brief downtime on deploy** — a deploy stops and restarts the backend container, a genuine few-second gap. True zero-downtime would need a second server or an orchestrator. See [`docs/DEPLOYMENT_GCP.md`](docs/DEPLOYMENT_GCP.md).
 
 ## License

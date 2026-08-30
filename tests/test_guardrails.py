@@ -1,6 +1,6 @@
 """Unit tests for backend/services/guardrails.py's prompt-injection checks -- pure pattern
-matching, no network calls, no LLM -- see integration coverage in test_ask_janmitra.py for how
-these checks are wired into AskJanMitraService._run()'s two chokepoints.
+matching, no network calls, no LLM -- see integration coverage in test_ask_sarthi.py for how
+these checks are wired into AskSarthiService._run()'s two chokepoints.
 """
 
 import pytest

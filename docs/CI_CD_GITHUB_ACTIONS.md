@@ -68,7 +68,7 @@ production VM is involved in CI at all.
    larger CUDA build, which GitHub's runners don't even have a GPU to use.
 2. **Build the RAG knowledge base** (`scripts/build_rag_knowledge_base.py`) — `chunks.json` is a
    generated file, deliberately not committed to git (same as the production Docker build).
-   `backend/routes/ask_janmitra.py` builds its service at **module import time**, and every test
+   `backend/routes/ask_sarthi.py` builds its service at **module import time**, and every test
    imports `backend.main` via `conftest.py` — without this step, the entire suite would fail with
    `FileNotFoundError` before a single test even runs, regardless of what that test is about.
 3. **Build the real ChromaDB index** (`scripts/build_rag_embeddings.py`) — populates the actual

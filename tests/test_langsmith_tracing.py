@@ -2,7 +2,7 @@
 initialization, PII redaction, and the non-blocking/fail-open guarantee (a LangSmith outage or
 misconfiguration must never raise out of any function in this module).
 
-See tests/test_ask_janmitra_tracing.py for tracing exercised through the real LangGraph/RAG
+See tests/test_ask_sarthi_tracing.py for tracing exercised through the real LangGraph/RAG
 pipeline, and tests/test_ai_monitoring.py for the Admin dashboard side (AiRequestLog).
 """
 
@@ -83,7 +83,7 @@ def test_is_enabled_false_when_langsmith_package_unavailable(monkeypatch):
 def test_start_root_run_returns_none_when_both_backends_disabled(monkeypatch):
     monkeypatch.setattr(settings, "LANGSMITH_TRACING", False)
     monkeypatch.setattr(settings, "PHOENIX_TRACING", False)
-    assert tracing.start_root_run("ask_janmitra_graph", inputs={"question": "hi"}) is None
+    assert tracing.start_root_run("ask_sarthi_graph", inputs={"question": "hi"}) is None
 
 
 def test_start_root_run_returns_phoenix_only_run_when_langsmith_disabled_but_phoenix_enabled(monkeypatch):
@@ -94,10 +94,10 @@ def test_start_root_run_returns_phoenix_only_run_when_langsmith_disabled_but_pho
     monkeypatch.setattr(settings, "PHOENIX_TRACING", True)
     monkeypatch.setattr(tracing, "_phoenix_register", Mock())
 
-    run = tracing.start_root_run("ask_janmitra_graph", inputs={"question": "hi"})
+    run = tracing.start_root_run("ask_sarthi_graph", inputs={"question": "hi"})
 
     assert isinstance(run, tracing._PhoenixOnlyRun)
-    assert run.name == "ask_janmitra_graph"
+    assert run.name == "ask_sarthi_graph"
 
 
 def test_start_root_run_posts_and_returns_run_when_enabled(monkeypatch):
@@ -105,12 +105,12 @@ def test_start_root_run_posts_and_returns_run_when_enabled(monkeypatch):
     run_id = uuid.uuid4()
 
     run = tracing.start_root_run(
-        "ask_janmitra_graph", run_id=run_id, inputs={"question": "hi"}, tags=["ask_janmitra"], metadata={"request_id": "abc"}
+        "ask_sarthi_graph", run_id=run_id, inputs={"question": "hi"}, tags=["ask_sarthi"], metadata={"request_id": "abc"}
     )
 
     assert run is not None
     assert run.id == run_id
-    assert run.name == "ask_janmitra_graph"
+    assert run.name == "ask_sarthi_graph"
     assert run.inputs == {"question": "hi"}
     fake_client.create_run.assert_called_once()  # the "run started" event was posted
 
@@ -121,7 +121,7 @@ def test_start_child_run_returns_none_when_parent_none():
 
 def test_start_child_run_nests_under_parent(monkeypatch):
     _enable(monkeypatch)
-    root = tracing.start_root_run("ask_janmitra_graph", inputs={})
+    root = tracing.start_root_run("ask_sarthi_graph", inputs={})
 
     child = tracing.start_child_run(root, "rag_retrieval", "retriever", inputs={"query": "x"})
 
@@ -137,7 +137,7 @@ def test_end_run_is_noop_when_run_none():
 
 def test_end_run_sets_outputs_and_sends_update(monkeypatch):
     fake_client = _enable(monkeypatch)
-    run = tracing.start_root_run("ask_janmitra_graph", inputs={})
+    run = tracing.start_root_run("ask_sarthi_graph", inputs={})
 
     tracing.end_run(run, outputs={"routed_to": "RAG"})
 
@@ -147,7 +147,7 @@ def test_end_run_sets_outputs_and_sends_update(monkeypatch):
 
 def test_end_run_records_error(monkeypatch):
     _enable(monkeypatch)
-    run = tracing.start_root_run("ask_janmitra_graph", inputs={})
+    run = tracing.start_root_run("ask_sarthi_graph", inputs={})
 
     tracing.end_run(run, error="AIServiceError")
 
@@ -163,7 +163,7 @@ def test_client_init_failure_is_swallowed_not_raised(monkeypatch):
     monkeypatch.setattr(settings, "PHOENIX_TRACING", False)
     monkeypatch.setattr(tracing, "_LangSmithClient", Mock(side_effect=RuntimeError("network unreachable")))
 
-    assert tracing.start_root_run("ask_janmitra_graph", inputs={}) is None
+    assert tracing.start_root_run("ask_sarthi_graph", inputs={}) is None
 
 
 def test_client_init_failure_is_cached_not_retried_every_call(monkeypatch):
@@ -185,7 +185,7 @@ def test_start_root_run_swallows_post_failure(monkeypatch):
     monkeypatch.setattr(settings, "PHOENIX_TRACING", False)
     fake_client.create_run.side_effect = RuntimeError("LangSmith API unreachable")
 
-    assert tracing.start_root_run("ask_janmitra_graph", inputs={}) is None
+    assert tracing.start_root_run("ask_sarthi_graph", inputs={}) is None
 
 
 def test_start_root_run_returns_phoenix_only_run_when_langsmith_post_fails_but_phoenix_enabled(monkeypatch):
@@ -196,7 +196,7 @@ def test_start_root_run_returns_phoenix_only_run_when_langsmith_post_fails_but_p
     monkeypatch.setattr(tracing, "_phoenix_register", Mock())
     fake_client.create_run.side_effect = RuntimeError("LangSmith API unreachable")
 
-    run = tracing.start_root_run("ask_janmitra_graph", inputs={})
+    run = tracing.start_root_run("ask_sarthi_graph", inputs={})
 
     assert isinstance(run, tracing._PhoenixOnlyRun)
 
@@ -204,7 +204,7 @@ def test_start_root_run_returns_phoenix_only_run_when_langsmith_post_fails_but_p
 def test_start_child_run_swallows_post_failure(monkeypatch):
     fake_client = _enable(monkeypatch)
     monkeypatch.setattr(settings, "PHOENIX_TRACING", False)
-    root = tracing.start_root_run("ask_janmitra_graph", inputs={})
+    root = tracing.start_root_run("ask_sarthi_graph", inputs={})
     fake_client.create_run.side_effect = RuntimeError("LangSmith API unreachable")
 
     assert tracing.start_child_run(root, "rag_retrieval", "retriever") is None
@@ -212,7 +212,7 @@ def test_start_child_run_swallows_post_failure(monkeypatch):
 
 def test_end_run_swallows_update_failure(monkeypatch):
     fake_client = _enable(monkeypatch)
-    run = tracing.start_root_run("ask_janmitra_graph", inputs={})
+    run = tracing.start_root_run("ask_sarthi_graph", inputs={})
     fake_client.update_run.side_effect = RuntimeError("LangSmith API unreachable")
 
     tracing.end_run(run, outputs={"a": 1})  # must not raise despite update_run failing

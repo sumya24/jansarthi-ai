@@ -2,13 +2,13 @@
 
 *Written for someone who wants to actually understand this, not just skim it — including "why did you build it this way" answers you could give in an interview.*
 
-> Part of the JanSarthi AI documentation set. See [`README.md`](../README.md) for the full index of every document. This doc pulls together and expands on the LangChain-specific evaluation already recorded in [`docs/ask_janmitra_service_flow.md`](ask_janmitra_service_flow.md) §2–4 — that doc covers the full service-flow phase; this one is just the LangChain question, in depth, on its own.
+> Part of the JanSarthi AI documentation set. See [`README.md`](../README.md) for the full index of every document. This doc pulls together and expands on the LangChain-specific evaluation already recorded in [`docs/ask_sarthi_service_flow.md`](ask_sarthi_service_flow.md) §2–4 — that doc covers the full service-flow phase; this one is just the LangChain question, in depth, on its own.
 
 ---
 
 ## 1. LangChain vs. LangGraph — two different things, easy to conflate
 
-**LangGraph** (see [`docs/ask_janmitra_orchestration.md`](ask_janmitra_orchestration.md)) is the
+**LangGraph** (see [`docs/ask_sarthi_orchestration.md`](ask_sarthi_orchestration.md)) is the
 graph/state-machine framework Ask Sarthi's entire conversation flow is built on — 14 real nodes,
 conditional-edge routing, one shared response node. This is used extensively and is not optional;
 it *is* the orchestration layer.
@@ -42,7 +42,7 @@ flowchart TD
 ## 3. RAG flow — evaluated candidate by candidate, none adopted
 
 The RAG flow (retrieval + grounded answer generation, see
-[`docs/ask_janmitra_rag_architecture.md`](ask_janmitra_rag_architecture.md)) has five places
+[`docs/ask_sarthi_rag_architecture.md`](ask_sarthi_rag_architecture.md)) has five places
 LangChain plausibly could have slotted in. Each was evaluated against what already exists, not
 dismissed on principle:
 
@@ -108,7 +108,7 @@ it doesn't yet, for this specific use.
 ## 5. Status / Location / Clarification flows — LangChain intentionally never considered a fit
 
 - **Status lookup** is a plain, deterministic database query (via the repository layer — see
-  [`docs/ask_janmitra_service_flow.md`](ask_janmitra_service_flow.md) §6).
+  [`docs/ask_sarthi_service_flow.md`](ask_sarthi_service_flow.md) §6).
 - **Location resolution** is deterministic gazetteer/hierarchy matching — no distance or geocoding
   calculation an LLM should ever be trusted to compute.
 - **Clarification** is plain state-driven templated text, not free-form generation.
@@ -150,6 +150,6 @@ from Chroma's own metadata on the retrieved chunks. See §3's "Structured output
 
 ---
 
-*Related reading: [`docs/ask_janmitra_service_flow.md`](ask_janmitra_service_flow.md),
-[`docs/ask_janmitra_orchestration.md`](ask_janmitra_orchestration.md),
-[`docs/ask_janmitra_rag_architecture.md`](ask_janmitra_rag_architecture.md).*
+*Related reading: [`docs/ask_sarthi_service_flow.md`](ask_sarthi_service_flow.md),
+[`docs/ask_sarthi_orchestration.md`](ask_sarthi_orchestration.md),
+[`docs/ask_sarthi_rag_architecture.md`](ask_sarthi_rag_architecture.md).*

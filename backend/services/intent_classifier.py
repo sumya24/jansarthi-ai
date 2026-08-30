@@ -8,17 +8,17 @@ intent routing is exactly the kind of decision that should be fast, free, determ
 directly unit-testable without a network call or nondeterministic model output (see §46 of the
 implementation spec: "correctness, testability, clarity, replaceability -- not framework/API-call
 count"). The LLM is reserved for what it's actually needed for: turning retrieved knowledge into
-natural-language prose (see ask_janmitra_service.py's answer-generation step).
+natural-language prose (see ask_sarthi_service.py's answer-generation step).
 
 Honest limitation: this is keyword matching, not true NLU. It will misclassify phrasings that
 don't share vocabulary with its keyword lists — measured accuracy against this project's own
-labeled test question files is reported in docs/ask_janmitra_rag_architecture.md, not asserted
+labeled test question files is reported in docs/ask_sarthi_rag_architecture.md, not asserted
 here as some claimed percentage.
 
 TYPE_C (status/tracking) is checked FIRST and takes priority over everything else — misrouting a
 personal-status question into RAG (which has no way to know about any specific citizen's
 complaint) is the single most important thing this classifier must never do (see the module's
-test coverage in tests/test_ask_janmitra.py).
+test coverage in tests/test_ask_sarthi.py).
 """
 
 from __future__ import annotations
@@ -196,7 +196,7 @@ _SERVICE_INFO_KEYWORDS: dict[str, list[str]] = {
            # declared `language`, see _any_match below), so these entries work for romanized input
            # without any other change. Deliberately phrases, not single generic words (e.g. not a
            # bare "chahiye", which means "want/need" and would false-positive on unrelated
-           # complaint sentences) -- see tests/test_ask_janmitra.py's Hinglish regression tests for
+           # complaint sentences) -- see tests/test_ask_sarthi.py's Hinglish regression tests for
            # the non-overfitting checks (paraphrases beyond the exact four example sentences, and a
            # confirmation that a plain complaint sentence is unaffected).
            "naya water connection", "nayi water connection", "naya pipeline connection",
@@ -526,7 +526,7 @@ _OUT_OF_SCOPE_KEYWORDS: dict[str, list[str]] = {
 # connection"/"new sewer(age) connection" specifically, because this knowledge base had zero
 # new-connection-application records in any city -- routing those phrases to RAG would have let
 # the retriever return an unrelated water-LEAK-repair chunk as if it answered a new-connection
-# question (a real, measured false positive; see docs/ask_janmitra_rag_architecture.md's
+# question (a real, measured false positive; see docs/ask_sarthi_rag_architecture.md's
 # evaluation section for the before/after numbers).
 #
 # That's no longer true for water/sewerage specifically: the KB-expansion phase added real,
@@ -1047,7 +1047,7 @@ def classify(question: str) -> ClassificationResult:
 
 
 # --- Multi-category detection (see orchestration/nodes.py's agent_flow_node, and
-# docs/ask_janmitra_orchestration.md §17 for the future-agent integration point this fills) ------
+# docs/ask_sarthi_orchestration.md §17 for the future-agent integration point this fills) ------
 #
 # `classify()` above deliberately picks exactly ONE category per message ("first match wins" --
 # see `_CATEGORY_KEYWORDS`'s own top comment) because most real messages genuinely name one issue,

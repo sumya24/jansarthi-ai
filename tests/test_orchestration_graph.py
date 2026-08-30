@@ -1,17 +1,17 @@
 """Tests for the LangGraph orchestration layer itself (backend/services/orchestration/) --
 node-level unit tests and routing-function unit tests that don't need the full HTTP/RAG stack,
 plus the multi-turn clarification scenario from the spec's own worked example. End-to-end
-routing/RAG/complaint-creation behavior through the real `/ask-janmitra` endpoint is covered by
-tests/test_ask_janmitra.py; this file focuses on the graph's own structure and state handling.
+routing/RAG/complaint-creation behavior through the real `/ask-sarthi` endpoint is covered by
+tests/test_ask_sarthi.py; this file focuses on the graph's own structure and state handling.
 """
 
 from __future__ import annotations
 
 from unittest.mock import Mock, patch
 
-import backend.routes.ask_janmitra as ask_janmitra_module
+import backend.routes.ask_sarthi as ask_sarthi_module
 from backend.models import Complaint
-from backend.schemas.ask_janmitra import ConversationTurn
+from backend.schemas.ask_sarthi import ConversationTurn
 from backend.schemas.rag_knowledge import ServiceCategory
 from backend.services.intent_classifier import QuestionIntent
 from backend.services.orchestration.graph import (
@@ -31,7 +31,7 @@ from backend.services.orchestration.nodes import (
 )
 from backend.services.rag_retriever import RetrievalOutcome
 from backend.services.vector_store import ScoredChunk
-from tests.test_ask_janmitra import _ask, _install_real_service, _real_ask_janmitra_service
+from tests.test_ask_sarthi import _ask, _install_real_service, _real_ask_sarthi_service
 
 
 def _minimal_graph_deps(**overrides) -> GraphDeps:
@@ -410,7 +410,7 @@ def test_rag_flow_node_translates_the_no_llm_fallback_answer_when_llm_answer_gen
 
 
 # --- agent_flow_node -- the supervisor/multi-agent node for a genuinely multi-category question
-# (see docs/ask_janmitra_orchestration.md §17) -----------------------------------------------
+# (see docs/ask_sarthi_orchestration.md §17) -----------------------------------------------
 
 
 def test_agent_flow_node_calls_the_retriever_once_per_detected_category():
@@ -669,7 +669,7 @@ def test_route_after_location_type_b_with_location_goes_to_rag():
 
 
 def test_route_after_location_multi_category_goes_to_agent_flow():
-    """See docs/ask_janmitra_orchestration.md §17 and nodes.py's agent_flow_node -- a genuinely
+    """See docs/ask_sarthi_orchestration.md §17 and nodes.py's agent_flow_node -- a genuinely
     multi-category message (garbage AND a pothole named explicitly) routes to agent_flow instead
     of the single-category rag_flow, once location is resolved."""
     state = {
@@ -726,7 +726,7 @@ def test_graph_compiles_with_expected_nodes():
         # docstring/route_after_intent for the new GREETING branch this exhaustive set must stay
         # in sync with.
         "greeting_flow",
-        # Supervisor/multi-agent node (see docs/ask_janmitra_orchestration.md §17 and nodes.py's
+        # Supervisor/multi-agent node (see docs/ask_sarthi_orchestration.md §17 and nodes.py's
         # agent_flow_node) -- routed to from _route_after_location for a genuinely multi-category
         # question, this exhaustive set must stay in sync with that addition too.
         "agent_flow",
@@ -750,7 +750,7 @@ def test_multi_turn_complaint_filing_category_then_location(client, monkeypatch,
     Verifies the graph "does not lose previously collected information" (spec's own wording)
     across four separate, stateless HTTP requests -- exactly how this codebase's multi-turn
     conversation support already worked pre-graph (client-resent conversation_history, see
-    docs/ask_janmitra_rag_architecture.md's "why no server-side conversation store" note) -- the
+    docs/ask_sarthi_rag_architecture.md's "why no server-side conversation store" note) -- the
     graph adds routing/state structure on top, not a new persistence mechanism.
     """
     _install_real_service(monkeypatch)
@@ -949,8 +949,8 @@ def test_complaint_agent_failure_returns_honest_error_not_a_fake_complaint_id(cl
         def create_complaint(self, **kwargs):
             raise ValueError("simulated complaint-agent failure")
 
-    service = _real_ask_janmitra_service(complaint_agent=_RaisingComplaintAgent())
-    monkeypatch.setattr(ask_janmitra_module, "_service", service)
+    service = _real_ask_sarthi_service(complaint_agent=_RaisingComplaintAgent())
+    monkeypatch.setattr(ask_sarthi_module, "_service", service)
 
     make_worker(phone="9100099031", ward="Mohali")
     token, _ = make_citizen(phone="9100000031")

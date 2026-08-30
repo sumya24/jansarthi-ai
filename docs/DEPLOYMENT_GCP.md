@@ -16,7 +16,7 @@ flowchart TB
     Browser["Browser"] -->|":80 / :443"| Caddy
 
     subgraph VM["GCP e2-medium VM (asia-south1, Mumbai)"]
-        Caddy["caddy container<br/>— serves the built React SPA<br/>— reverse-proxies /auth, /admin, /complaints,<br/>/notifications, /ask-janmitra, /uploads, /health<br/>— auto HTTPS via Let's Encrypt"]
+        Caddy["caddy container<br/>— serves the built React SPA<br/>— reverse-proxies /auth, /admin, /complaints,<br/>/notifications, /ask-sarthi, /uploads, /health<br/>— auto HTTPS via Let's Encrypt"]
         Backend["backend container<br/>FastAPI + torch + sentence-transformers<br/>+ ChromaDB + LangGraph<br/>— not exposed outside the VM"]
         Volume[("backend_state<br/>named Docker volume<br/>SQLite DB + uploaded photos<br/>survives redeploys")]
 

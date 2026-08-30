@@ -1,5 +1,5 @@
 """Regression tests for the TARGETED SAFETY CLEANUP pass on top of the P0 confirmation-gate fix
-(see tests/test_ask_janmitra_complaint_confirmation.py's own docstring for that earlier fix).
+(see tests/test_ask_sarthi_complaint_confirmation.py's own docstring for that earlier fix).
 
 This file covers the four specific issues a follow-up production-safety review flagged and this
 cleanup closed:
@@ -14,7 +14,7 @@ cleanup closed:
 4. Six-language confirmation/cancellation/ambiguous-reply coverage, verifying real database state.
 
 Reuses the same real-Chroma-retrieval / fake-LLM / fake-complaint-agent pattern already
-established in tests/test_ask_janmitra.py -- no new mocking convention introduced here.
+established in tests/test_ask_sarthi.py -- no new mocking convention introduced here.
 """
 
 from __future__ import annotations
@@ -22,8 +22,8 @@ from __future__ import annotations
 import pytest
 
 from backend.models import Complaint
-from backend.schemas.ask_janmitra import ConversationTurn
-from tests.test_ask_janmitra import _ask, _install_real_service
+from backend.schemas.ask_sarthi import ConversationTurn
+from tests.test_ask_sarthi import _ask, _install_real_service
 
 _LANGUAGE_PHONE_INDEX = {"en": "1", "hi": "2", "mr": "3", "or": "4", "gu": "5", "bn": "6"}
 
@@ -429,7 +429,7 @@ def test_ambiguous_C5_plain_yes_still_confirms_after_the_C1_C4_tightening(
 # The conversation_history assistant turn is seeded directly with the REAL, Sarvam-verified
 # confirmation-prompt fragment for each language (see nodes.py's `_CONFIRMATION_PROMPT_MARKERS`,
 # same fragments this fix consolidated into one place) -- the same established pattern already
-# used by tests/test_ask_janmitra_tracing.py to test a specific turn directly without depending on
+# used by tests/test_ask_sarthi_tracing.py to test a specific turn directly without depending on
 # a live translation call in this test suite (which mocks Sarvam, see _install_real_service).
 # ============================================================================
 

@@ -8,7 +8,7 @@ build_rag_knowledge_base.py first if the underlying knowledge records changed).
 Default path: embeds every chunk with `SentenceTransformerEmbeddingProvider`
 (intfloat/multilingual-e5-small) and upserts into the persistent ChromaDB collection at
 `settings.CHROMA_PERSIST_DIR` (see backend/config.py) — this is the active production retrieval
-path (see docs/ask_janmitra_rag_architecture.md).
+path (see docs/ask_sarthi_rag_architecture.md).
 
 Safe to rerun: every chunk is upserted by its stable `chunk_id` (see
 backend/services/vector_store.py's ChromaVectorStore.upsert docstring) — re-running after no

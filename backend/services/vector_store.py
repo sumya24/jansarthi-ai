@@ -6,8 +6,8 @@
 list, loaded from a single JSON file. This was the original implementation (504 chunks makes
 exhaustive search trivially fast — no scale problem an ANN index would solve at that size). Kept
 in this file, not deleted, so the before/after retrieval comparison in
-docs/ask_janmitra_rag_architecture.md is reproducible, but no longer imported by
-`ask_janmitra_service.py`'s default wiring.
+docs/ask_sarthi_rag_architecture.md is reproducible, but no longer imported by
+`ask_sarthi_service.py`'s default wiring.
 
 Both stores share one filter representation: `metadata_filter: dict[str, str] | None`, an
 exact-match `{field: value}` spec (e.g. `{"service_category": "STREETLIGHTS", "city": "Mohali"}`)
@@ -204,7 +204,7 @@ class ChromaVectorStore:
     def upsert(self, chunk_ids: list[str], vectors: list[DenseVector], documents: list[str], metadatas: list[dict[str, Any]]) -> None:
         """Adds or updates chunks by ID -- re-running ingestion with the same chunk_ids overwrites
         rather than duplicating (see scripts/build_rag_embeddings.py and the upsert-idempotency
-        test in tests/test_ask_janmitra.py)."""
+        test in tests/test_ask_sarthi.py)."""
         if self._collection is None:
             self.load()
         # ChromaDB metadata values must be str/int/float/bool -- filter out None values here
@@ -261,7 +261,7 @@ class ChromaVectorStore:
             # Chroma stores chunk text separately as a "document", not inside `metadatas` (unlike
             # FlatVectorStore, whose metadata dict already includes "content" -- see
             # build_rag_embeddings.py's build_legacy_tfidf_index). Merge it in here under the same
-            # "content" key so every caller (ask_janmitra_service.py's `r.metadata["content"]`)
+            # "content" key so every caller (ask_sarthi_service.py's `r.metadata["content"]`)
             # can read chunk text the same way regardless of which store produced the result.
             merged_metadata = dict(metadata)
             merged_metadata["content"] = document

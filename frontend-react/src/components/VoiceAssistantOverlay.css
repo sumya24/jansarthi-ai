@@ -1,5 +1,5 @@
 /* Voice-to-voice assistant overlay ("Mic 2") -- a dedicated modal, deliberately separate from
-   the ask-widget slide-out panel and the evidence lightbox (see global.css/AskJanMitraWidget.css
+   the ask-widget slide-out panel and the evidence lightbox (see global.css/AskSarthiWidget.css
    for those) so it can sit on top of either entry point. */
 
 .voice-overlay-backdrop {
@@ -27,14 +27,14 @@
 .voice-overlay-close:hover { background: var(--surface-2); color: var(--ink); }
 
 /* All of listening/thinking/speaking's actual animation lives on Mascot itself now (see
-   AskJanMitraWidget.css's .mascot-listening/.mascot-thinking/.mascot-speaking) -- this wrapper
+   AskSarthiWidget.css's .mascot-listening/.mascot-thinking/.mascot-speaking) -- this wrapper
    just gives the character a little breathing room from the panel edges. */
 .voice-overlay-mascot { margin-top: 6px; position: relative; z-index: 1; }
 
 /* Animated "living" glow behind the mascot -- the ChatGPT-voice-mode-style orb effect, built
    from the same blurred-radial-gradient + --ai-from/--ai-to language already used for the
    landing hero's halo (see Landing.css's .hero-visual-halo) and the Ask Sarthi FAB's listening
-   glow (AskJanMitraWidget.css's .mascot-listening), rather than inventing a new visual
+   glow (AskSarthiWidget.css's .mascot-listening), rather than inventing a new visual
    language. Deliberately kept AROUND the mascot, not replacing it -- the character stays the
    face of the product; the glow is just a more alive-feeling backdrop for it.
    Two rotating off-center gradient spots (::before/::after, counter-rotating) create the

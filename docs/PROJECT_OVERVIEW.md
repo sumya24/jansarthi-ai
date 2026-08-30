@@ -76,14 +76,14 @@ Everything under `backend/`. Read top to bottom and you're reading the request-h
 
 **UPDATE — the table below covers only the original 3-route/8-service version of this app.** The
 real `backend/routes/` now has 6 modules (adds `locations.py`, `notifications.py`,
-`ask_janmitra.py`) and `backend/services/` has 30+ files (adds the whole `orchestration/` and
+`ask_sarthi.py`) and `backend/services/` has 30+ files (adds the whole `orchestration/` and
 `observability/` packages, `guardrails.py`, `reranker.py`, `rag_retriever.py`, `vector_store.py`,
 `embedding_provider.py`, `intent_classifier.py`, `location_extractor.py`/`location_resolver.py`,
 `vision_service.py`, `rate_limiter.py`, `complaint_report_service.py`, and more), plus a standalone
 `backend/mcp_server.py` and `backend/middleware.py`. Rather than duplicate a list here that's
 already drifted twice, **the real folder listing is the source of truth** — see
-[`docs/ask_janmitra_orchestration.md`](ask_janmitra_orchestration.md) for the AI-agent-specific
-files, [`docs/ask_janmitra_rag_architecture.md`](ask_janmitra_rag_architecture.md) for the RAG
+[`docs/ask_sarthi_orchestration.md`](ask_sarthi_orchestration.md) for the AI-agent-specific
+files, [`docs/ask_sarthi_rag_architecture.md`](ask_sarthi_rag_architecture.md) for the RAG
 ones, and [`docs/RATE_LIMITING.md`](RATE_LIMITING.md)/[`docs/AUTHENTICATION.md`](AUTHENTICATION.md)
 for the security ones. The original-scope table below is still accurate for what it covers, just
 not complete.
@@ -136,7 +136,7 @@ If the JWT secret key isn't explicitly set (`JWT_SECRET_KEY` in `.env`), the app
 Everything under `frontend-react/src/`. React apps are built from small, focused files — this one splits cleanly into **pages** (one per screen), **components** (reusable pieces used across pages), and **lib** (logic that isn't a visual thing at all: talking to the API, remembering who's logged in, etc.).
 
 **UPDATE — the tables below cover only the original 7-page version of this app.** The real
-`frontend-react/src/pages/` has 21 files now — notably **`AskJanMitra.tsx`** (the real Ask Sarthi
+`frontend-react/src/pages/` has 21 files now — notably **`AskSarthi.tsx`** (the real Ask Sarthi
 chat interface, this app's actual AI entry point, missing from the table below entirely), plus
 `ReportIssue.tsx`, `CitizenHome.tsx`/`CitizenComplaintDetail.tsx`, `MyArea.tsx`,
 `AdminAiMonitoring.tsx`, `AdminWorkers.tsx`/`AdminWorkerDetail.tsx`, `AdminComplaintDetail.tsx`,

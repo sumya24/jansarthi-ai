@@ -25,21 +25,21 @@ def test_all_three_tools_are_registered_with_fastmcp():
 
 def test_get_retriever_wires_in_the_reranker_same_as_the_real_http_api(monkeypatch):
     """BUG FIX (code review): _get_retriever() used to build its RagRetriever without ever
-    calling AskJanMitraService._load_default_reranker(), silently contradicting this module's own
+    calling AskSarthiService._load_default_reranker(), silently contradicting this module's own
     docstring claim of using "the same retrieval pipeline...same VERIFIED-preference rerank" as
-    the real /ask-janmitra endpoint. With RAG_RERANKER_ENABLED=true, the HTTP API would rerank via
+    the real /ask-sarthi endpoint. With RAG_RERANKER_ENABLED=true, the HTTP API would rerank via
     the cross-encoder while this MCP tool kept returning heuristic-only-ranked results for an
     identical query. Asserts the constructed RagRetriever's own reranker is whatever
-    AskJanMitraService._load_default_reranker() returns -- proving the two can't drift again."""
-    from backend.services.ask_janmitra_service import AskJanMitraService
+    AskSarthiService._load_default_reranker() returns -- proving the two can't drift again."""
+    from backend.services.ask_sarthi_service import AskSarthiService
 
     monkeypatch.setattr(mcp_server, "_retriever", None)  # force a fresh build for this test
     # Fake store/embedding-provider loaders too -- this test is only about the reranker wiring,
     # not about paying a real ~20s model-load cost.
-    monkeypatch.setattr(AskJanMitraService, "_load_default_store", staticmethod(lambda: object()))
-    monkeypatch.setattr(AskJanMitraService, "_load_default_embedding_provider", staticmethod(lambda: object()))
+    monkeypatch.setattr(AskSarthiService, "_load_default_store", staticmethod(lambda: object()))
+    monkeypatch.setattr(AskSarthiService, "_load_default_embedding_provider", staticmethod(lambda: object()))
     sentinel_reranker = object()
-    monkeypatch.setattr(AskJanMitraService, "_load_default_reranker", staticmethod(lambda: sentinel_reranker))
+    monkeypatch.setattr(AskSarthiService, "_load_default_reranker", staticmethod(lambda: sentinel_reranker))
 
     retriever = mcp_server._get_retriever()
 
@@ -51,12 +51,12 @@ def test_get_retriever_wires_in_the_hybrid_search_flag_same_as_the_real_http_api
     config.py's own docstring: a code-review finding was that hybrid search shipped with no way
     to disable it at all -- once a settings flag exists, this MCP tool must actually honor it,
     not just RagRetriever's constructor supporting it in principle)."""
-    from backend.services.ask_janmitra_service import AskJanMitraService
+    from backend.services.ask_sarthi_service import AskSarthiService
 
     monkeypatch.setattr(mcp_server, "_retriever", None)
-    monkeypatch.setattr(AskJanMitraService, "_load_default_store", staticmethod(lambda: object()))
-    monkeypatch.setattr(AskJanMitraService, "_load_default_embedding_provider", staticmethod(lambda: object()))
-    monkeypatch.setattr(AskJanMitraService, "_load_default_reranker", staticmethod(lambda: None))
+    monkeypatch.setattr(AskSarthiService, "_load_default_store", staticmethod(lambda: object()))
+    monkeypatch.setattr(AskSarthiService, "_load_default_embedding_provider", staticmethod(lambda: object()))
+    monkeypatch.setattr(AskSarthiService, "_load_default_reranker", staticmethod(lambda: None))
     monkeypatch.setattr(mcp_server.settings, "RAG_HYBRID_SEARCH_ENABLED", False)
 
     retriever = mcp_server._get_retriever()

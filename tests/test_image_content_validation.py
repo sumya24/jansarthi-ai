@@ -1,7 +1,7 @@
 """Security tests for real image-content validation (see backend/services/evidence_service.py's
 module docstring for the design). Covers both upload paths that funnel through
 evidence_service.validate_and_write(): complaint evidence (POST /complaints, .../updates,
-.../resolve) and Ask Sarthi image analysis (POST /ask-janmitra/image).
+.../resolve) and Ask Sarthi image analysis (POST /ask-sarthi/image).
 
 Uses tests/image_fixtures.py for real, genuinely-decodable image bytes -- placeholder bytes with
 just a correct magic-byte prefix (this suite's older convention, before this hardening) are no
@@ -11,8 +11,8 @@ longer valid uploads on purpose; see that module's own docstring.
 from unittest.mock import Mock
 
 from backend.config import settings
-from backend.services.ask_janmitra_service import AskJanMitraService
-import backend.routes.ask_janmitra as ask_janmitra_module
+from backend.services.ask_sarthi_service import AskSarthiService
+import backend.routes.ask_sarthi as ask_sarthi_module
 import backend.routes.complaints as complaints_module
 from backend.models import Complaint
 from tests.image_fixtures import (
@@ -24,7 +24,7 @@ from tests.image_fixtures import (
     VALID_JPEG_BYTES,
     VALID_PNG_BYTES,
 )
-from tests.test_ask_janmitra_image import _FakeComplaintAgent, _get_shared_chroma_deps
+from tests.test_ask_sarthi_image import _FakeComplaintAgent, _get_shared_chroma_deps
 
 
 def _fake_agent_create_complaint(db, citizen_id, language_code, text, audio_chunks, photo_path, category=None):
@@ -162,7 +162,7 @@ def test_filename_extension_mismatch_with_valid_content_type_and_bytes_is_accept
 
 
 def _install_service_with_vision_spy(monkeypatch):
-    """Same shape as test_ask_janmitra_image.py's _install_real_service, but returns the vision
+    """Same shape as test_ask_sarthi_image.py's _install_real_service, but returns the vision
     mock itself (that file only returns the answer-generation mock) so a test here can assert
     describe_image was never called for a rejected upload."""
     store, provider = _get_shared_chroma_deps()
@@ -170,20 +170,20 @@ def _install_service_with_vision_spy(monkeypatch):
     fake_answers.generate = Mock(side_effect=lambda q, chunks, lang, context_labels=None: (q, False, None))
     fake_vision = Mock()
     fake_vision.describe_image = Mock(return_value="A caption.")
-    service = AskJanMitraService(
+    service = AskSarthiService(
         vector_store=store, embedding_provider=provider, answer_service=fake_answers,
         complaint_agent=_FakeComplaintAgent(), vision_service=fake_vision,
     )
-    monkeypatch.setattr(ask_janmitra_module, "_service", service)
+    monkeypatch.setattr(ask_sarthi_module, "_service", service)
     return fake_vision
 
 
-def test_invalid_image_never_reaches_moondream2_via_ask_janmitra(client, monkeypatch, make_citizen):
+def test_invalid_image_never_reaches_moondream2_via_ask_sarthi(client, monkeypatch, make_citizen):
     fake_vision = _install_service_with_vision_spy(monkeypatch)
     token, _ = make_citizen(phone="9200000011")
 
     response = client.post(
-        "/ask-janmitra/image",
+        "/ask-sarthi/image",
         headers={"Authorization": f"Bearer {token}"},
         data={"question": "What is this?", "language": "en"},
         files=[("image", ("photo.jpg", TEXT_FILE_BYTES, "image/jpeg"))],
@@ -193,7 +193,7 @@ def test_invalid_image_never_reaches_moondream2_via_ask_janmitra(client, monkeyp
     fake_vision.describe_image.assert_not_called()
 
 
-def test_valid_image_does_reach_moondream2_via_ask_janmitra(client, monkeypatch, make_citizen):
+def test_valid_image_does_reach_moondream2_via_ask_sarthi(client, monkeypatch, make_citizen):
     """Sanity control for the test above -- proves describe_image genuinely gets called for a
     real, valid image, so "never called" for the invalid case above is a meaningful assertion and
     not just a mock that's never wired up correctly."""
@@ -201,7 +201,7 @@ def test_valid_image_does_reach_moondream2_via_ask_janmitra(client, monkeypatch,
     token, _ = make_citizen(phone="9200000012")
 
     response = client.post(
-        "/ask-janmitra/image",
+        "/ask-sarthi/image",
         headers={"Authorization": f"Bearer {token}"},
         data={"question": "What is this?", "language": "en"},
         files=[("image", ("photo.jpg", VALID_JPEG_BYTES, "image/jpeg"))],

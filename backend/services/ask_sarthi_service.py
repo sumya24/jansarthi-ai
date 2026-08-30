@@ -7,9 +7,9 @@ This class is now a thin adapter around `orchestration.graph.run_graph()`: it bu
 once (cheap, pure structure), builds the shared `GraphDeps` once (the actually-expensive parts --
 the Chroma collection, the embedding model -- are unchanged from before this phase), and on every
 `ask()` call builds a per-request `RequestContext` + initial `GraphState`, invokes the graph, and
-translates the final state back into `AskJanMitraResponse`. See
+translates the final state back into `AskSarthiResponse`. See
 `backend/services/orchestration/graph.py`'s module docstring for the full node/edge diagram and
-`docs/ask_janmitra_orchestration.md` for the architectural writeup -- this docstring only covers
+`docs/ask_sarthi_orchestration.md` for the architectural writeup -- this docstring only covers
 what's still true about this class's own responsibilities (the public API surface).
 
 Source routing (unchanged rule, now enforced by the graph's edges rather than this class's own
@@ -32,9 +32,9 @@ from sqlalchemy.orm import Session
 from backend.config import get_prompt, settings, to_bcp47
 from backend.models import User
 from backend.repositories import ai_request_log_repository
-from backend.schemas.ask_janmitra import (
-    AskJanMitraRequest,
-    AskJanMitraResponse,
+from backend.schemas.ask_sarthi import (
+    AskSarthiRequest,
+    AskSarthiResponse,
     AskVoiceResponse,
     Citation,
     ConversationTurn,
@@ -68,7 +68,7 @@ _LANGUAGE_NAMES = {code: info["name"] for code, info in settings.SUPPORTED_LANGU
 # Loaded once at import time (a plain text file, cheap) -- passed to guardrails.check_output() so
 # it can detect verbatim leakage of this exact prompt in a generated answer. See
 # answer_generation_service.py's own use of the same file for what's actually sent to the LLM.
-_ASK_JANMITRA_SYSTEM_PROMPT = get_prompt("ask_janmitra_system_prompt.txt")
+_ASK_SARTHI_SYSTEM_PROMPT = get_prompt("ask_sarthi_system_prompt.txt")
 
 # Shown to the citizen in place of either (a) a message the input guardrail blocked before it ever
 # reached an LLM, or (b) a generated answer the output guardrail flagged -- deliberately generic
@@ -94,7 +94,7 @@ _SARVAM_TTS_COST_PER_CHAR_INR = 30 / 10_000
 _SARVAM_STT_COST_PER_SECOND_INR = 30 / 3600
 
 
-class AskJanMitraService:
+class AskSarthiService:
     """Constructor-injected, matching this codebase's existing service pattern (e.g.
     TranslationService's injected SarvamClient) — every dependency can be swapped for a test
     double, so tests never make a real network call or need the real 1.5MB embeddings index."""
@@ -171,7 +171,7 @@ class AskJanMitraService:
     @staticmethod
     def _load_default_embedding_provider() -> SentenceTransformerEmbeddingProvider:
         # Deliberately NOT eagerly loaded here (SentenceTransformerEmbeddingProvider's model load
-        # is itself lazy, see that class) -- constructing AskJanMitraService must stay cheap and
+        # is itself lazy, see that class) -- constructing AskSarthiService must stay cheap and
         # never fail just because the embedding model hasn't been downloaded/cached yet; the
         # first real query pays that cost once, not every app startup.
         return SentenceTransformerEmbeddingProvider()
@@ -208,9 +208,9 @@ class AskJanMitraService:
         gazetteer = RagGazetteer(settings.RAG_DATA_DIR / "chunks" / "chunks.json")
         return LocationExtractor(gazetteer)
 
-    def ask(self, db: Session, user: User, request: AskJanMitraRequest) -> AskJanMitraResponse:
+    def ask(self, db: Session, user: User, request: AskSarthiRequest) -> AskSarthiResponse:
         """Builds the initial graph state from the request, runs the LangGraph orchestrator, and
-        translates the final state back into `AskJanMitraResponse`. See
+        translates the final state back into `AskSarthiResponse`. See
         `backend/services/orchestration/graph.py` for the actual routing/flow logic — this method
         is deliberately thin.
 
@@ -220,7 +220,7 @@ class AskJanMitraService:
         LangSmith tracing: `langsmith_trace_id` is stored alongside purely as a pointer for the
         dashboard's optional "View Trace" link; the metrics themselves always come from this row,
         never from LangSmith, so the dashboard keeps working even when LangSmith doesn't (see
-        docs/ask_janmitra_langsmith_observability.md).
+        docs/ask_sarthi_langsmith_observability.md).
         """
         ctx = RequestContext(
             db=db,
@@ -253,7 +253,7 @@ class AskJanMitraService:
         image: UploadFile,
         was_voice_input: bool = False,
         conversation_id: str | None = None,
-    ) -> AskJanMitraResponse:
+    ) -> AskSarthiResponse:
         """Same pipeline as `ask()`, plus an attached image. Validates and saves the image to
         disk via the same `evidence_service.validate_and_write()` every other photo upload in
         this app already uses (see backend/services/evidence_service.py) -- no second
@@ -267,7 +267,7 @@ class AskJanMitraService:
         "never crash over an optional AI feature" pattern, e.g. SentenceTransformerEmbeddingProvider/
         ChromaVectorStore's own load-failure handling above).
 
-        LangSmith (see docs/ask_janmitra_langsmith_observability.md §9.1): the root run is
+        LangSmith (see docs/ask_sarthi_langsmith_observability.md §9.1): the root run is
         started here, BEFORE the graph runs, so `_process_image()`'s real vision-model call shows
         up as its own `vision_processing` child span (real duration, not folded into the graph's
         own timing) -- the same trace as the graph's `rag_retrieval`/`complaint_creation` spans,
@@ -284,7 +284,7 @@ class AskJanMitraService:
         )
         inputs, metadata = root_run_inputs_and_metadata(prelim_state, request_id)
         root_run = tracing.start_root_run(
-            "ask_janmitra_graph", run_id=trace_id, inputs=inputs, metadata=metadata, tags=["ask_janmitra"],
+            "ask_sarthi_graph", run_id=trace_id, inputs=inputs, metadata=metadata, tags=["ask_sarthi"],
         )
 
         vision_span = tracing.start_child_run(root_run, "vision_processing", "tool", inputs={"has_image": True})
@@ -359,7 +359,7 @@ class AskJanMitraService:
         logged and swallowed, not raised -- the citizen still gets the real text answer with
         `audio_base64=None` (never fake/placeholder audio) rather than the whole turn failing.
 
-        LangSmith (see docs/ask_janmitra_langsmith_observability.md §9.1): the root run is
+        LangSmith (see docs/ask_sarthi_langsmith_observability.md §9.1): the root run is
         started here, before STT even runs, so `speech_to_text` (and `vision_processing`, if an
         image is attached too) and the eventual `text_to_speech` span all nest under the SAME
         trace as the graph's own spans -- "Ask Sarthi Voice -> STT -> [Vision ->] LangGraph ->
@@ -388,7 +388,7 @@ class AskJanMitraService:
         )
         inputs, metadata = root_run_inputs_and_metadata(prelim_state, request_id)
         root_run = tracing.start_root_run(
-            "ask_janmitra_graph", run_id=trace_id, inputs=inputs, metadata=metadata, tags=["ask_janmitra"],
+            "ask_sarthi_graph", run_id=trace_id, inputs=inputs, metadata=metadata, tags=["ask_sarthi"],
         )
 
         stt_span = tracing.start_child_run(root_run, "speech_to_text", "llm", inputs={"segment_count": len(audio_segments)})
@@ -559,9 +559,9 @@ class AskJanMitraService:
         trace_id: uuid.UUID | None = None,
         request_id: str | None = None,
         end_root_run: bool = True,
-    ) -> tuple[AskJanMitraResponse, GraphState, float]:
+    ) -> tuple[AskSarthiResponse, GraphState, float]:
         """Shared tail end of `ask()`/`ask_with_image()`/`ask_voice()`: run the graph, record the
-        AiRequestLog row, translate the final state into `AskJanMitraResponse`. Extracted so every
+        AiRequestLog row, translate the final state into `AskSarthiResponse`. Extracted so every
         Ask Sarthi entry point invokes the exact same `run_graph()` call and logs identically --
         no parallel pipeline per input mode.
 
@@ -614,7 +614,7 @@ class AskJanMitraService:
                 latency_ms=latency_ms,
             )
             ai_request_log_repository.check_and_fire_alerts(db)
-            response = AskJanMitraResponse(
+            response = AskSarthiResponse(
                 answer=final_state["response_text"],
                 intent=QuestionIntent.UNCLEAR,
                 language=language,
@@ -658,7 +658,7 @@ class AskJanMitraService:
         # the LLM's own generated answer text, right after the graph completes and before it's
         # ever returned to the citizen.
         answer_text = final_state.get("response_text") or ""
-        output_check = guardrails.check_output(answer_text, system_prompt=_ASK_JANMITRA_SYSTEM_PROMPT)
+        output_check = guardrails.check_output(answer_text, system_prompt=_ASK_SARTHI_SYSTEM_PROMPT)
         if output_check.flagged:
             logger.warning(
                 "Ask Sarthi: blocked a response at output (request_id=%s): %s", request_id, output_check.reason,
@@ -715,7 +715,7 @@ class AskJanMitraService:
 
         sources = [Citation(**s) for s in final_state.get("sources", [])]
 
-        response = AskJanMitraResponse(
+        response = AskSarthiResponse(
             answer=final_state.get("response_text", "I'm not sure how to help with that yet."),
             intent=final_state.get("intent", "TYPE_A_COMPLAINT"),
             service_category=final_state.get("service_category"),

@@ -1,4 +1,4 @@
-/* Floating entry point for Ask Sarthi -- see AskJanMitraWidget.tsx's docstring for why this
+/* Floating entry point for Ask Sarthi -- see AskSarthiWidget.tsx's docstring for why this
    replaced the old nav tab. z-index sits below the toast layer (200, see global.css) so a
    "Complaint submitted" toast can still surface above an open panel. */
 
@@ -56,7 +56,7 @@
 .ask-widget-panel.open { transform: translateX(0); }
 /* space-between, not flex-end: New Chat sits at the left of this row, Close at the right --
    one row of panel controls instead of New Chat stacking as its own bar underneath (see
-   AskJanMitraContent's hideNewChatBar prop). Falls back to a single flex-end-ish right-aligned
+   AskSarthiContent's hideNewChatBar prop). Falls back to a single flex-end-ish right-aligned
    close button fine on its own when New Chat isn't rendered yet (before the panel's first open). */
 .ask-widget-panel-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
 .ask-widget-close {
@@ -80,7 +80,7 @@
 }
 
 /* Mascot (src/components/Mascot.tsx) -- the only place its supporting CSS lives, since every
-   consumer (the FAB icon, the greeting bubble, AskJanMitraContent's loading/empty/success
+   consumer (the FAB icon, the greeting bubble, AskSarthiContent's loading/empty/success
    moments, and VoiceAssistantOverlay's "Mic 2" panel) imports this file already. A real
    cropped-and-background-removed photo of the character the user supplied, not a hand-drawn SVG
    -- so every animation below is transform/filter on a raster <img>, GPU-friendly, never

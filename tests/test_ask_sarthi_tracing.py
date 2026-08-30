@@ -1,6 +1,6 @@
 """Integration-level tests for LangSmith tracing exercised through the real LangGraph
-orchestrator (backend/services/orchestration/graph.py, nodes.py) and the real /ask-janmitra
-endpoint (backend/services/ask_janmitra_service.py) -- as opposed to
+orchestrator (backend/services/orchestration/graph.py, nodes.py) and the real /ask-sarthi
+endpoint (backend/services/ask_sarthi_service.py) -- as opposed to
 tests/test_langsmith_tracing.py's isolated unit tests of the tracing module itself.
 
 Covers (see the LangSmith integration task's own test-plan numbering):
@@ -27,7 +27,7 @@ import backend.services.orchestration.nodes as nodes_module
 from backend.services.location_extractor import LocationResolution
 from backend.services.orchestration.graph import build_graph, run_graph
 from backend.services.orchestration.nodes import GraphDeps, RequestContext
-from tests.test_ask_janmitra import _ask, _install_real_service
+from tests.test_ask_sarthi import _ask, _install_real_service
 
 
 class _FakeLocationExtractor:
@@ -80,10 +80,10 @@ def test_run_graph_starts_and_ends_one_root_span_per_request(monkeypatch):
 
     assert len(start_calls) == 1
     name, kwargs = start_calls[0]
-    assert name == "ask_janmitra_graph"
+    assert name == "ask_sarthi_graph"
     assert kwargs["inputs"]["question"] == "I need a new electricity connection"
     assert kwargs["inputs"]["language"] == "en"
-    assert kwargs["tags"] == ["ask_janmitra"]
+    assert kwargs["tags"] == ["ask_sarthi"]
 
     # PRODUCTION ARCHITECTURE UPGRADE: response_generation_node now also creates its own
     # "final_response_grounding" child span (see that function's own docstring) -- under this
@@ -120,7 +120,7 @@ def test_root_span_metadata_reflects_input_mode_and_vision_tts_flags(
     monkeypatch, state_overrides, expected_input_mode, expected_has_image, expected_vision_used, expected_tts_used
 ):
     """The multimodal/voice upgrade's LangSmith metadata (input_mode/has_image/vision_used/
-    tts_used) must reflect exactly what ask_janmitra_service.py put into the initial GraphState --
+    tts_used) must reflect exactly what ask_sarthi_service.py put into the initial GraphState --
     covers every combination the six real entry-point call sites can produce (see that module's
     ask()/ask_with_image()/ask_voice())."""
     start_calls = []
@@ -150,7 +150,7 @@ def test_root_span_metadata_reflects_input_mode_and_vision_tts_flags(
     assert metadata["vision_used"] is expected_vision_used
     assert metadata["tts_used"] is expected_tts_used
     # Never the raw caption/description or any audio, no matter which mode -- see
-    # docs/ask_janmitra_langsmith_observability.md §7.
+    # docs/ask_sarthi_langsmith_observability.md §7.
     assert "image_description" not in metadata
     assert "audio_base64" not in metadata
 
@@ -182,7 +182,7 @@ def test_run_graph_passes_trace_root_to_nodes_via_config(monkeypatch):
 
 
 def test_was_voice_input_reaches_the_graph_as_stt_input_mode_end_to_end(client, monkeypatch, make_citizen):
-    """Full HTTP -> ask_janmitra_service.ask() -> run_graph() path: AskJanMitraRequest.
+    """Full HTTP -> ask_sarthi_service.ask() -> run_graph() path: AskSarthiRequest.
     was_voice_input=True (set when Mic 1 produced the question text) must reach the root span's
     metadata as input_mode="STT", not the default "TEXT" -- proves the service layer's mapping,
     not just the graph's own metadata-population logic (already covered directly above)."""
@@ -328,7 +328,7 @@ def test_rag_flow_creates_retrieval_and_answer_generation_spans(client, monkeypa
 
     assert resp.status_code == 200
     body = resp.json()
-    assert body["insufficient_knowledge"] is False  # proven RAG-answerable query (see test_ask_janmitra.py)
+    assert body["insufficient_knowledge"] is False  # proven RAG-answerable query (see test_ask_sarthi.py)
     assert "rag_retrieval" in span_names
     assert "answer_generation" in span_names
 
@@ -426,7 +426,7 @@ def test_successful_answer_is_not_enqueued_for_review(client, monkeypatch, make_
         AssertionError(f"should not have enqueued a successfully-answered request (reason={reason})")
     ))
 
-    from tests.test_ask_janmitra import _install_real_service, _ask
+    from tests.test_ask_sarthi import _install_real_service, _ask
 
     _install_real_service(monkeypatch)
     token, _ = make_citizen(phone="9100000095")
@@ -439,7 +439,7 @@ def test_successful_answer_is_not_enqueued_for_review(client, monkeypatch, make_
 # --- 7: application behavior when LangSmith is unavailable ---
 
 
-def test_ask_janmitra_endpoint_works_when_every_langsmith_call_raises(client, monkeypatch, make_citizen):
+def test_ask_sarthi_endpoint_works_when_every_langsmith_call_raises(client, monkeypatch, make_citizen):
     """Simulates a total LangSmith outage -- every tracing.* call raises internally -- by making
     the module's own safety net fail open anyway: tracing.py already swallows every exception
     from the LangSmith SDK itself (see tests/test_langsmith_tracing.py), so patching the
