@@ -35,6 +35,11 @@ JanSarthi_Test_Accounts.csv
 JanSarthi_Test_Accounts.xlsx
 JanSarthi_AI_Manual_Test_Script.docx
 
+# Personal interview/recording-prep documents -- reference material for the person working on
+# this repo, not app source or documentation meant for the project itself.
+JanSarthi_AI_Study_Guide.docx
+JanSarthi_AI_Video_Cue_Cards.docx
+
 # RAG knowledge base: knowledge_records/ and sources/ are the hand-authored source data;
 # everything below is a pure, reproducible function of that source (see
 # scripts/build_rag_knowledge_base.py and build_rag_embeddings.py's docstrings), rebuilt at
