@@ -337,10 +337,33 @@ python -m uvicorn backend.main:app --reload --port 8000
 already verified working locally, confirmed against Docker Hub's real tag list, not guessed) with
 `PHOENIX_DEFAULT_RETENTION_POLICY_DAYS=30` set from first boot (a real, documented Phoenix env var,
 confirmed against its own source -- avoids the unlimited-retention memory-bloat incident from
-Round 9 ever happening on a fresh instance). `deploy/Caddyfile` gates Phoenix's UI behind HTTP
-Basic Auth at `/phoenix-ui/*` (`PHOENIX_UI_USER`/`PHOENIX_UI_PASSWORD_HASH`, generated via
-`caddy hash-password` -- Phoenix has no login of its own, so this stops real citizen traffic/cost
-data from sitting behind an open public URL). `.env.example` documents both new vars.
+Round 9 ever happening on a fresh instance).
+
+**Access control revised 2026-08-30, same day, before this shipped**: the first version gated
+Phoenix's UI behind a single fixed HTTP Basic Auth username/password (`PHOENIX_UI_USER`/
+`PHOENIX_UI_PASSWORD_HASH`). User's real, live question surfaced the actual problem with that:
+this app has multiple admins, and a fixed shared password doesn't map to that at all -- either
+everyone shares one login (can't tell who did what, can't revoke just one person), or someone has
+to hand-provision a separate Caddy credential per admin and keep it in sync by hand forever.
+Checking production's real user table to plan the fixed-per-admin version surfaced a bigger,
+unrelated finding instead: of 77 `role=admin` rows, only 2 (`Anjali Kulkarni`/`9999999999`,
+`Vikram Desai`/`6192340986`, both created at initial seed time) look like real people -- the other
+75 are unmistakably automated test/e2e-seed artifacts (literal names like "Tracking Test Admin",
+tight-second timestamp clusters). Same pattern in `role=worker` (108 rows, ~7 look real). Reported
+back as a table, explicitly NOT deleted without sign-off (production data, real risk of
+misclassifying something as test when it's actually real) -- still awaiting that go-ahead as of
+this writing.
+
+**Final approach, once "make sure the admin role has access" was the actual ask**: gate Phoenix's
+UI via Caddy's `forward_auth` directive instead of a fixed password at all -- it asks the BACKEND
+itself, per request, "is this a real, currently logged-in admin?" (new `GET /admin/
+phoenix-auth-check` in `backend/routes/admin.py`, just `require_role("admin")` wrapping a 204).
+Whoever holds the app's own real `admin` role gets Phoenix access automatically, and losing that
+role removes access the same way -- no separate credential to create, sync, or revoke, and no new
+env vars needed for auth at all. The browser's own `access_token`/`refresh_token` cookies ride
+along on the forwarded request as plain, unconfigured header forwarding (same as any proxied
+request), so an admin already logged into the app in that browser reaches Phoenix's UI directly,
+no separate password prompt at any point.
 
 **Deliberately needed ZERO changes to `ci.yml`/`cd.yml`**: Phoenix is a public, pre-built image,
 not one this repo builds itself -- the existing deploy step's `docker compose pull && docker
@@ -350,10 +373,9 @@ ways without needing Docker running at all: `python -c "import yaml; yaml.safe_l
 `docker compose -f docker-compose.prod.yml config --quiet` (works client-side, no daemon needed).
 
 **One real manual step still required before this actually goes live**: the server's own `.env`
-(never committed) needs `PHOENIX_TRACING=true`, a real `PHOENIX_UI_USER`, and a real
-`PHOENIX_UI_PASSWORD_HASH` set once, same one-time-setup category as `JWT_SECRET_KEY`/
-`SARVAM_API_KEY` already are. Until that happens, `PHOENIX_TRACING` defaults to `false` there
-too, so merging this costs nothing and changes nothing in production on its own.
+(never committed) needs `PHOENIX_TRACING=true` set once, same one-time-setup category as
+`JWT_SECRET_KEY`/`SARVAM_API_KEY` already are. Until that happens, `PHOENIX_TRACING` defaults to
+`false` there too, so merging this costs nothing and changes nothing in production on its own.
 - The LangSmith account-swap's own follow-up decision (local dev sharing the same key vs. its own)
   was never actually decided -- worth revisiting, especially since the *new* LangSmith account
   independently hit its own rate limit again during this same session (confirmed live via a 429

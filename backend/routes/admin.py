@@ -909,3 +909,20 @@ def delete_ai_monitoring_request(
         raise HTTPException(status_code=404, detail="AI request log not found.")
     logger.info("AI request log deleted by admin (admin_id=%s, request_log_id=%s)", admin.id, request_log_id)
     return DeleteAiRequestResponse(deleted_request_log_id=request_log_id)
+
+
+@router.get("/phoenix-auth-check", status_code=204)
+def phoenix_auth_check(admin: User = Depends(require_role("admin"))) -> None:
+    """Not called directly by the frontend -- this exists purely for Caddy's own `forward_auth`
+    directive (see deploy/Caddyfile) to ask "is whoever is asking for Phoenix's UI a real, currently
+    logged-in admin?" before proxying them through. Ties Phoenix access to the app's own live
+    admin role instead of a separate, fixed username/password Caddy would otherwise have to
+    maintain on its own -- add or remove someone's admin role in the app, and their Phoenix access
+    changes with it automatically, no Caddy/redeploy step needed either way.
+
+    `require_role("admin")` already does all the real work: 401 if there's no valid session at
+    all (raised by the `get_current_user` dependency it wraps), 403 if the session belongs to a
+    real user who isn't an admin. Caddy's forward_auth treats anything other than a 2xx as "deny,"
+    so both failure cases correctly block access -- this handler's own body never even runs unless
+    the caller already cleared that bar. No response body needed either way, hence 204."""
+    return None

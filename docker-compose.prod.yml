@@ -56,12 +56,6 @@ services:
       # Plain HTTP on :80 until a domain is pointed at this VM -- set SITE_ADDRESS=your-domain.com
       # in .env to switch on automatic HTTPS (see deploy/Caddyfile).
       SITE_ADDRESS: ${SITE_ADDRESS:-http://:80}
-      # Basic Auth credentials for the /phoenix-ui/* route (see deploy/Caddyfile) -- Phoenix's own
-      # UI has no login of its own, so without this it would be a public URL anyone could open and
-      # see real citizen traffic, costs, and (redacted, but still real) question/answer text. Set
-      # both in the server's .env before deploying; Caddy fails to start if either is blank.
-      PHOENIX_UI_USER: ${PHOENIX_UI_USER}
-      PHOENIX_UI_PASSWORD_HASH: ${PHOENIX_UI_PASSWORD_HASH}
     ports:
       - "80:80"
       - "443:443"

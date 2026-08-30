@@ -29,13 +29,17 @@
 
 	# Phoenix's own UI (see docs/OBSERVABILITY.md) -- real citizen traffic/costs/questions would
 	# otherwise sit behind a public URL with no login of its own at all, since Phoenix has no
-	# built-in auth. Gated behind HTTP Basic Auth; PHOENIX_UI_USER/PHOENIX_UI_PASSWORD_HASH come
-	# from the server's own .env (see docker-compose.prod.yml's caddy service) -- generate the
-	# hash with `docker compose -f docker-compose.prod.yml run --rm caddy caddy hash-password`,
-	# never a plaintext password committed anywhere.
+	# built-in auth. Gated by asking the BACKEND "is this a real, currently logged-in admin?"
+	# (backend/routes/admin.py's phoenix_auth_check()) rather than a separate fixed username/
+	# password -- ties access directly to the app's own admin role: give or remove someone's
+	# admin role in the app, and their Phoenix access changes with it automatically, no Caddy
+	# config change or redeploy needed either way. The browser's own access_token/refresh_token
+	# cookies ride along on this forwarded request the same as any other proxied request (plain
+	# header forwarding, nothing special configured for it) -- so an admin who's already logged
+	# into the app in that browser just gets Phoenix's UI directly, no separate password prompt.
 	handle /phoenix-ui* {
-		basic_auth {
-			{$PHOENIX_UI_USER} {$PHOENIX_UI_PASSWORD_HASH}
+		forward_auth backend:8000 {
+			uri /admin/phoenix-auth-check
 		}
 		uri strip_prefix /phoenix-ui
 		reverse_proxy phoenix:6006
