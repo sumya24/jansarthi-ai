@@ -85,7 +85,10 @@
 @media (max-width: 860px) {
   .hero { grid-template-columns: 1fr; padding-top: 40px; }
 }
-.eyebrow { font-size: 11.5px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent-fg); font-weight: 700; margin-bottom: 12px; }
+/* LIVE-REPORTED: still read as small even after the section heading below it was sized up --
+   bumped together so the eyebrow-label + heading pair scales as one unit, same reasoning as the
+   icon+text pairs elsewhere on this page. */
+.eyebrow { font-size: 20px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--accent-fg); font-weight: 700; margin-bottom: 14px; }
 .hero-copy h1 { font-size: 42px; line-height: 1.06; }
 .hero-copy p.lede { color: var(--ink-2); font-size: 15.5px; margin: 18px 0 26px; max-width: 46ch; }
 .hero-ctas { display: flex; gap: 12px; flex-wrap: wrap; }
@@ -178,7 +181,10 @@
 .landing-section { max-width: 1440px; margin: 0 auto; padding: 6px 32px 70px; }
 .landing-section-alt { max-width: none; }
 .landing-section-alt > * { max-width: 1440px; margin-left: auto; margin-right: auto; }
-.section-heading { text-align: center; margin-bottom: 40px; }
+.section-heading { text-align: center; margin-bottom: 44px; }
+/* LIVE-REPORTED: was 28px -- read as small still, even sitting right below the (also bumped)
+   eyebrow label. Sized up closer to the hero's own 42px h1 so these read as real section
+   headings, not a caption for the cards underneath. */
 .section-heading h2 { font-size: 28px; }
 
 /* "How it works" as a connected flow: two columns of cards zigzagging left/right around a
@@ -210,15 +216,20 @@
 @media (prefers-reduced-motion: reduce) { .flow-line-glow { animation: none; display: none; } }
 
 .flow-node-col { grid-row: var(--node-row); grid-column: 2; display: flex; align-items: center; justify-content: center; position: relative; z-index: 2; }
-/* --node-glow-delay is computed in Landing.tsx from each node's real measured position (row
-   heights are content-driven, not evenly spaced, so a fixed "1/4 of the cycle apart" guess
-   visibly desynced from where the traveling light actually was -- see the useEffect there). */
+/* Each node's actual phase within this animation is set directly via the Web Animations API
+   (Landing.tsx's useLayoutEffect, keyed off the traveling light's own real Animation.currentTime)
+   -- not a CSS animation-delay value, which only ever reliably synced the very first paint and
+   silently drifted out of sync on every later recompute (a web font finishing load and reflowing
+   text was enough to trigger one). This animation-delay: 0 below is just the harmless starting
+   value before that effect runs once, synchronously, before the first paint. */
 .flow-node {
-  width: 48px; height: 48px; border-radius: 50%; background: var(--node-bg); color: var(--node-color);
+  /* LIVE-REPORTED: was 48px with a 22px glyph (a ~46% fill ratio) -- read as small/timid next to
+     the step cards it sits beside. Sized up so the glyph actually reads as the section's visual
+     anchor, not an afterthought riding on the connecting line. */
+  width: 58px; height: 58px; border-radius: 50%; background: var(--node-bg); color: var(--node-color);
   display: flex; align-items: center; justify-content: center;
   box-shadow: 0 0 0 6px var(--paper), 0 0 0 7px color-mix(in srgb, var(--node-color) 45%, transparent);
   animation: flow-node-glow 6s ease-in-out infinite;
-  animation-delay: var(--node-glow-delay, 0ms);
 }
 @keyframes flow-node-glow {
   0%, 85%, 100% {
@@ -239,18 +250,26 @@
   display: inline-flex; padding: 3px 10px; border-radius: 20px; margin-bottom: 12px;
   font-size: 11px; font-weight: 800; letter-spacing: 0.04em; background: var(--node-bg); color: var(--node-color);
 }
-.flow-card h3 { font-size: 16px; margin: 0 0 8px; }
-.flow-card p { font-size: 13.5px; color: var(--ink-2); line-height: 1.55; margin: 0; }
+/* LIVE-REPORTED: title/body read as small next to the section's now-larger .flow-node icons --
+   sized up together so text and icon read as one deliberately-scaled unit again. */
+.flow-card h3 { font-size: 20px; margin: 0 0 8px; }
+.flow-card p { font-size: 15.5px; color: var(--ink-2); line-height: 1.6; margin: 0; }
 
 @media (max-width: 900px) {
   .flow-grid { grid-template-columns: 56px 1fr; column-gap: 16px; }
   .flow-node-col { grid-column: 1; }
   .flow-card-left, .flow-card-right { grid-column: 2; }
   .flow-line, .flow-line-glow { left: 28px; }
-  .flow-node { width: 40px; height: 40px; }
+  .flow-node { width: 48px; height: 48px; }
 }
 
-.features-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 18px; }
+
+/* 5 cards now (added "Ask a real question," see FEATURE_ICONS/featureKeys in Landing.tsx) --
+   repeat(5, 1fr) on desktop keeps them in one even row instead of 4-then-a-lonely-5th wrapping
+   underneath at 1/4 width. The narrower breakpoints below still wrap 2-then-2-then-1 / 1-per-row
+   the same way they always did -- no change needed there. */
+.features-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 18px; }
+@media (max-width: 1200px) { .features-grid { grid-template-columns: repeat(3, 1fr); } }
 @media (max-width: 960px) { .features-grid { grid-template-columns: repeat(2, 1fr); } }
 @media (max-width: 560px) { .features-grid { grid-template-columns: 1fr; } }
 .feature-card { padding: 22px 20px; background: var(--paper); }
@@ -259,14 +278,18 @@
    generic blue" reasoning as the flow section, plus a soft colored glow underneath so they read
    as lit rather than flat. */
 .feature-icon {
-  width: 38px; height: 38px; border-radius: 9px; background: var(--feature-bg); color: var(--feature-color);
+  /* LIVE-REPORTED: was 38px with a 20px glyph, same "reads as small" complaint as .flow-node
+     above -- sized up together so the two icon treatments stay visually consistent. */
+  width: 46px; height: 46px; border-radius: 11px; background: var(--feature-bg); color: var(--feature-color);
   display: flex; align-items: center; justify-content: center; margin-bottom: 14px;
   box-shadow:
     0 0 0 1px color-mix(in srgb, var(--feature-color) 25%, transparent),
     0 6px 16px -4px color-mix(in srgb, var(--feature-color) 55%, transparent);
 }
-.feature-card h3 { font-size: 14.5px; margin-bottom: 6px; }
-.feature-card p { font-size: 12.5px; color: var(--ink-2); line-height: 1.5; margin: 0; }
+/* LIVE-REPORTED: same "reads small" complaint as .flow-card above -- sized up together with
+   .feature-icon so text and icon scale as one unit here too. */
+.feature-card h3 { font-size: 18px; margin-bottom: 8px; }
+.feature-card p { font-size: 14.5px; color: var(--ink-2); line-height: 1.55; margin: 0; }
 
 /* This was the flattest part of the page -- static text on a plain background, no tie to the
    AI-glow language used everywhere else (hero halo, flow line, Ask Sarthi accent). The shared
