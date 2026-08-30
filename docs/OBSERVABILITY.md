@@ -61,14 +61,38 @@ way to tell who did what, no way to revoke just one person), or someone has to h
 track a separate Caddy credential per admin forever, disconnected from the app's own user table.
 
 **What's actually built instead**: Caddy's `forward_auth` directive asks the *backend itself*,
-per request, "is this a real, currently logged-in admin?" — a tiny endpoint,
-`GET /admin/phoenix-auth-check` (`backend/routes/admin.py`), that's just the existing
-`require_role("admin")` dependency wrapping an empty 204 response. Whoever holds this app's real
-`admin` role gets Phoenix access automatically; losing that role removes it the same way — no
-separate credential to create, sync, or revoke anywhere. The browser's own `access_token`/
-`refresh_token` cookies ride along on Caddy's forwarded request as plain, unconfigured header
-forwarding (the same thing that happens on any proxied request) — so an admin already logged into
-the app in that browser reaches Phoenix's UI directly, with no separate password prompt at all.
+per request, "is this a real, currently logged-in admin?" — `GET /admin/phoenix-auth-check`
+(`backend/routes/admin.py`). Whoever holds this app's real `admin` role gets Phoenix access
+automatically; losing that role removes it the same way — no separate credential to create, sync,
+or revoke anywhere. The browser's own `access_token`/`refresh_token` cookies ride along on Caddy's
+forwarded request as plain, unconfigured header forwarding (the same thing that happens on any
+proxied request) — so an admin already logged into the app in that browser reaches Phoenix's UI
+directly, with no separate password prompt at all.
+
+**What happens on each real outcome** (`phoenix_auth_check()`'s own three branches):
+- **No session at all** (never logged in, or an expired one) — a real HTTP 302 redirect to
+  `/login`, so the visitor lands on the app's actual login page rather than a bare error. This
+  deliberately does NOT call `Depends(require_role("admin"))` the way every other admin route
+  does -- `forward_auth` copies back *whatever* this endpoint returns on any non-2xx status,
+  verbatim, so a plain 401 would show as raw JSON instead of a real way forward. One known,
+  accepted limitation: this does not auto-return the visitor to Phoenix after they log in --
+  Phoenix isn't a React Router route the app's existing "return to where you came from" login
+  logic (`Login.tsx`'s `from` state) can target, since it's served by Caddy directly, not the SPA.
+  They land on their normal dashboard and open Phoenix's URL again -- one extra click, not
+  engineered around, to avoid touching the existing, working login-redirect code for every other
+  page over a small convenience.
+- **A real session, but not an admin** (a citizen or worker) — a plain 403. Rare in practice
+  (this URL is only ever going to be typed/bookmarked by an admin).
+- **A real, current admin** — 204, no body. The only case `forward_auth` treats as "allowed"; the
+  original request proceeds to Phoenix exactly as if nothing were in front of it.
+
+**Verified live, all four real cases, end to end** (not assumed): a real `caddy` binary
+(standalone, ~50MB, no Docker needed) run locally against a copy of the real Caddyfile with
+Docker's internal service names swapped for `localhost`, fronting the real backend and a real
+Phoenix instance. No session -> 302 to `/login`; logged in as a citizen -> 403; logged in as a
+real admin -> 200 (Phoenix's actual dashboard loads); same admin session, second visit -> still
+200, no re-prompt. This same lightweight (no Docker) technique is the fastest way to sanity-check
+any future `deploy/Caddyfile` change before it goes anywhere near production.
 
 ## 4. Configuration (`.env`)
 
