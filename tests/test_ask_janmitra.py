@@ -29,6 +29,7 @@ from backend.services.embedding_provider import SentenceTransformerEmbeddingProv
 from backend.services.intent_classifier import QuestionIntent, classify
 from backend.services.location_extractor import LocationExtractor, RagGazetteer
 from backend.services.rag_retriever import RagRetriever
+from backend.services.sarvam_client import SarvamClient
 from backend.services.vector_store import ChromaVectorStore, FlatVectorStore
 from backend.schemas.rag_knowledge import ServiceCategory
 from backend.config import settings
@@ -999,10 +1000,25 @@ def test_response_language_follows_the_actual_text_not_a_stale_ui_toggle(client,
     any one turn -- ask() must answer in whatever language the MESSAGE is in, not the toggle.
     Sends `language="en"` (as if the UI toggle were still on English) with a message that's
     actually Marathi; `response_language` (and therefore `body["language"]`) must follow the real
-    text, not the request field."""
+    text, not the request field.
+
+    This deliberately calls the REAL Sarvam language-id model (see identify_language's own
+    docstring: fails open to None -- never raises -- on ANY failure, including no/exhausted API
+    credits, and callers then fall back to the caller-supplied language). That fallback value
+    ("en") happens to be indistinguishable from a genuine regression in this specific test's
+    assertion, so a real credits/quota outage would otherwise look identical to a real bug. Probe
+    the same real call directly first and skip (not fail) if it's currently unavailable, so this
+    test only ever fails for an actual detection regression, not an unrelated Sarvam billing
+    issue (see the 2026-08-30 CI incident this guards against, in PHOENIX_TRACING_PLAN.md)."""
     _install_real_service(monkeypatch)
     token, _ = make_citizen(phone="9100000024")
-    resp = _ask(client, token, "बेंगळुरूमध्ये पाणीपुरवठ्याबाबत तक्रार करण्याची प्रक्रिया काय आहे?", language="en")
+    marathi_text = "बेंगळुरूमध्ये पाणीपुरवठ्याबाबत तक्रार करण्याची प्रक्रिया काय आहे?"
+    if SarvamClient().identify_language(marathi_text) is None:
+        pytest.skip(
+            "Real Sarvam language-identification is unavailable right now (no/exhausted API "
+            "credits, or no key configured) -- cannot verify real auto-detect behavior this run."
+        )
+    resp = _ask(client, token, marathi_text, language="en")
     body = resp.json()
     assert body["language"] == "mr"
 

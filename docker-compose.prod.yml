@@ -3,6 +3,11 @@
 # backend  -- FastAPI + RAG stack, no ports published; only reachable through caddy.
 # caddy    -- serves the built React SPA and reverse-proxies the backend's route prefixes to it
 #             (same origin, no CORS hop) -- see deploy/Caddyfile.
+# phoenix  -- self-hosted LLM observability (see docs/OBSERVABILITY.md). Publishes no port of its
+#             own either -- reachable only through caddy's own Basic-Auth-gated route, same
+#             "nothing bypasses caddy" shape as backend. OFF by default: only actually receives
+#             traces once PHOENIX_TRACING=true is set in the server's own .env (same
+#             off-unless-configured pattern as every other optional integration here).
 #
 # Runtime secrets (SARVAM_API_KEY, JWT_SECRET_KEY, etc.) come from a .env file that lives ONLY
 # on the server, never in git -- see .env.example for the full list of variables it must set.
@@ -29,9 +34,17 @@ services:
       # can reach this backend directly to spoof the header. See config.py's TRUST_PROXY_HEADERS
       # docstring and backend/deps.py's require_login_rate_limit.
       TRUST_PROXY_HEADERS: "true"
+      # "phoenix" resolves via Docker's own internal DNS to the phoenix service below -- same
+      # host:port shape (6006, both the UI and the OTLP/HTTP trace-ingest endpoint) already
+      # verified working in local dev, just swapping "localhost" for the service name. Only takes
+      # effect once PHOENIX_TRACING=true is also set in the server's real .env -- unset/false
+      # here changes nothing (see backend/services/observability/tracing.py's fail-open design).
+      PHOENIX_COLLECTOR_ENDPOINT: http://phoenix:6006/v1/traces
     volumes:
       - backend_state:/app/state
     command: sh -c "mkdir -p /app/state/db /app/state/uploads && exec uvicorn backend.main:app --host 0.0.0.0 --port 8000"
+    depends_on:
+      - phoenix
     restart: unless-stopped
 
   caddy:
@@ -51,9 +64,26 @@ services:
       - caddy_config:/config
     depends_on:
       - backend
+      - phoenix
+    restart: unless-stopped
+
+  phoenix:
+    # Pinned to the exact version already verified working locally (arize-phoenix==20.4.0 on
+    # PyPI, confirmed 2026-08-29) -- the image tag convention matches the PyPI version, checked
+    # directly against Docker Hub's real tag list rather than assuming.
+    image: arizephoenix/phoenix:version-20.4.0
+    environment:
+      # Confirmed on the local instance (2026-08-28): Phoenix's own trace-retention policy
+      # defaults to unlimited and was the direct, measured root cause of Phoenix's server process
+      # growing to 2.6GB of RAM once before. This env var sets it correctly from first boot here,
+      # rather than needing the same manual GraphQL-mutation fix applied by hand after the fact.
+      PHOENIX_DEFAULT_RETENTION_POLICY_DAYS: "30"
+    volumes:
+      - phoenix_data:/mnt/data
     restart: unless-stopped
 
 volumes:
   backend_state:
   caddy_data:
   caddy_config:
+  phoenix_data:

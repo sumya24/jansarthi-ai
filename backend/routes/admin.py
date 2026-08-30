@@ -9,15 +9,15 @@ import logging
 import re
 from datetime import date, datetime, time, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import Response
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import RedirectResponse, Response
 from pydantic import BaseModel
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from backend.config import settings
 from backend.database import get_db
-from backend.deps import require_otp_rate_limit, require_role
+from backend.deps import get_current_user, require_otp_rate_limit, require_role
 from backend.models import Complaint, ComplaintRejection, ComplaintStatusHistory, ComplaintTranslation, ComplaintUpdate, District, Locality, State, ULB, User, Ward
 from backend.repositories import ai_request_log_repository, complaint_workflow_repository
 from backend.routes.auth import _dev_cache_otp, MIN_PASSWORD_LENGTH, UserResponse
@@ -909,3 +909,41 @@ def delete_ai_monitoring_request(
         raise HTTPException(status_code=404, detail="AI request log not found.")
     logger.info("AI request log deleted by admin (admin_id=%s, request_log_id=%s)", admin.id, request_log_id)
     return DeleteAiRequestResponse(deleted_request_log_id=request_log_id)
+
+
+@router.get("/phoenix-auth-check")
+def phoenix_auth_check(request: Request, db: Session = Depends(get_db)) -> Response:
+    """Not called directly by the frontend -- this exists purely for Caddy's own `forward_auth`
+    directive (see deploy/Caddyfile) to ask "is whoever is asking for Phoenix's UI a real, currently
+    logged-in admin?" before proxying them through. Ties Phoenix access to the app's own live
+    admin role instead of a separate, fixed username/password Caddy would otherwise have to
+    maintain on its own -- add or remove someone's admin role in the app, and their Phoenix access
+    changes with it automatically, no Caddy/redeploy step needed either way.
+
+    Deliberately does NOT use `Depends(require_role("admin"))` the way every other admin-only
+    route does -- forward_auth's own documented behavior is to copy back WHATEVER this endpoint
+    returns on any non-2xx status, verbatim, to the original browser. A plain 401 (what
+    `require_role` would raise for "no session at all") would show as a bare, unstyled JSON error
+    page instead of a real way forward -- calling `get_current_user` directly here instead means a
+    genuinely unauthenticated visit (typing this URL cold, or an expired session) can be turned
+    into an actual redirect to the login page, rather than a dead end.
+
+    - No valid session at all -- redirect to `/login` (a real HTTP 302, which forward_auth passes
+      straight through to the browser) so the visitor can log in with their real, existing admin
+      account right there. Note this does NOT auto-return them to Phoenix afterward -- Phoenix
+      isn't a React Router route this app's own post-login "return to where you came from" logic
+      (see Login.tsx's `from` state) can navigate to, since it's served by Caddy directly, not the
+      SPA. They land on their normal dashboard and can go to Phoenix's URL again -- one extra
+      click, not a real hurdle given it's already sitting in their browser's own history.
+    - A real session that just isn't an admin -- 403, same as every other admin-only route. Rare
+      in practice (this URL is only ever going to be typed/bookmarked by an admin), so left as a
+      plain error rather than also given a friendly redirect.
+    - A real, current admin -- 204, no body. This is the only case forward_auth treats as
+      "allowed"; the original request then proceeds to Phoenix exactly like before."""
+    try:
+        user = get_current_user(request, db)
+    except HTTPException:
+        return RedirectResponse(url="/login", status_code=302)
+    if user.role != "admin":
+        raise HTTPException(status_code=403, detail="You do not have access to this action.")
+    return Response(status_code=204)

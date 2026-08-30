@@ -332,10 +332,86 @@ python -m uvicorn backend.main:app --reload --port 8000
 #    new "View Phoenix trace" link next to the existing LangSmith one.
 ```
 
-**Still not done, if picked up again:**
-- §5-6 (production): adding the `phoenix` service to `docker-compose.prod.yml`, the Caddy
-  reverse-proxy + Basic Auth block, and deploying to the actual GCP VM. Nothing here touches
-  production yet.
+**§5-6 (production) written 2026-08-30, not yet deployed:** `docker-compose.prod.yml` now has a
+`phoenix` service (pinned `arizephoenix/phoenix:version-20.4.0` -- matches the exact PyPI version
+already verified working locally, confirmed against Docker Hub's real tag list, not guessed) with
+`PHOENIX_DEFAULT_RETENTION_POLICY_DAYS=30` set from first boot (a real, documented Phoenix env var,
+confirmed against its own source -- avoids the unlimited-retention memory-bloat incident from
+Round 9 ever happening on a fresh instance).
+
+**Access control revised 2026-08-30, same day, before this shipped**: the first version gated
+Phoenix's UI behind a single fixed HTTP Basic Auth username/password (`PHOENIX_UI_USER`/
+`PHOENIX_UI_PASSWORD_HASH`). User's real, live question surfaced the actual problem with that:
+this app has multiple admins, and a fixed shared password doesn't map to that at all -- either
+everyone shares one login (can't tell who did what, can't revoke just one person), or someone has
+to hand-provision a separate Caddy credential per admin and keep it in sync by hand forever.
+Checking production's real user table to plan the fixed-per-admin version surfaced a bigger,
+unrelated finding instead: of 77 `role=admin` rows, only 2 (`Anjali Kulkarni`/`9999999999`,
+`Vikram Desai`/`6192340986`, both created at initial seed time) look like real people -- the other
+75 are unmistakably automated test/e2e-seed artifacts (literal names like "Tracking Test Admin",
+tight-second timestamp clusters). Same pattern in `role=worker` (108 rows, ~7 look real). Reported
+back as a table, explicitly NOT deleted without sign-off (production data, real risk of
+misclassifying something as test when it's actually real) -- still awaiting that go-ahead as of
+this writing.
+
+**Final approach, once "make sure the admin role has access" was the actual ask**: gate Phoenix's
+UI via Caddy's `forward_auth` directive instead of a fixed password at all -- it asks the BACKEND
+itself, per request, "is this a real, currently logged-in admin?" (new `GET /admin/
+phoenix-auth-check` in `backend/routes/admin.py`, just `require_role("admin")` wrapping a 204).
+Whoever holds the app's own real `admin` role gets Phoenix access automatically, and losing that
+role removes access the same way -- no separate credential to create, sync, or revoke, and no new
+env vars needed for auth at all. The browser's own `access_token`/`refresh_token` cookies ride
+along on the forwarded request as plain, unconfigured header forwarding (same as any proxied
+request), so an admin already logged into the app in that browser reaches Phoenix's UI directly,
+no separate password prompt at any point.
+
+**Deliberately needed ZERO changes to `ci.yml`/`cd.yml`**: Phoenix is a public, pre-built image,
+not one this repo builds itself -- the existing deploy step's `docker compose pull && docker
+compose up -d` already fetches and starts anything listed in `docker-compose.prod.yml`, same
+mechanism that already handles backend/frontend. Verified the compose file itself is valid two
+ways without needing Docker running at all: `python -c "import yaml; yaml.safe_load(...)"` and
+`docker compose -f docker-compose.prod.yml config --quiet` (works client-side, no daemon needed).
+
+**One real manual step still required before this actually goes live**: the server's own `.env`
+(never committed) needs `PHOENIX_TRACING=true` set once, same one-time-setup category as
+`JWT_SECRET_KEY`/`SARVAM_API_KEY` already are. Until that happens, `PHOENIX_TRACING` defaults to
+`false` there too, so merging this costs nothing and changes nothing in production on its own.
+
+**Closed out 2026-08-30, same day: the login-redirect gap, verified live without Docker, then
+merged (PR #49).** One more real round on the same PR before it went in:
+- `phoenix_auth_check()` originally used `Depends(require_role("admin"))` like every other admin
+  route -- but `forward_auth` copies back whatever this endpoint returns on any non-2xx status,
+  verbatim, so a plain 401 (no session at all) showed the visitor a bare, unstyled JSON error
+  instead of anywhere to go. Rewritten to call `get_current_user()` directly instead of depending
+  on it, specifically so "no session at all" can become a real `302` redirect to `/login`, while a
+  real session that just isn't an admin still gets a plain `403` (rare enough -- only ever an
+  admin would have this URL -- not worth a friendlier path too).
+- **Verified all 4 real cases end to end, live, without Docker at all** (the user specifically
+  didn't want a local Docker Compose run -- too heavy for the machine) -- downloaded the real
+  standalone `caddy` binary (~50MB, no daemon/VM, nothing like Docker's overhead), pointed a copy
+  of the real `deploy/Caddyfile` at `localhost` instead of Docker's internal service names, and
+  ran it against the real backend + real Phoenix + the real Vite dev server (for the actual login
+  page) all as plain local processes. Real result: no session -> `302` to `/login`; logged in as a
+  citizen -> `403`; logged in as a real admin -> `200` (Phoenix's actual dashboard loads); same
+  admin, second visit -> still `200`, no re-prompt. **One real, non-obvious snag hit and fixed
+  during this**: Vite on this machine listens on IPv6 (`[::1]:5173`), not `127.0.0.1:5173` --
+  pointing Caddy's proxy at the IPv4 address specifically caused a `502` ("connection actively
+  refused") even though `curl http://localhost:5173` worked fine (curl's `localhost` resolved to
+  `::1` first). Fixed by proxying to `localhost:5173` instead of the IPv4 literal, letting Caddy's
+  own resolution match. This whole technique (a bare `caddy` binary, no Docker) is the fast way to
+  sanity-check any future `deploy/Caddyfile` change before it goes near production.
+- **User's own explicit call, worth recording**: asked directly whether to just drop the access
+  check entirely and make Phoenix's UI open with no login at all, "like local." Talked through
+  why local and production aren't the same kind of "open" -- `localhost:6006` is only reachable
+  from the one machine it runs on, while production's URL is public; removing the check there
+  would mean real citizen questions and cost data become visible to anyone who finds the link, not
+  just simpler config. Recommendation (keep the check) stood; nothing was removed.
+- **PR #49 merged into `main` this same day** after: (1) CI passing (`backend-tests`,
+  `frontend-build`) on the final commit, (2) updating the branch with `main` first (GitHub's own
+  branch-protection rule required this -- the branch had fallen behind `main`, which had picked up
+  PR #48's large "AI production hardening" merge -- MCP server, guardrails, reranker, hybrid
+  search, RAGAS eval -- in the meantime; merged clean, zero conflicts, since none of that work
+  touches any file this PR does).
 - The LangSmith account-swap's own follow-up decision (local dev sharing the same key vs. its own)
   was never actually decided -- worth revisiting, especially since the *new* LangSmith account
   independently hit its own rate limit again during this same session (confirmed live via a 429
