@@ -376,6 +376,42 @@ ways without needing Docker running at all: `python -c "import yaml; yaml.safe_l
 (never committed) needs `PHOENIX_TRACING=true` set once, same one-time-setup category as
 `JWT_SECRET_KEY`/`SARVAM_API_KEY` already are. Until that happens, `PHOENIX_TRACING` defaults to
 `false` there too, so merging this costs nothing and changes nothing in production on its own.
+
+**Closed out 2026-08-30, same day: the login-redirect gap, verified live without Docker, then
+merged (PR #49).** One more real round on the same PR before it went in:
+- `phoenix_auth_check()` originally used `Depends(require_role("admin"))` like every other admin
+  route -- but `forward_auth` copies back whatever this endpoint returns on any non-2xx status,
+  verbatim, so a plain 401 (no session at all) showed the visitor a bare, unstyled JSON error
+  instead of anywhere to go. Rewritten to call `get_current_user()` directly instead of depending
+  on it, specifically so "no session at all" can become a real `302` redirect to `/login`, while a
+  real session that just isn't an admin still gets a plain `403` (rare enough -- only ever an
+  admin would have this URL -- not worth a friendlier path too).
+- **Verified all 4 real cases end to end, live, without Docker at all** (the user specifically
+  didn't want a local Docker Compose run -- too heavy for the machine) -- downloaded the real
+  standalone `caddy` binary (~50MB, no daemon/VM, nothing like Docker's overhead), pointed a copy
+  of the real `deploy/Caddyfile` at `localhost` instead of Docker's internal service names, and
+  ran it against the real backend + real Phoenix + the real Vite dev server (for the actual login
+  page) all as plain local processes. Real result: no session -> `302` to `/login`; logged in as a
+  citizen -> `403`; logged in as a real admin -> `200` (Phoenix's actual dashboard loads); same
+  admin, second visit -> still `200`, no re-prompt. **One real, non-obvious snag hit and fixed
+  during this**: Vite on this machine listens on IPv6 (`[::1]:5173`), not `127.0.0.1:5173` --
+  pointing Caddy's proxy at the IPv4 address specifically caused a `502` ("connection actively
+  refused") even though `curl http://localhost:5173` worked fine (curl's `localhost` resolved to
+  `::1` first). Fixed by proxying to `localhost:5173` instead of the IPv4 literal, letting Caddy's
+  own resolution match. This whole technique (a bare `caddy` binary, no Docker) is the fast way to
+  sanity-check any future `deploy/Caddyfile` change before it goes near production.
+- **User's own explicit call, worth recording**: asked directly whether to just drop the access
+  check entirely and make Phoenix's UI open with no login at all, "like local." Talked through
+  why local and production aren't the same kind of "open" -- `localhost:6006` is only reachable
+  from the one machine it runs on, while production's URL is public; removing the check there
+  would mean real citizen questions and cost data become visible to anyone who finds the link, not
+  just simpler config. Recommendation (keep the check) stood; nothing was removed.
+- **PR #49 merged into `main` this same day** after: (1) CI passing (`backend-tests`,
+  `frontend-build`) on the final commit, (2) updating the branch with `main` first (GitHub's own
+  branch-protection rule required this -- the branch had fallen behind `main`, which had picked up
+  PR #48's large "AI production hardening" merge -- MCP server, guardrails, reranker, hybrid
+  search, RAGAS eval -- in the meantime; merged clean, zero conflicts, since none of that work
+  touches any file this PR does).
 - The LangSmith account-swap's own follow-up decision (local dev sharing the same key vs. its own)
   was never actually decided -- worth revisiting, especially since the *new* LangSmith account
   independently hit its own rate limit again during this same session (confirmed live via a 429
