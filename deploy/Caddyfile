@@ -27,6 +27,20 @@
 		reverse_proxy backend:8000
 	}
 
+	# Phoenix's own UI (see docs/OBSERVABILITY.md) -- real citizen traffic/costs/questions would
+	# otherwise sit behind a public URL with no login of its own at all, since Phoenix has no
+	# built-in auth. Gated behind HTTP Basic Auth; PHOENIX_UI_USER/PHOENIX_UI_PASSWORD_HASH come
+	# from the server's own .env (see docker-compose.prod.yml's caddy service) -- generate the
+	# hash with `docker compose -f docker-compose.prod.yml run --rm caddy caddy hash-password`,
+	# never a plaintext password committed anywhere.
+	handle /phoenix-ui* {
+		basic_auth {
+			{$PHOENIX_UI_USER} {$PHOENIX_UI_PASSWORD_HASH}
+		}
+		uri strip_prefix /phoenix-ui
+		reverse_proxy phoenix:6006
+	}
+
 	handle {
 		root * /usr/share/caddy
 		try_files {path} /index.html

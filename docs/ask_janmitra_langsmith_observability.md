@@ -8,9 +8,11 @@ touched — this phase only adds a way to *observe* that pipeline, plus a small 
 the Admin dashboard reads from.
 
 **Since this was written, a second tracing backend was added alongside LangSmith: Arize Phoenix
-(self-hosted, local-only so far) — see [`PHOENIX_TRACING_PLAN.md`](../PHOENIX_TRACING_PLAN.md)
-for that one's own current status. `tracing.py` writes to both; nothing below about LangSmith
-itself changed.**
+(self-hosted, local-only so far) — see [`OBSERVABILITY.md`](OBSERVABILITY.md) for that one, plus
+the real ₹ cost tracking, Admin AI Monitoring page, and alerts built on top of both backends.
+[`PHOENIX_TRACING_PLAN.md`](../PHOENIX_TRACING_PLAN.md) has the full round-by-round history behind
+those decisions. `tracing.py` writes to both backends; nothing below about LangSmith itself
+changed.**
 
 ```
 Frontend  ->  FastAPI  ->  LangGraph  ->  Intent / Location  ->  Flow Router  ->  RAG / Complaint / Status  ->  Response

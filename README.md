@@ -17,6 +17,7 @@ This README is a quick reference and setup guide. Everything else — the actual
 | Login, passwords, JWTs, and roles — what a JWT actually is and why this project hand-rolled its own | **[`docs/AUTHENTICATION.md`](docs/AUTHENTICATION.md)** |
 | The AI pipeline: speech-to-text, translation, summarization, and the real limits measured against the live Sarvam API | **[`docs/AI_AGENT.md`](docs/AI_AGENT.md)** |
 | Testing strategy: pytest, mocking, property-based tests, Playwright end-to-end tests | **[`docs/TESTING.md`](docs/TESTING.md)** |
+| Tracing (LangSmith), Phoenix, real ₹ cost tracking, and the Admin AI Monitoring alerts | **[`docs/ask_janmitra_langsmith_observability.md`](docs/ask_janmitra_langsmith_observability.md)** + **[`docs/OBSERVABILITY.md`](docs/OBSERVABILITY.md)** |
 | What's deliberately out of scope so far | **[`future_work.md`](future_work.md)** |
 
 Every doc in `docs/` ends with a **"Likely interview questions about this part of the project"** section — real questions with real, specific answers grounded in this actual codebase, not generic advice.
@@ -100,11 +101,22 @@ janmitra-ai/
 
 ## Setup
 
+**Fastest path (Windows, PowerShell):** clone the repo, then run `.\setup.ps1` from the project
+root. It creates a real isolated virtual environment for the backend (`.venv/`), installs the
+frontend's npm packages, and sets up Phoenix's own separate environment (`.phoenix-venv/` — kept
+separate on purpose, see [`docs/OBSERVABILITY.md §2`](docs/OBSERVABILITY.md#2-two-python-environments-on-purpose--dont-merge-them)
+for why merging it in would actually break things). Safe to re-run. Skip to step 3 below to
+configure `.env` once it finishes.
+
+The manual steps it automates, if you'd rather do them yourself or aren't on Windows:
+
 1. **Clone and install backend dependencies**
 
    ```bash
    git clone https://github.com/sumya24/janmitra-ai
    cd janmitra-ai
+   python -m venv .venv
+   .venv\Scripts\activate        # Windows; on macOS/Linux: source .venv/bin/activate
    pip install -r requirements.txt
    ```
 

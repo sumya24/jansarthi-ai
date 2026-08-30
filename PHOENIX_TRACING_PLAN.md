@@ -332,10 +332,28 @@ python -m uvicorn backend.main:app --reload --port 8000
 #    new "View Phoenix trace" link next to the existing LangSmith one.
 ```
 
-**Still not done, if picked up again:**
-- §5-6 (production): adding the `phoenix` service to `docker-compose.prod.yml`, the Caddy
-  reverse-proxy + Basic Auth block, and deploying to the actual GCP VM. Nothing here touches
-  production yet.
+**§5-6 (production) written 2026-08-30, not yet deployed:** `docker-compose.prod.yml` now has a
+`phoenix` service (pinned `arizephoenix/phoenix:version-20.4.0` -- matches the exact PyPI version
+already verified working locally, confirmed against Docker Hub's real tag list, not guessed) with
+`PHOENIX_DEFAULT_RETENTION_POLICY_DAYS=30` set from first boot (a real, documented Phoenix env var,
+confirmed against its own source -- avoids the unlimited-retention memory-bloat incident from
+Round 9 ever happening on a fresh instance). `deploy/Caddyfile` gates Phoenix's UI behind HTTP
+Basic Auth at `/phoenix-ui/*` (`PHOENIX_UI_USER`/`PHOENIX_UI_PASSWORD_HASH`, generated via
+`caddy hash-password` -- Phoenix has no login of its own, so this stops real citizen traffic/cost
+data from sitting behind an open public URL). `.env.example` documents both new vars.
+
+**Deliberately needed ZERO changes to `ci.yml`/`cd.yml`**: Phoenix is a public, pre-built image,
+not one this repo builds itself -- the existing deploy step's `docker compose pull && docker
+compose up -d` already fetches and starts anything listed in `docker-compose.prod.yml`, same
+mechanism that already handles backend/frontend. Verified the compose file itself is valid two
+ways without needing Docker running at all: `python -c "import yaml; yaml.safe_load(...)"` and
+`docker compose -f docker-compose.prod.yml config --quiet` (works client-side, no daemon needed).
+
+**One real manual step still required before this actually goes live**: the server's own `.env`
+(never committed) needs `PHOENIX_TRACING=true`, a real `PHOENIX_UI_USER`, and a real
+`PHOENIX_UI_PASSWORD_HASH` set once, same one-time-setup category as `JWT_SECRET_KEY`/
+`SARVAM_API_KEY` already are. Until that happens, `PHOENIX_TRACING` defaults to `false` there
+too, so merging this costs nothing and changes nothing in production on its own.
 - The LangSmith account-swap's own follow-up decision (local dev sharing the same key vs. its own)
   was never actually decided -- worth revisiting, especially since the *new* LangSmith account
   independently hit its own rate limit again during this same session (confirmed live via a 429
