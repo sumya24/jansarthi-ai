@@ -98,7 +98,7 @@ any future `deploy/Caddyfile` change before it goes anywhere near production.
 
 | Variable | Meaning |
 |---|---|
-| `PHOENIX_TRACING` | `true`/`false` — off unless explicitly enabled, same pattern as `LANGSMITH_TRACING` |
+| `PHOENIX_TRACING` | `true`/`false` — off unless explicitly enabled, same pattern as `LANGSMITH_TRACING`. In **production only**, `.github/workflows/cd.yml`'s deploy step sets this to `true` on the server's `.env` itself on every deploy (same upsert pattern it already uses for `BACKEND_IMAGE`/`FRONTEND_IMAGE`) — no manual server edit needed there. Local dev still defaults to `false` and is set by hand in your own `.env`. |
 | `PHOENIX_COLLECTOR_ENDPOINT` | Where the backend sends spans, e.g. `http://localhost:6006/v1/traces` |
 | `PHOENIX_PROJECT_NAME` | Groups this app's traces in Phoenix's UI (default `jansarthi-ai`) |
 | `PHOENIX_TRACE_URL_TEMPLATE` | Optional — builds a direct "View Phoenix trace" link on the Admin AI Monitoring page |

@@ -98,6 +98,17 @@ jobs:
             echo "BACKEND_IMAGE=${{ env.BACKEND_IMAGE }}:${{ github.sha }}" >> .env
             echo "FRONTEND_IMAGE=${{ env.FRONTEND_IMAGE }}:${{ github.sha }}" >> .env
 
+            # Phoenix (see docs/OBSERVABILITY.md) ships in docker-compose.prod.yml but its own
+            # tracing code stays fail-open/off (backend/services/observability/tracing.py) until
+            # PHOENIX_TRACING=true is actually set -- same pattern as BACKEND_IMAGE/FRONTEND_IMAGE
+            # above, upserted here so enabling it is a code change (this line), never a manual SSH
+            # + hand-edit of the server's .env. Access to the UI itself is still gated on the
+            # citizen's real admin login regardless (see backend/routes/admin.py's
+            # phoenix_auth_check()) -- this only controls whether traces get sent at all.
+            grep -v '^PHOENIX_TRACING=' .env > .env.tmp || true
+            mv .env.tmp .env
+            echo "PHOENIX_TRACING=true" >> .env
+
             # Prune BEFORE pulling too, not just after: `docker image prune -f` (no -a) only ever
             # removed dangling (untagged) layers, never the previous deploy's still-tagged image
             # -- those accumulated deploy over deploy until the VM's disk filled up and pull
