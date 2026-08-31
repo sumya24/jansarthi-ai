@@ -47,15 +47,21 @@ export default defineConfig({
     // cookie set at :8000 was silently never sent back on the next request to :5173. Proxying
     // keeps the backend reachable at 127.0.0.1 (whatever made that the working address here
     // still holds) while removing the cross-site boundary entirely.
+    //
+    // LOCAL-ONLY, NOT FOR COMMIT: targets :8030 instead of :8000 -- this machine has repeatedly
+    // left a port unable to rebind after its previous process was killed (a `Stop-Process -Force`
+    // that didn't also kill child processes still holding the socket -- `taskkill /T /F`, which
+    // kills the whole tree, is the actual fix; see this file's git history for the ports already
+    // hit today). Revert this one line to :8000 once that's confirmed free again.
     proxy: {
-      "/auth": proxyTo("http://127.0.0.1:8000"),
-      "/admin": proxyTo("http://127.0.0.1:8000"),
-      "/complaints": proxyTo("http://127.0.0.1:8000"),
-      "/locations": proxyTo("http://127.0.0.1:8000"),
-      "/notifications": proxyTo("http://127.0.0.1:8000"),
-      "/ask-sarthi": proxyTo("http://127.0.0.1:8000"),
-      "/uploads": proxyTo("http://127.0.0.1:8000"),
-      "/health": proxyTo("http://127.0.0.1:8000"),
+      "/auth": proxyTo("http://127.0.0.1:8030"),
+      "/admin": proxyTo("http://127.0.0.1:8030"),
+      "/complaints": proxyTo("http://127.0.0.1:8030"),
+      "/locations": proxyTo("http://127.0.0.1:8030"),
+      "/notifications": proxyTo("http://127.0.0.1:8030"),
+      "/ask-sarthi": proxyTo("http://127.0.0.1:8030"),
+      "/uploads": proxyTo("http://127.0.0.1:8030"),
+      "/health": proxyTo("http://127.0.0.1:8030"),
     },
   },
 })

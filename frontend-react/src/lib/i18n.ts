@@ -191,6 +191,15 @@ export const I18N: Record<LangCode, Dict> = {
     "worker.noWard": "No ward assigned yet",
     "worker.open": "Open",
     "worker.resolved": "Resolved",
+    // English-only (no translations added yet for hi/mr/or/gu/bn) -- t()'s own fallback to
+    // I18N.en[key] means these render in English for every language until translated.
+    "worker.trendTitle": "Opened vs. resolved, last 7 days",
+    "worker.trendEmpty": "No activity recorded yet.",
+    "worker.resolutionRate": "Resolution rate",
+    "worker.rejected": "Rejected",
+    "worker.resolutionRateHint": "Click to see what's still open →",
+    "worker.openPlusRejected": "Open + rejected",
+    "worker.stillOpen": "Still open",
     "worker.filterAll": "All",
     "worker.searchComplaints": "Search by ID, ward, or description",
     "worker.filterOpen": "Open",

@@ -14,10 +14,12 @@ import { useAuth } from "../lib/auth";
 import { useUiLang } from "../lib/uiLang";
 import { useDebouncedValue } from "../lib/useDebouncedValue";
 import { t } from "../lib/i18n";
-import { api, ApiError, type Complaint, type ServiceStatusCount } from "../lib/api";
+import { api, ApiError, type Complaint, type DailyComplaintTrend, type ServiceStatusCount } from "../lib/api";
 import { useToast } from "../lib/toast";
 import SearchWithDateFilter from "../components/SearchWithDateFilter";
 import ServiceDonutPanel from "../components/ServiceDonutPanel";
+import ComplaintsTrendChart from "../components/ComplaintsTrendChart";
+import ResolutionRateGauge from "../components/ResolutionRateGauge";
 import "../styles/dashboard.css";
 
 // LIVE-REPORTED GAP: this queue used to fetch and render EVERY complaint assigned to this worker
@@ -66,10 +68,23 @@ export default function WorkerDashboard() {
   // CitizenDashboard.tsx's identical stat cards for the fuller rationale.
   const [totalCount, setTotalCount] = useState(0);
   const [resolvedCount, setResolvedCount] = useState(0);
+  // The 3 mutually-exclusive status buckets that make up totalCount (assignedCount +
+  // inProgressCount + resolvedCount === totalCount), plus a real all-time rejection tally --
+  // NOT a 4th bucket of the same total (a rejection doesn't change the complaint's status, it
+  // just sends it back to pending/reassignment -- see backend/routes/complaints.py's
+  // complaints_trend docstring), shown alongside the others in the Resolution Rate card anyway
+  // since it's a real, meaningful count of this worker's own past decisions.
+  const [assignedCount, setAssignedCount] = useState(0);
+  const [inProgressCount, setInProgressCount] = useState(0);
+  const [rejectedCount, setRejectedCount] = useState(0);
   // Decoupled from `loading`/search/filter for the same reason as totalCount/resolvedCount above
   // -- this worker's own service breakdown should read as "your whole queue," not flicker every
   // time a search/date/page change re-triggers `load()`'s own loading flag.
   const [serviceRows, setServiceRows] = useState<ServiceStatusCount[]>([]);
+  // Decoupled from `loading`/search/filter for the same reason as totalCount/resolvedCount above
+  // -- feeds the "Opened vs. resolved" chart, which should read as "the last 7 real days," not
+  // flicker every time a search/date/page change re-triggers `load()`'s own loading flag.
+  const [trendData, setTrendData] = useState<DailyComplaintTrend[]>([]);
   const debouncedSearch = useDebouncedValue(search);
 
   // Which complaint has an action modal open, and which modal -- one at a time, keyed by
@@ -103,14 +118,35 @@ export default function WorkerDashboard() {
   async function loadStats() {
     if (!token) return;
     try {
-      const [all, resolved] = await Promise.all([
+      const [all, resolved, assigned, inProgress] = await Promise.all([
         api.listComplaints(token, { page: 1, pageSize: 1 }),
         api.listComplaints(token, { status: "resolved", page: 1, pageSize: 1 }),
+        api.listComplaints(token, { status: "assigned", page: 1, pageSize: 1 }),
+        // Comma-separated multi-status filter -- same syntax the status filter chips above
+        // already send (see backend/routes/complaints.py's _parse_status_filter).
+        api.listComplaints(token, { status: "accepted,in_progress", page: 1, pageSize: 1 }),
       ]);
       setTotalCount(all.total);
       setResolvedCount(resolved.total);
+      setAssignedCount(assigned.total);
+      setInProgressCount(inProgress.total);
     } catch {
       // Non-critical -- the stat cards just keep their last known values on a transient failure.
+    }
+  }
+
+  async function loadRejectedTotal() {
+    if (!token) return;
+    try {
+      // Reuses the daily trend endpoint rather than a dedicated summary one -- a rejection isn't
+      // a status, so it can't be counted via listComplaints' status filter like the others above;
+      // this is the only endpoint that already queries ComplaintRejection scoped to this worker.
+      // `days: 3650` is a practical "since the start of this dataset" window (the earliest real
+      // row here is from 2026, well under 10 years back), not a literal all-time guarantee.
+      const daily = await api.complaintsTrend(token, { days: 3650 });
+      setRejectedCount(daily.reduce((sum, d) => sum + d.rejected, 0));
+    } catch {
+      // Non-critical -- keeps its last known value on a transient failure, same as loadStats.
     }
   }
 
@@ -123,8 +159,18 @@ export default function WorkerDashboard() {
     }
   }
 
+  async function loadTrend() {
+    if (!token) return;
+    try {
+      setTrendData(await api.complaintsTrend(token, { days: 7 }));
+    } catch {
+      // Non-critical -- the chart just keeps its last known values (or renders its empty state)
+      // on a transient failure, same as the other stat/breakdown loaders on this page.
+    }
+  }
+
   async function reload() {
-    await Promise.all([load(), loadStats(), loadServiceBreakdown()]);
+    await Promise.all([load(), loadStats(), loadServiceBreakdown(), loadTrend(), loadRejectedTotal()]);
   }
 
   // A search edit or filter-chip click always jumps back to page 1 -- the previous page number
@@ -141,6 +187,8 @@ export default function WorkerDashboard() {
   useEffect(() => {
     loadStats();
     loadServiceBreakdown();
+    loadTrend();
+    loadRejectedTotal();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
@@ -161,6 +209,7 @@ export default function WorkerDashboard() {
   function closeModal() {
     setModalFor(null);
   }
+
 
   // A worker's queue only ever contains complaints currently assigned to them (see
   // backend/routes/complaints.py) — so "open" here means everything short of resolved.
@@ -189,14 +238,58 @@ export default function WorkerDashboard() {
           </div>
         </div>
 
-        {serviceRows.length > 0 && (
-          <div className="surface-card admin-loc-ai-panel" style={{ marginBottom: 20 }}>
+        {/* Same 3-card row style as AdminDashboard's own location/AI-health/service row
+            (.admin-loc-ai-row.three-col + .surface-card.admin-loc-ai-panel) -- reused here rather
+            than invented fresh, so a worker's dashboard and an admin's read as the same design
+            language. */}
+        <div className="admin-loc-ai-row three-col" style={{ marginBottom: 20 }}>
+          {serviceRows.length > 0 && (
+            <div className="surface-card admin-loc-ai-panel">
+              <h6>
+                <span>{t(lang, "admin.serviceChartTitle")}</span>
+              </h6>
+              <ServiceDonutPanel rows={serviceRows} lang={lang} statusLabel={(status) => t(lang, STATUS_LABEL_KEY[status])} />
+            </div>
+          )}
+          <div className="surface-card admin-loc-ai-panel">
             <h6>
-              <span>{t(lang, "admin.serviceChartTitle")}</span>
+              <span>{t(lang, "worker.trendTitle")}</span>
             </h6>
-            <ServiceDonutPanel rows={serviceRows} lang={lang} statusLabel={(status) => t(lang, STATUS_LABEL_KEY[status])} />
+            <ComplaintsTrendChart
+              daily={trendData}
+              emptyLabel={t(lang, "worker.trendEmpty")}
+              legends={{
+                opened: t(lang, "worker.open"),
+                resolved: t(lang, "worker.resolved"),
+              }}
+            />
           </div>
-        )}
+          {totalCount > 0 && (
+            <div className="surface-card admin-loc-ai-panel">
+              <h6>
+                <span>{t(lang, "worker.resolutionRate")}</span>
+              </h6>
+              <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <ResolutionRateGauge
+                  totalCount={totalCount}
+                  resolvedCount={resolvedCount}
+                  assignedCount={assignedCount}
+                  inProgressCount={inProgressCount}
+                  rejectedCount={rejectedCount}
+                  resolvedLabel={t(lang, "worker.resolved")}
+                  stillOpenLabel={t(lang, "worker.stillOpen")}
+                  needsResponseLabel={t(lang, "worker.filterAssigned")}
+                  inProgressLabel={t(lang, "worker.filterInProgress")}
+                  rejectedLabel={t(lang, "worker.rejected")}
+                  hintText={t(lang, "worker.resolutionRateHint")}
+                  backLabel={t(lang, "common.back")}
+                  openLabel={t(lang, "worker.openPlusRejected")}
+                  gaugeLabel={t(lang, "worker.resolutionRate")}
+                />
+              </div>
+            </div>
+          )}
+        </div>
 
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 10, marginBottom: 16 }}>
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>

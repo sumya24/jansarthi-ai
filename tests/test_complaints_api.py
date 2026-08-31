@@ -8,10 +8,11 @@ Lifecycle covered here: pending -> assigned -> accepted -> resolved -> feedback,
 reassign to the next worker in the same ward (or back to pending if none are left).
 """
 
+from datetime import datetime, timedelta, timezone
 from unittest.mock import Mock
 
 import backend.routes.complaints as complaints_module
-from backend.models import Complaint, User
+from backend.models import Complaint, ComplaintRejection, ComplaintStatusHistory, User
 from backend.services.auth_service import hash_password
 from backend.services.sarvam_client import AIServiceError
 
@@ -1139,3 +1140,113 @@ def test_classify_category_rejects_non_citizen(client, monkeypatch, make_worker)
         json={"text": "Garbage everywhere."},
     )
     assert response.status_code == 403
+
+
+def test_complaints_trend_counts_resolved_from_status_history_not_current_status(client, make_worker, db_session):
+    """The worker dashboard's "Opened vs. resolved" chart needs to know WHEN a complaint became
+    resolved, not just that it currently is -- Complaint.status alone can't say that, only
+    ComplaintStatusHistory's own timestamped rows can (see routes/complaints.py's complaints_trend
+    docstring). This pins that down directly: a complaint resolved 3 days ago must show up in day
+    -3's `resolved` count even though its `status` field is checked nowhere in this endpoint."""
+    token, worker = make_worker(phone="9000000002", ward="Ward 14")
+    other_worker_id = _make_worker_row(db_session, phone="9000000099", ward="Ward 14", full_name="Other Worker")
+
+    now = datetime.now(timezone.utc)
+    three_days_ago = now - timedelta(days=3)
+
+    db = db_session()
+    resolved_complaint = Complaint(
+        citizen_id="1", original_text="a", original_language="en",
+        translated_text="Resolved 3 days ago", summary="a", ward="Ward 14",
+        status="resolved", assigned_worker_id=worker["id"], created_at=now - timedelta(days=10),
+    )
+    db.add(resolved_complaint)
+    db.flush()
+    db.add(ComplaintStatusHistory(
+        complaint_id=resolved_complaint.id, from_status="in_progress", to_status="resolved",
+        actor_role="worker", actor_user_id=worker["id"], created_at=three_days_ago,
+    ))
+    # Belongs to a different worker -- must not count toward this worker's trend at all.
+    other_complaint = Complaint(
+        citizen_id="1", original_text="b", original_language="en",
+        translated_text="Someone else's", summary="b", ward="Ward 14",
+        status="resolved", assigned_worker_id=other_worker_id, created_at=now - timedelta(days=10),
+    )
+    db.add(other_complaint)
+    db.flush()
+    db.add(ComplaintStatusHistory(
+        complaint_id=other_complaint.id, from_status="in_progress", to_status="resolved",
+        actor_role="worker", actor_user_id=other_worker_id, created_at=three_days_ago,
+    ))
+    db.commit()
+    db.close()
+
+    response = client.get("/complaints/trend?days=7", headers={"Authorization": f"Bearer {token}"})
+    assert response.status_code == 200
+    body = response.json()
+
+    assert len(body) == 7
+    day_key = three_days_ago.strftime("%Y-%m-%d")
+    matching_days = [row for row in body if row["date"] == day_key]
+    assert len(matching_days) == 1
+    assert matching_days[0]["resolved"] == 1
+
+
+def test_complaints_trend_returns_exactly_the_requested_number_of_days(client, make_worker):
+    token, _worker = make_worker(phone="9000000002", ward="Ward 14")
+    response = client.get("/complaints/trend?days=7", headers={"Authorization": f"Bearer {token}"})
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) == 7
+    # Every day present even with zero complaints -- a fixed x-axis, not an activity-only range.
+    assert all(
+        row["opened"] == 0 and row["resolved"] == 0 and row["accepted"] == 0 and row["rejected"] == 0
+        for row in body
+    )
+
+
+def test_complaints_trend_counts_accepted_from_status_history_and_rejected_from_its_own_table(
+    client, make_worker, db_session
+):
+    """"Accepted" is a status transition (ComplaintStatusHistory), same reasoning as "resolved" --
+    but "rejected" is NOT: a rejected complaint goes right back to "pending"/reassignment, so it
+    never appears as a ComplaintStatusHistory.to_status value at all. It has its own table
+    (ComplaintRejection) instead, and this pins down that the trend endpoint actually reads from
+    it rather than expecting a "rejected" status that can never occur."""
+    token, worker = make_worker(phone="9000000002", ward="Ward 14")
+
+    now = datetime.now(timezone.utc)
+    two_days_ago = now - timedelta(days=2)
+
+    db = db_session()
+    accepted_complaint = Complaint(
+        citizen_id="1", original_text="a", original_language="en",
+        translated_text="Accepted 2 days ago", summary="a", ward="Ward 14",
+        status="accepted", assigned_worker_id=worker["id"], created_at=now - timedelta(days=10),
+    )
+    db.add(accepted_complaint)
+    db.flush()
+    db.add(ComplaintStatusHistory(
+        complaint_id=accepted_complaint.id, from_status="assigned", to_status="accepted",
+        actor_role="worker", actor_user_id=worker["id"], created_at=two_days_ago,
+    ))
+    rejected_complaint = Complaint(
+        citizen_id="1", original_text="b", original_language="en",
+        translated_text="Rejected 2 days ago", summary="b", ward="Ward 14",
+        status="pending", created_at=now - timedelta(days=10),
+    )
+    db.add(rejected_complaint)
+    db.flush()
+    db.add(ComplaintRejection(complaint_id=rejected_complaint.id, worker_id=worker["id"], reason="Not my area", created_at=two_days_ago))
+    db.commit()
+    db.close()
+
+    response = client.get("/complaints/trend?days=7", headers={"Authorization": f"Bearer {token}"})
+    assert response.status_code == 200
+    body = response.json()
+
+    day_key = two_days_ago.strftime("%Y-%m-%d")
+    matching_days = [row for row in body if row["date"] == day_key]
+    assert len(matching_days) == 1
+    assert matching_days[0]["accepted"] == 1
+    assert matching_days[0]["rejected"] == 1
