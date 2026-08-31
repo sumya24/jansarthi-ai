@@ -94,6 +94,17 @@ export default function AdminAiMonitoring() {
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [error, setError] = useState<string | null>(null);
+  // LIVE-REPORTED BUG: loadSummary() and loadRequests() used to share this one `error` state, but
+  // only loadRequests() ever cleared it on success -- loadSummary() set it on failure and NEVER
+  // cleared it on a later success. The two fire concurrently on mount (separate useEffects
+  // below); if loadSummary() failed even once (any transient blip -- a mid-restart request, a
+  // momentary network hiccup) and its retry later succeeded AFTER loadRequests() had already run,
+  // the error banner stuck around permanently, showing "Could not load AI monitoring data" even
+  // while Cost by Model and Recent Requests both displayed real, current, successfully-loaded
+  // data right below it -- confirmed live, repeatedly, on production. Split into its own state so
+  // each independently-fetched section's error is only ever set/cleared by that section's own
+  // load function -- no race between them either direction.
+  const [summaryError, setSummaryError] = useState<string | null>(null);
   // `loading` gates the page's initial skeleton (stat tiles + table both hidden until the FIRST
   // fetch resolves). `tableBusy` is separate and only used for subsequent page-change refetches
   // -- without the split, clicking Prev/Next re-triggered the same `loading` flag that also hides
@@ -107,8 +118,9 @@ export default function AdminAiMonitoring() {
     if (!token) return;
     try {
       setSummary(await api.aiMonitoringSummary(token));
+      setSummaryError(null);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : t(lang, "admin.aiErrLoadFailed"));
+      setSummaryError(err instanceof ApiError ? err.message : t(lang, "admin.aiErrLoadFailed"));
     }
   }
 
@@ -266,6 +278,7 @@ export default function AdminAiMonitoring() {
         </div>
 
         {error && <div className="banner-error">{error}</div>}
+        {summaryError && <div className="banner-error">{summaryError}</div>}
         {loading && (
           <div className="surface-card" style={{ padding: 18 }}>
             {[0, 1].map((i) => (
