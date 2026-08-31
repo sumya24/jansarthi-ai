@@ -111,8 +111,26 @@ async function _fetchJson(
     // credentials: "include" -- required for the httpOnly auth cookies to actually travel with
     // the request at all, cross-origin (local dev: :5173 -> :8000) or not; without it, `fetch`
     // silently drops any cookie on a cross-origin request by default.
+    //
+    // LIVE-REPORTED BUG: cache: "no-store" -- several of these paths (/admin, /admin/workers,
+    // /admin/ai-monitoring, ...) are DELIBERATELY both a backend API endpoint AND a React Router
+    // page at the identical URL (see deploy/Caddyfile's own @backend matcher docstring). A real
+    // top-level browser navigation to one of those page URLs (typing it, a bookmark, a hard
+    // refresh) gets Caddy's SPA fallback (index.html) for that exact GET request -- correct,
+    // intended behavior. But neither Caddy's response nor the browser's default fetch() cache
+    // mode ("default") disables HTTP caching for that response, so the browser's own cache then
+    // stores index.html under that URL. Moments later, when the mounted page's OWN JS calls
+    // fetch() to that SAME URL to actually load its data, the default cache mode serves that
+    // cached index.html straight back WITHOUT even hitting the network -- confirmed directly: a
+    // fetch immediately after navigating to /admin/ai-monitoring returned the cached HTML, and
+    // response.json() then threw a raw (non-ApiError) SyntaxError trying to parse it, which is
+    // why this surfaced as a generic "Could not load AI monitoring data" error with the network
+    // tab still showing a "200 OK" for the ORIGINAL (correctly-SPA) navigation request, not the
+    // failing one. cache: "no-store" makes every API call in this app bypass the HTTP cache
+    // entirely, so it always hits the network and always reaches the real backend response for
+    // these colliding paths, regardless of what the browser cached for the page load itself.
     response = await fetch(`${API_URL}${path}`, {
-      method, headers, body, signal: options.signal, credentials: "include",
+      method, headers, body, signal: options.signal, credentials: "include", cache: "no-store",
     });
   } catch (err) {
     // A deliberate cancellation (see AskSarthi.tsx's stop-generation button) rejects `fetch`
@@ -182,7 +200,11 @@ async function requestPaginated<T>(
 async function requestBlob(path: string, token: string): Promise<{ blob: Blob; filename: string }> {
   async function attempt(withToken: string): Promise<Response> {
     try {
-      return await fetch(`${API_URL}${path}`, { headers: { Authorization: `Bearer ${withToken}` }, credentials: "include" });
+      // cache: "no-store" for the same reason as _fetchJson's own fetch() call -- /complaints*
+      // is one of the path prefixes Caddy's @backend matcher covers, so this is subject to the
+      // identical browser-HTTP-cache hazard even though report downloads aren't a bookmarked/
+      // typed-URL destination in practice.
+      return await fetch(`${API_URL}${path}`, { headers: { Authorization: `Bearer ${withToken}` }, credentials: "include", cache: "no-store" });
     } catch {
       throw new ApiError(0, "Could not reach the server. Check your connection and try again.");
     }
