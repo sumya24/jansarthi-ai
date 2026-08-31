@@ -100,6 +100,17 @@ services:
       # exactly this "served behind a reverse proxy under a path prefix" case -- must start with
       # "/", must not end with one.
       PHOENIX_HOST_ROOT_PATH: "/phoenix-ui"
+      # LIVE-REPORTED DATA LOSS: `phoenix_data:/mnt/data` below has been mounted this whole time,
+      # but Phoenix's own default working directory (where its real SQLite database of every
+      # trace/span/project actually lives) is /root/.phoenix -- confirmed directly against the
+      # installed package (phoenix.config.get_working_dir()'s real fallback). /mnt/data was
+      # therefore never written to at all (confirmed empty on the live server), meaning every
+      # single container recreation (a deploy, an image update, this very config change) silently
+      # wiped every trace this app had ever recorded, the volume declaration notwithstanding.
+      # PHOENIX_WORKING_DIR (phoenix.config.ENV_PHOENIX_WORKING_DIR, confirmed against the
+      # installed package) is the real, supported way to point Phoenix at the volume that's
+      # already there instead of its own ephemeral container filesystem.
+      PHOENIX_WORKING_DIR: /mnt/data
     volumes:
       - phoenix_data:/mnt/data
     restart: unless-stopped
