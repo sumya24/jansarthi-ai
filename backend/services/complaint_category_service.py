@@ -23,32 +23,31 @@ from sarvamai import SarvamAI
 
 from backend.config import get_prompt, settings
 from backend.schemas.rag_knowledge import ServiceCategory
+from backend.services.sarvam_key_pool import SarvamKeyRotationMixin
 
 logger = logging.getLogger(__name__)
 
 _VALID_CATEGORIES = {c.value for c in ServiceCategory}
 
 
-class ComplaintCategoryService:
+class ComplaintCategoryService(SarvamKeyRotationMixin):
     """Classifies a complaint's English-language text into one of the 4 civic-service
     categories, or None if the model isn't configured, fails, or isn't confident."""
 
     def __init__(self) -> None:
         """Initialize the underlying SarvamAI client, if an API key is configured."""
-        self._client: SarvamAI | None = None
-        if settings.LLM_API_KEY:
-            # Same reasoning model + timeout shape as summary_service.py/normalization_service.py
-            # -- see config.py's SARVAM_CONNECT_TIMEOUT_SECONDS docstring for why this needs the
-            # generous reasoning read-timeout, not the short one sarvam_client.py's fast STT/
-            # translation/TTS calls use.
-            timeout = httpx.Timeout(
-                connect=settings.SARVAM_CONNECT_TIMEOUT_SECONDS,
-                read=settings.SARVAM_REASONING_READ_TIMEOUT_SECONDS,
-                write=settings.SARVAM_REASONING_READ_TIMEOUT_SECONDS,
-                pool=settings.SARVAM_REASONING_READ_TIMEOUT_SECONDS,
-            )
-            self._client = SarvamAI(api_subscription_key=settings.LLM_API_KEY, timeout=timeout)
-        else:
+        # Same reasoning model + timeout shape as summary_service.py/normalization_service.py
+        # -- see config.py's SARVAM_CONNECT_TIMEOUT_SECONDS docstring for why this needs the
+        # generous reasoning read-timeout, not the short one sarvam_client.py's fast STT/
+        # translation/TTS calls use.
+        timeout = httpx.Timeout(
+            connect=settings.SARVAM_CONNECT_TIMEOUT_SECONDS,
+            read=settings.SARVAM_REASONING_READ_TIMEOUT_SECONDS,
+            write=settings.SARVAM_REASONING_READ_TIMEOUT_SECONDS,
+            pool=settings.SARVAM_REASONING_READ_TIMEOUT_SECONDS,
+        )
+        self._init_sarvam_keys(timeout, settings.SARVAM_API_KEYS or settings.LLM_API_KEY, client_factory=SarvamAI)
+        if self._client is None:
             logger.warning("LLM_API_KEY is not set; complaint category classification will be skipped.")
 
     def classify(self, english_text: str) -> ServiceCategory | None:
@@ -65,7 +64,7 @@ class ComplaintCategoryService:
             # Same reasoning_effort="low" as summary_service.py -- a one-word classification
             # needs even less of the reasoning-token budget than a 1-2 sentence summary does, but
             # "low" is already the floor this SDK exposes.
-            response = self._client.chat.completions(
+            response = self._call_sarvam(lambda client: client.chat.completions(
                 model=settings.LLM_MODEL,
                 messages=[
                     {
@@ -79,7 +78,7 @@ class ComplaintCategoryService:
                 ],
                 max_tokens=settings.LLM_MAX_TOKENS,
                 reasoning_effort="low",
-            )
+            ))
             choice = response.choices[0]
             content = choice.message.content
             if not content or not content.strip():

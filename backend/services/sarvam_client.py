@@ -11,6 +11,7 @@ from sarvamai import SarvamAI
 from tenacity import retry, retry_if_not_exception_type, stop_after_attempt, wait_exponential
 
 from backend.config import settings
+from backend.services.sarvam_key_pool import SarvamKeyRotationMixin
 
 logger = logging.getLogger(__name__)
 
@@ -110,25 +111,23 @@ def _concatenate_wav_audio(wav_byte_chunks: list[bytes]) -> bytes:
     return output.getvalue()
 
 
-class SarvamClient:
+class SarvamClient(SarvamKeyRotationMixin):
     """Wraps the Sarvam AI SDK for speech-to-text, text translation, and text-to-speech calls."""
 
     def __init__(self) -> None:
         """Initialize the underlying SarvamAI SDK client, if an API key is configured."""
-        self._client: SarvamAI | None = None
-        if settings.SARVAM_API_KEY:
-            # See config.py's SARVAM_CONNECT_TIMEOUT_SECONDS docstring for why this is a separate
-            # connect/read timeout rather than a bare float -- STT/translation/TTS are all fast,
-            # non-reasoning calls, so a short read timeout is correct here (unlike the two
-            # reasoning-model callers, summary_service.py/answer_generation_service.py).
-            timeout = httpx.Timeout(
-                connect=settings.SARVAM_CONNECT_TIMEOUT_SECONDS,
-                read=settings.SARVAM_REQUEST_TIMEOUT_SECONDS,
-                write=settings.SARVAM_REQUEST_TIMEOUT_SECONDS,
-                pool=settings.SARVAM_REQUEST_TIMEOUT_SECONDS,
-            )
-            self._client = SarvamAI(api_subscription_key=settings.SARVAM_API_KEY, timeout=timeout)
-        else:
+        # See config.py's SARVAM_CONNECT_TIMEOUT_SECONDS docstring for why this is a separate
+        # connect/read timeout rather than a bare float -- STT/translation/TTS are all fast,
+        # non-reasoning calls, so a short read timeout is correct here (unlike the two
+        # reasoning-model callers, summary_service.py/answer_generation_service.py).
+        timeout = httpx.Timeout(
+            connect=settings.SARVAM_CONNECT_TIMEOUT_SECONDS,
+            read=settings.SARVAM_REQUEST_TIMEOUT_SECONDS,
+            write=settings.SARVAM_REQUEST_TIMEOUT_SECONDS,
+            pool=settings.SARVAM_REQUEST_TIMEOUT_SECONDS,
+        )
+        self._init_sarvam_keys(timeout, settings.SARVAM_API_KEYS or settings.SARVAM_API_KEY)
+        if self._client is None:
             logger.warning("SARVAM_API_KEY is not set; Sarvam calls will fail until configured.")
 
     def _require_client(self) -> SarvamAI:
@@ -158,14 +157,14 @@ class SarvamClient:
         Raises:
             AIServiceError: If the Sarvam API call fails for any reason.
         """
-        client = self._require_client()
+        self._require_client()
         logger.info("STT started (language=%s)", language_code)
         try:
             import io
 
             audio_file = io.BytesIO(audio_bytes)
             audio_file.name = "complaint.wav"
-            response = self._call_transcribe(client, audio_file, language_code)
+            response = self._call_sarvam(lambda client: self._call_transcribe(client, audio_file, language_code))
             transcript = getattr(response, "transcript", None) or ""
             logger.info("STT completed (language=%s)", language_code)
             return transcript
@@ -195,7 +194,7 @@ class SarvamClient:
         if self._client is None:
             return None
         try:
-            response = self._client.text.identify_language(input=text)
+            response = self._call_sarvam(lambda client: client.text.identify_language(input=text))
             return response.language_code
         except Exception as exc:
             logger.warning("Language identification failed, falling back to caller-supplied language: %s", exc)
@@ -232,10 +231,12 @@ class SarvamClient:
         Raises:
             AIServiceError: If the Sarvam API call fails for any reason.
         """
-        client = self._require_client()
+        self._require_client()
         logger.info("TTS started (language=%s)", language_code)
         try:
-            response = self._call_synthesize(client, text, language_code, speaker or settings.TTS_SPEAKER, model or settings.TTS_MODEL)
+            speaker_value = speaker or settings.TTS_SPEAKER
+            model_value = model or settings.TTS_MODEL
+            response = self._call_sarvam(lambda client: self._call_synthesize(client, text, language_code, speaker_value, model_value))
             audios = getattr(response, "audios", None) or []
             if not audios:
                 raise AIServiceError("Text-to-speech service returned no audio.")
@@ -313,13 +314,13 @@ class SarvamClient:
         if source_language_code == target_language_code:
             return text
 
-        client = self._require_client()
+        self._require_client()
         model = "mayura:v1" if source_language_code == "auto" else "sarvam-translate:v1"
         logger.info(
             "Translation started (%s -> %s, model=%s)", source_language_code, target_language_code, model
         )
         try:
-            response = self._call_translate(client, text, source_language_code, target_language_code, model)
+            response = self._call_sarvam(lambda client: self._call_translate(client, text, source_language_code, target_language_code, model))
             translated = getattr(response, "translated_text", None) or ""
             logger.info(
                 "Translation completed (%s -> %s)", source_language_code, target_language_code
