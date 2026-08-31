@@ -710,6 +710,15 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     full_name: Mapped[str] = mapped_column(String(120), nullable=False)
     role: Mapped[str] = mapped_column(String(16), nullable=False)
+    # Only meaningful for role="admin" -- gates POST/GET/DELETE /admin/admins (see routes/admin.py's
+    # require_super_admin dependency). A flat "any admin can do anything" model has no way to limit
+    # who can provision MORE admins, so this is the one extra bit needed rather than a full second
+    # role tier. Defaults False: a new admin created after this shipped is NOT a super admin unless
+    # the creating super admin explicitly grants it (CreateAdminRequest.super_admin) -- least
+    # privilege by default. Existing admin rows from before this column existed are backfilled to
+    # True by scripts/migrate_super_admin.py, so no currently-working admin loses any ability they
+    # already had.
+    super_admin: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     preferred_language: Mapped[str] = mapped_column(String(8), nullable=False, default="en")
     ward: Mapped[str | None] = mapped_column(String(120), nullable=True)
     state_id: Mapped[int | None] = mapped_column(ForeignKey("states.id"), nullable=True)

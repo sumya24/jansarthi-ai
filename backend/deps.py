@@ -133,6 +133,19 @@ def require_role(*allowed_roles: str):
     return _check
 
 
+def require_super_admin(current_user: User = Depends(get_current_user)) -> User:
+    """Dependency for routes/admin.py's admin-account-management endpoints (POST/GET/DELETE
+    /admin/admins) -- a strictly narrower gate than require_role("admin"): every super admin is an
+    admin, but not every admin is a super admin (see models.py's User.super_admin docstring for why
+    this is a flag rather than a whole second role). Provisioning MORE admin accounts is the one
+    action in this app with no ceiling on its own blast radius -- an admin who could create other
+    admins could always create their way back to any permission they'd lost, so it gets its own,
+    stricter gate rather than reusing require_role("admin")."""
+    if current_user.role != "admin" or not current_user.super_admin:
+        raise HTTPException(status_code=403, detail="You do not have access to this action.")
+    return current_user
+
+
 # --- Rate limiting -----------------------------------------------------------------------------
 # See backend/services/rate_limiter.py's module docstring for the design (in-process sliding
 # window, single-process deployment only) and docs/RATE_LIMITING.md for the full picture. Three

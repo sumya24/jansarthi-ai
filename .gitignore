@@ -40,6 +40,10 @@ JanSarthi_AI_Manual_Test_Script.docx
 JanSarthi_AI_Study_Guide.docx
 JanSarthi_AI_Video_Cue_Cards.docx
 
+# Points to the Drive/Sheets links used to hand this project off to the HCLTech team -- external
+# sharing reference, not source or documentation meant for the repo itself.
+Project_Links.txt
+
 # RAG knowledge base: knowledge_records/ and sources/ are the hand-authored source data;
 # everything below is a pure, reproducible function of that source (see
 # scripts/build_rag_knowledge_base.py and build_rag_embeddings.py's docstrings), rebuilt at

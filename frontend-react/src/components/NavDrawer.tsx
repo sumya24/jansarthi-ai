@@ -96,6 +96,18 @@ function AiMonitoringIcon() {
   );
 }
 
+// A shield -- distinct from WorkersIcon's two-person glyph, reads as "access/permissions" rather
+// than "a group of people," matching what this nav item actually gates (super-admin-only account
+// management), not just another staff-roster page.
+function AdminsIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+      <path d="M12 3.5 5 6v5.5c0 4.6 3 7.9 7 9 4-1.1 7-4.4 7-9V6l-7-2.5Z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
+      <path d="M9 12l2 2 4-4.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 interface NavItem {
   to: string;
   end?: boolean;
@@ -106,7 +118,11 @@ interface NavItem {
 // Maps directly to the existing top-level routes in App.tsx -- no invented pages. Detail routes
 // (/citizen/complaints/:id, /worker/complaints/:id, /admin/workers/:id) are reached by clicking
 // into a list, not from nav, so they're deliberately not here.
-function getNavItems(role: string, lang: LangCode): NavItem[] {
+//
+// `superAdmin` (only meaningful when role === "admin") adds /admin/admins -- mirrors
+// AdminDashboard.tsx's own `user?.super_admin` gate on its "Manage Admins" button, so both
+// entry points into that page agree on who sees it.
+function getNavItems(role: string, lang: LangCode, superAdmin: boolean): NavItem[] {
   if (role === "citizen") {
     return [
       { to: "/citizen", end: true, label: t(lang, "nav.home"), icon: <HomeIcon /> },
@@ -125,6 +141,7 @@ function getNavItems(role: string, lang: LangCode): NavItem[] {
     return [
       { to: "/admin", end: true, label: t(lang, "admin.title"), icon: <DashboardIcon /> },
       { to: "/admin/workers", label: t(lang, "nav.workers"), icon: <WorkersIcon /> },
+      ...(superAdmin ? [{ to: "/admin/admins", label: t(lang, "nav.admins"), icon: <AdminsIcon /> }] : []),
       { to: "/admin/ai-monitoring", label: t(lang, "nav.aiMonitoring"), icon: <AiMonitoringIcon /> },
     ];
   }
@@ -153,7 +170,7 @@ export default function NavDrawer() {
   }, [open]);
 
   if (!user) return null;
-  const items = getNavItems(user.role, lang);
+  const items = getNavItems(user.role, lang, user.super_admin);
   if (items.length === 0) return null;
 
   return (

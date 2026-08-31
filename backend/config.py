@@ -19,6 +19,10 @@ class Settings:
 
     # Sarvam AI (speech-to-text + translation + text-to-speech)
     SARVAM_API_KEY: str = os.getenv("SARVAM_API_KEY", "")
+    # Optional comma-separated list of up to 5 Sarvam keys for automatic rotation on quota
+    # exhaustion (see services/sarvam_key_pool.py) -- e.g. "key-one,key-two,key-three". Takes
+    # priority over SARVAM_API_KEY when set; leave unset to keep today's single-key behavior.
+    SARVAM_API_KEYS: str = os.getenv("SARVAM_API_KEYS", "")
     SARVAM_BASE_URL: str = os.getenv("SARVAM_BASE_URL", "https://api.sarvam.ai")
     # The `sarvamai` SDK defaults to a 60s httpx timeout when none is passed (see SarvamAI.__init__).
     # A real network hiccup during live testing surfaced as a citizen-facing complaint-creation

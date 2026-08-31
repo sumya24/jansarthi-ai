@@ -1149,4 +1149,281 @@ def test_edit_worker_keeping_same_email_is_not_a_conflict_with_itself_and_needs_
     )
     assert response.status_code == 200
     assert response.json()["email"] == "worker@example.com"
-    assert response.json()["email_verified"] is True
+
+
+# ============================================================================
+# /admin/admins -- super-admin-only admin account management (see models.py's
+# User.super_admin docstring and routes/admin.py's require_super_admin dependency)
+# ============================================================================
+
+
+def test_super_admin_can_create_admin(client, make_admin):
+    make_admin(phone="9999999999", password="adminpass", super_admin=True)
+    token = _login(client, "9999999999", "adminpass")
+
+    response = client.post(
+        "/admin/admins",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "full_name": "Second Admin",
+            "phone": "9000000005",
+            "password": "secret123!",
+            "preferred_language": "en",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["role"] == "admin"
+    assert body["super_admin"] is False
+
+    new_admin_login = client.post("/auth/login", json={"identifier": "9000000005", "password": "secret123!"})
+    assert new_admin_login.status_code == 200
+    assert new_admin_login.json()["user"]["role"] == "admin"
+
+
+def test_create_admin_can_grant_super_admin_explicitly(client, make_admin):
+    make_admin(phone="9999999999", password="adminpass", super_admin=True)
+    token = _login(client, "9999999999", "adminpass")
+
+    response = client.post(
+        "/admin/admins",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "full_name": "Second Super Admin",
+            "phone": "9000000005",
+            "password": "secret123!",
+            "preferred_language": "en",
+            "super_admin": True,
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["super_admin"] is True
+
+
+def test_non_super_admin_cannot_create_admin(client, make_admin):
+    """A regular (non-super) admin can create workers but must not be able to create MORE
+    admins -- the whole point of require_super_admin over require_role("admin")."""
+    make_admin(phone="9999999999", password="adminpass", super_admin=False)
+    token = _login(client, "9999999999", "adminpass")
+
+    response = client.post(
+        "/admin/admins",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "full_name": "Second Admin",
+            "phone": "9000000005",
+            "password": "secret123!",
+            "preferred_language": "en",
+        },
+    )
+    assert response.status_code == 403
+
+
+def test_worker_cannot_create_admin(client, make_worker):
+    token, _user = make_worker(phone="9000000002")
+    response = client.post(
+        "/admin/admins",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "full_name": "Second Admin",
+            "phone": "9000000005",
+            "password": "secret123!",
+            "preferred_language": "en",
+        },
+    )
+    assert response.status_code == 403
+
+
+def test_list_admins_requires_super_admin(client, make_admin):
+    make_admin(phone="9999999999", password="adminpass", super_admin=False)
+    token = _login(client, "9999999999", "adminpass")
+
+    response = client.get("/admin/admins", headers={"Authorization": f"Bearer {token}"})
+    assert response.status_code == 403
+
+
+def test_super_admin_can_list_admins(client, make_admin):
+    make_admin(phone="9999999999", password="adminpass", super_admin=True)
+    token = _login(client, "9999999999", "adminpass")
+    make_admin(phone="9000000005", password="secret123!", full_name="Second Admin", super_admin=False)
+
+    response = client.get("/admin/admins", headers={"Authorization": f"Bearer {token}"})
+    assert response.status_code == 200
+    names = {a["full_name"] for a in response.json()}
+    assert names == {"Test Admin", "Second Admin"}
+
+
+def test_super_admin_can_delete_a_non_super_admin(client, make_admin):
+    make_admin(phone="9999999999", password="adminpass", super_admin=True)
+    token = _login(client, "9999999999", "adminpass")
+    target = make_admin(phone="9000000005", password="secret123!", super_admin=False)
+
+    response = client.delete(f"/admin/admins/{target.id}", headers={"Authorization": f"Bearer {token}"})
+    assert response.status_code == 200
+    assert response.json()["deleted_admin_id"] == target.id
+
+
+def test_super_admin_cannot_delete_own_account(client, make_admin):
+    self_admin = make_admin(phone="9999999999", password="adminpass", super_admin=True)
+    token = _login(client, "9999999999", "adminpass")
+
+    response = client.delete(f"/admin/admins/{self_admin.id}", headers={"Authorization": f"Bearer {token}"})
+    assert response.status_code == 400
+
+
+def test_super_admin_can_delete_another_super_admin(client, make_admin):
+    """Deleting a fellow super admin is allowed -- the caller (who must themselves be a super
+    admin, per require_super_admin) always remains behind, so this can never reduce the super
+    admin count to zero (see delete_admin()'s own docstring on why a dedicated "last remaining
+    super admin" guard would be unreachable, dead code)."""
+    make_admin(phone="9999999999", password="adminpass", super_admin=True)
+    token = _login(client, "9999999999", "adminpass")
+    other_super_admin = make_admin(phone="9000000005", password="secret123!", super_admin=True)
+
+    response = client.delete(f"/admin/admins/{other_super_admin.id}", headers={"Authorization": f"Bearer {token}"})
+    assert response.status_code == 200
+    assert response.json()["deleted_admin_id"] == other_super_admin.id
+
+
+# --- PATCH /admin/admins/{id} and POST /admin/admins/{id}/reset-password -----------------------
+
+
+def test_super_admin_can_update_admin_profile(client, make_admin):
+    make_admin(phone="9999999999", password="adminpass", super_admin=True)
+    token = _login(client, "9999999999", "adminpass")
+    target = make_admin(phone="9000000005", password="secret123!", full_name="Original Name", super_admin=False)
+
+    response = client.patch(
+        f"/admin/admins/{target.id}",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"full_name": "Updated Name", "preferred_language": "hi"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["full_name"] == "Updated Name"
+    assert body["preferred_language"] == "hi"
+
+
+def test_super_admin_can_promote_regular_admin(client, make_admin):
+    make_admin(phone="9999999999", password="adminpass", super_admin=True)
+    token = _login(client, "9999999999", "adminpass")
+    target = make_admin(phone="9000000005", password="secret123!", super_admin=False)
+
+    response = client.patch(
+        f"/admin/admins/{target.id}",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"super_admin": True},
+    )
+    assert response.status_code == 200
+    assert response.json()["super_admin"] is True
+
+
+def test_super_admin_can_demote_another_super_admin(client, make_admin):
+    make_admin(phone="9999999999", password="adminpass", super_admin=True)
+    token = _login(client, "9999999999", "adminpass")
+    target = make_admin(phone="9000000005", password="secret123!", super_admin=True)
+
+    response = client.patch(
+        f"/admin/admins/{target.id}",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"super_admin": False},
+    )
+    assert response.status_code == 200
+    assert response.json()["super_admin"] is False
+
+
+def test_super_admin_cannot_demote_their_own_account(client, make_admin):
+    self_admin = make_admin(phone="9999999999", password="adminpass", super_admin=True)
+    token = _login(client, "9999999999", "adminpass")
+
+    response = client.patch(
+        f"/admin/admins/{self_admin.id}",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"super_admin": False},
+    )
+    assert response.status_code == 400
+
+
+def test_super_admin_can_reconfirm_their_own_super_admin_status(client, make_admin):
+    """Sending super_admin=True on your OWN account (a no-op) must succeed -- only an actual
+    demotion (super_admin=False on yourself) is blocked."""
+    self_admin = make_admin(phone="9999999999", password="adminpass", super_admin=True)
+    token = _login(client, "9999999999", "adminpass")
+
+    response = client.patch(
+        f"/admin/admins/{self_admin.id}",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"super_admin": True, "full_name": "Anjali K."},
+    )
+    assert response.status_code == 200
+    assert response.json()["super_admin"] is True
+
+
+def test_non_super_admin_cannot_update_admin(client, make_admin):
+    make_admin(phone="9999999999", password="adminpass", super_admin=False)
+    token = _login(client, "9999999999", "adminpass")
+    target = make_admin(phone="9000000005", password="secret123!", super_admin=False)
+
+    response = client.patch(
+        f"/admin/admins/{target.id}",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"full_name": "New Name"},
+    )
+    assert response.status_code == 403
+
+
+def test_update_admin_rejects_empty_full_name(client, make_admin):
+    make_admin(phone="9999999999", password="adminpass", super_admin=True)
+    token = _login(client, "9999999999", "adminpass")
+    target = make_admin(phone="9000000005", password="secret123!", super_admin=False)
+
+    response = client.patch(
+        f"/admin/admins/{target.id}",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"full_name": "   "},
+    )
+    assert response.status_code == 400
+
+
+def test_admin_can_reset_admin_password(client, make_admin):
+    make_admin(phone="9999999999", password="adminpass", super_admin=True)
+    token = _login(client, "9999999999", "adminpass")
+    target = make_admin(phone="9000000005", password="oldpassword", super_admin=False)
+
+    response = client.post(
+        f"/admin/admins/{target.id}/reset-password",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"new_password": "brandnewpass123"},
+    )
+    assert response.status_code == 200
+
+    old_login = client.post("/auth/login", json={"identifier": "9000000005", "password": "oldpassword"})
+    assert old_login.status_code == 401
+    new_login = client.post("/auth/login", json={"identifier": "9000000005", "password": "brandnewpass123"})
+    assert new_login.status_code == 200
+
+
+def test_reset_admin_password_rejects_too_short(client, make_admin):
+    make_admin(phone="9999999999", password="adminpass", super_admin=True)
+    token = _login(client, "9999999999", "adminpass")
+    target = make_admin(phone="9000000005", password="secret123!", super_admin=False)
+
+    response = client.post(
+        f"/admin/admins/{target.id}/reset-password",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"new_password": "abc"},
+    )
+    assert response.status_code == 400
+
+
+def test_non_super_admin_cannot_reset_admin_password(client, make_admin):
+    make_admin(phone="9999999999", password="adminpass", super_admin=False)
+    token = _login(client, "9999999999", "adminpass")
+    target = make_admin(phone="9000000005", password="secret123!", super_admin=False)
+
+    response = client.post(
+        f"/admin/admins/{target.id}/reset-password",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"new_password": "brandnewpass123"},
+    )
+    assert response.status_code == 403

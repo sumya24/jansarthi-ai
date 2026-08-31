@@ -17,9 +17,9 @@ without a working LLM connection, matching this codebase's existing pattern
 import logging
 
 import httpx
-from sarvamai import SarvamAI
 
 from backend.config import get_prompt, settings
+from backend.services.sarvam_key_pool import SarvamKeyRotationMixin
 
 logger = logging.getLogger(__name__)
 
@@ -49,21 +49,19 @@ _SARVAM_OUTPUT_COST_PER_TOKEN_INR = 73.2 / 1_000_000
 _ANSWER_TEMPERATURE = 0.2
 
 
-class AnswerGenerationService:
+class AnswerGenerationService(SarvamKeyRotationMixin):
     def __init__(self) -> None:
-        self._client: SarvamAI | None = None
-        if settings.LLM_API_KEY:
-            # See config.py's SARVAM_CONNECT_TIMEOUT_SECONDS docstring: this reasoning-model call
-            # needs a generous read timeout (legitimate slow-but-working answers shouldn't be cut
-            # off), but still fails fast on a genuinely dead connection.
-            timeout = httpx.Timeout(
-                connect=settings.SARVAM_CONNECT_TIMEOUT_SECONDS,
-                read=settings.SARVAM_REASONING_READ_TIMEOUT_SECONDS,
-                write=settings.SARVAM_REASONING_READ_TIMEOUT_SECONDS,
-                pool=settings.SARVAM_REASONING_READ_TIMEOUT_SECONDS,
-            )
-            self._client = SarvamAI(api_subscription_key=settings.LLM_API_KEY, timeout=timeout)
-        else:
+        # See config.py's SARVAM_CONNECT_TIMEOUT_SECONDS docstring: this reasoning-model call
+        # needs a generous read timeout (legitimate slow-but-working answers shouldn't be cut
+        # off), but still fails fast on a genuinely dead connection.
+        timeout = httpx.Timeout(
+            connect=settings.SARVAM_CONNECT_TIMEOUT_SECONDS,
+            read=settings.SARVAM_REASONING_READ_TIMEOUT_SECONDS,
+            write=settings.SARVAM_REASONING_READ_TIMEOUT_SECONDS,
+            pool=settings.SARVAM_REASONING_READ_TIMEOUT_SECONDS,
+        )
+        self._init_sarvam_keys(timeout, settings.SARVAM_API_KEYS or settings.LLM_API_KEY)
+        if self._client is None:
             logger.warning("LLM_API_KEY is not set; Ask Sarthi will fall back to raw excerpts, not LLM-generated prose.")
 
     def generate(
@@ -106,7 +104,7 @@ class AnswerGenerationService:
             prompt_template = get_prompt("ask_sarthi_answer_prompt.txt")
             prompt = prompt_template.format(question=question, context=context, language_name=language_name)
 
-            response = self._client.chat.completions(
+            response = self._call_sarvam(lambda client: client.chat.completions(
                 model=settings.LLM_MODEL,
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -115,7 +113,7 @@ class AnswerGenerationService:
                 max_tokens=settings.LLM_MAX_TOKENS,
                 reasoning_effort="low",
                 temperature=_ANSWER_TEMPERATURE,
-            )
+            ))
             choice = response.choices[0]
             content = choice.message.content
             if not content or not content.strip():

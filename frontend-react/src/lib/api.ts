@@ -228,6 +228,9 @@ export interface UserProfile {
   district_id: number | null;
   ward_id: number | null;
   locality_id: number | null;
+  // Only meaningful for role="admin" -- gates the "Manage Admins" nav entry/page (see
+  // backend/models.py's User.super_admin docstring). Always false for citizens/workers.
+  super_admin: boolean;
 }
 
 // One selectable node at any level of the State/City/Ward/Area hierarchy (backend/routes/
@@ -849,6 +852,61 @@ export const api = {
 
   deleteWorker: (token: string, id: number) =>
     request<DeleteWorkerResult>(`/admin/workers/${id}`, { method: "DELETE", token }),
+
+  // Super-admin-only admin account management (see backend/models.py's User.super_admin
+  // docstring and backend/routes/admin.py's require_super_admin). Reuses sendWorkerEmailCode/
+  // verifyWorkerEmailCode above for the optional email-proof step -- same underlying "prove this
+  // address before attaching it to any new account" requirement as creating a worker, see that
+  // endpoint's own docstring for why there's no separate admin-specific pair of OTP routes.
+  createAdmin: (
+    token: string,
+    body: {
+      full_name: string; phone: string; password: string; preferred_language: string;
+      email?: string;
+      email_verification_token?: string;
+      super_admin?: boolean;
+    }
+  ) => request<UserProfile>("/admin/admins", { method: "POST", token, body }),
+
+  // Same opt-in pagination contract as listWorkers above: omitting page/pageSize returns every
+  // matching admin unchanged, a caller that opts in gets a real slice plus a real `total`.
+  updateAdmin: (
+    token: string,
+    id: number,
+    body: {
+      full_name?: string; preferred_language?: string;
+      // "" clears the admin's email; omitting the key leaves it untouched -- see
+      // backend/routes/admin.py's UpdateAdminRequest docstring. Re-sending the admin's own
+      // current (already-verified) email back unchanged needs no token; only an actual change
+      // does -- same as updateWorker.
+      email?: string;
+      email_verification_token?: string;
+      // Promotes/demotes -- omit to leave unchanged. The backend refuses `false` on the caller's
+      // own account (see update_admin()'s own docstring).
+      super_admin?: boolean;
+    }
+  ) => request<UserProfile>(`/admin/admins/${id}`, { method: "PATCH", token, body }),
+
+  resetAdminPassword: (token: string, id: number, newPassword: string) =>
+    request<UserProfile>(`/admin/admins/${id}/reset-password`, { method: "POST", token, body: { new_password: newPassword } }),
+
+  listAdmins: async (
+    token: string,
+    opts: { search?: string; page?: number; pageSize?: number } = {}
+  ): Promise<{ items: UserProfile[]; total: number }> => {
+    const params = new URLSearchParams();
+    if (opts.search) params.set("search", opts.search);
+    if (opts.page !== undefined) params.set("page", String(opts.page));
+    if (opts.pageSize !== undefined) params.set("page_size", String(opts.pageSize));
+    const qs = params.toString();
+    const { response, data } = await _fetchJson(`/admin/admins${qs ? `?${qs}` : ""}`, { token });
+    const items = (data as UserProfile[] | undefined) ?? [];
+    const headerTotal = response.headers.get("X-Total-Count");
+    return { items, total: headerTotal !== null ? Number(headerTotal) : items.length };
+  },
+
+  deleteAdmin: (token: string, id: number) =>
+    request<{ deleted_admin_id: number }>(`/admin/admins/${id}`, { method: "DELETE", token }),
 
   deleteComplaint: (token: string, id: number) =>
     request<DeleteComplaintResult>(`/admin/complaints/${id}`, { method: "DELETE", token }),

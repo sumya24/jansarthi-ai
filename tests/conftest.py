@@ -204,11 +204,16 @@ def make_citizen(client):
 
 @pytest.fixture()
 def make_admin(db_session):
-    """Factory fixture: seed an admin account directly into the DB (as a real deployment would)."""
+    """Factory fixture: seed an admin account directly into the DB (as a real deployment would).
+
+    `super_admin` defaults False, matching User.super_admin's own model default -- callers testing
+    routes/admin.py's admin-account-management endpoints (require_super_admin, e.g. POST
+    /admin/admins) must pass super_admin=True explicitly; every existing caller testing ordinary
+    require_role("admin") routes is unaffected either way."""
     from backend.models import User
     from backend.services.auth_service import hash_password
 
-    def _make(phone: str = "9999999999", password: str = "adminpass", full_name: str = "Test Admin"):
+    def _make(phone: str = "9999999999", password: str = "adminpass", full_name: str = "Test Admin", super_admin: bool = False):
         db = db_session()
         user = User(
             full_name=full_name,
@@ -216,6 +221,7 @@ def make_admin(db_session):
             password_hash=hash_password(password),
             role="admin",
             preferred_language="en",
+            super_admin=super_admin,
         )
         db.add(user)
         db.commit()
