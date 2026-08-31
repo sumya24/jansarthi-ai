@@ -24,18 +24,6 @@
 		not header Sec-Fetch-Mode navigate
 	}
 	handle @backend {
-		# LIVE-REPORTED BUG: without this, a real top-level navigation to one of the colliding
-		# page URLs above (e.g. /admin/ai-monitoring, typed/bookmarked/hard-refreshed) gets this
-		# handler's SPA-fallback sibling below serving index.html for that exact GET -- correct,
-		# intended behavior on its own. But nothing told the BROWSER not to cache that response,
-		# so its own HTTP cache then stored index.html under that URL; moments later, when the
-		# now-mounted page's own JS fetches that SAME URL to load its real data, the browser
-		# served the cached index.html straight back without even hitting the network, which the
-		# frontend's response.json() then failed to parse -- confirmed directly, live. The
-		# frontend's own fetch() calls now also pass cache: "no-store" (see api.ts's _fetchJson)
-		# as the primary fix; this header is the server-side half of the same fix, so anything
-		# that ever calls one of these endpoints without going through that helper is covered too.
-		header Cache-Control "no-store"
 		reverse_proxy backend:8000
 	}
 
@@ -59,6 +47,28 @@
 
 	handle {
 		root * /usr/share/caddy
+		# LIVE-REPORTED BUG, corrected placement: the previous fix put `Cache-Control: no-store`
+		# on `handle @backend` above -- but a real top-level navigation to a colliding path (e.g.
+		# /admin/ai-monitoring, typed/bookmarked/hard-refreshed) never reaches @backend at all
+		# (excluded by its own `not header Sec-Fetch-Mode navigate` check); it falls through to
+		# THIS block, which serves index.html via the try_files fallback below. That's the
+		# response that was actually getting cached by the browser and later replayed as garbage
+		# to the page's own JS fetch() -- @backend's header was covering the wrong response
+		# entirely (confirmed via code review, verified against this block's own try_files/
+		# file_server behavior). Also NOT just moved to cover this whole handle{} block -- the old
+		# @backend placement additionally over-applied no-store to /uploads* (evidence/complaint
+		# photos, actually served by the FastAPI backend's own StaticFiles mount via @backend
+		# above, not by this block at all) and /health/notifications*/ask-sarthi*/locations*, none
+		# of which have any colliding SPA route -- forcing those to always re-fetch over the
+		# network on every view instead of getting cheap ETag/Last-Modified revalidation, a real
+		# cost on slow connections for no benefit. Scoped here to `@spaFallback` (no "." in the
+		# path -- every real static asset Vite emits has a file extension; every client-side route
+		# this app defines does not) so the hashed JS/CSS bundles this block also serves keep their
+		# normal caching -- only the SPA-shell fallback response itself is forced fresh every time.
+		@spaFallback {
+			not path *.*
+		}
+		header @spaFallback Cache-Control "no-store"
 		try_files {path} /index.html
 		file_server
 	}
