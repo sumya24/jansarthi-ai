@@ -12,6 +12,14 @@ import "./TopBar.css";
 
 // "JanSarthi AI" is the product name, kept as-is in every language per the brand guide —
 // only the subtitle and role label translate.
+//
+// LIVE-REPORTED BUG: "role.admin" is hardcoded to "Super Admin" in every language -- pre-dating
+// the real User.super_admin distinction (see models.py's own docstring), so it used to just mean
+// "the account type shown in this pill for role=admin" with no other meaning behind it. Once
+// super_admin became a REAL, narrower permission, this label started actively lying for any
+// regular (non-super) admin, always claiming powers they don't have. Fixed below by picking
+// between "role.admin" ("Super Admin") and "admin.adminBadge" ("Admin" -- already used for the
+// same distinction on the Manage Admins page's own role column) based on the real flag.
 const ROLE_KEY: Record<string, string> = { citizen: "role.citizen", worker: "role.worker", admin: "role.admin" };
 
 export default function TopBar() {
@@ -59,7 +67,9 @@ export default function TopBar() {
           <div className="avatar">{user.full_name.charAt(0).toUpperCase()}</div>
           <div>
             <div>{user.full_name}</div>
-            <span className="role-pill">{t(lang, ROLE_KEY[user.role])}</span>
+            <span className="role-pill">
+              {t(lang, user.role === "admin" && !user.super_admin ? "admin.adminBadge" : ROLE_KEY[user.role])}
+            </span>
           </div>
           {/* Workers get assignment/update notifications; admins get AI-monitoring alerts (see
               AppNotification's docstring in lib/api.ts); citizens now get their own complaint's

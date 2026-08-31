@@ -16,6 +16,7 @@ import AdminDashboard from "./pages/AdminDashboard";
 import AdminComplaintDetail from "./pages/AdminComplaintDetail";
 import AdminAiMonitoring from "./pages/AdminAiMonitoring";
 import AdminWorkers from "./pages/AdminWorkers";
+import AdminAdmins from "./pages/AdminAdmins";
 import AdminWorkerDetail from "./pages/AdminWorkerDetail";
 import ProtectedRoute from "./components/ProtectedRoute";
 
@@ -128,6 +129,17 @@ export default function App() {
         element={
           <ProtectedRoute allowedRoles={["admin"]}>
             <AdminWorkerDetail />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/admin/admins"
+        element={
+          // Any admin can reach this route -- the page itself (and every /admin/admins* backend
+          // call it makes) enforces the real super-admin-only restriction, surfacing a clear
+          // error banner for a non-super admin rather than needing a second role concept here.
+          <ProtectedRoute allowedRoles={["admin"]}>
+            <AdminAdmins />
           </ProtectedRoute>
         }
       />

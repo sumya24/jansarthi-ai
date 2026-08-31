@@ -1,8 +1,10 @@
-"""Super-admin-only endpoints: creating and listing worker accounts.
+"""Admin-only endpoints: creating/listing/deleting worker AND admin accounts.
 
-Every route here requires the "admin" role via require_role("admin"). There is
-no route anywhere in the app that lets a citizen or worker create another
-worker or admin account — provisioning staff is exclusively a super admin action.
+Every route here requires at least the "admin" role via require_role("admin"). There is no route
+anywhere in the app that lets a citizen or worker create another worker or admin account --
+provisioning staff is exclusively an admin action. Provisioning MORE ADMINS specifically is
+further restricted to super admins only (require_super_admin, below the worker routes in this
+file) -- see models.py's User.super_admin docstring for why that split exists.
 """
 
 import logging
@@ -17,7 +19,7 @@ from sqlalchemy.orm import Session
 
 from backend.config import settings
 from backend.database import get_db
-from backend.deps import get_current_user, require_otp_rate_limit, require_role
+from backend.deps import get_current_user, require_otp_rate_limit, require_role, require_super_admin
 from backend.models import Complaint, ComplaintRejection, ComplaintStatusHistory, ComplaintTranslation, ComplaintUpdate, District, Locality, State, ULB, User, Ward
 from backend.repositories import ai_request_log_repository, complaint_workflow_repository
 from backend.routes.auth import _dev_cache_otp, MIN_PASSWORD_LENGTH, UserResponse
@@ -573,6 +575,263 @@ def delete_worker(
         admin.id, worker_id, len(affected),
     )
     return DeleteWorkerResponse(deleted_worker_id=worker_id, reset_to_pending=len(affected))
+
+
+# --- Admin account management (super admin only) ------------------------------------------------
+# LIVE-REPORTED GAP this closes: everything above lets an admin provision WORKERS, but there was no
+# route anywhere that let an admin provision another ADMIN -- the only way to onboard a second
+# admin was hand-editing the database directly, not viable once this is a live production app with
+# no direct DB access. Gated on require_super_admin, not require_role("admin") -- see
+# models.py's User.super_admin docstring for why provisioning admins needs its own, narrower gate.
+
+
+class CreateAdminRequest(BaseModel):
+    """Request body for a super admin creating a new admin account. Deliberately a near-mirror of
+    CreateWorkerRequest minus everything ward/operational-area-specific (an admin's access isn't
+    scoped to a ward the way a worker's is) -- same admin-sets-a-temp-password + optional-but-OTP-
+    proven-email pattern, reusing the exact same /admin/workers/email/send-code and /verify-code
+    endpoints (see send_worker_email_code's own docstring: proving an email is the same requirement
+    regardless of which kind of account it's being attached to, so there's no need for a second,
+    admin-specific pair of OTP routes).
+
+    `super_admin`: defaults False (least privilege) -- the creating admin must deliberately opt in
+    to also granting the new account super-admin rights, rather than every new admin silently
+    inheriting the ability to provision further admins."""
+
+    full_name: str
+    phone: str
+    password: str
+    preferred_language: str
+    email: str | None = None
+    email_verification_token: str | None = None
+    super_admin: bool = False
+
+
+class DeleteAdminResponse(BaseModel):
+    deleted_admin_id: int
+
+
+@router.post("/admins", response_model=UserResponse)
+def create_admin(
+    body: CreateAdminRequest,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_super_admin),
+) -> UserResponse:
+    """Create a new admin account. Super admin only."""
+    full_name = body.full_name.strip()
+    phone = body.phone.strip()
+
+    if not full_name:
+        raise HTTPException(status_code=400, detail="Full name is required.")
+    if not phone:
+        raise HTTPException(status_code=400, detail="Phone number is required.")
+    if len(body.password) < MIN_PASSWORD_LENGTH:
+        raise HTTPException(
+            status_code=400, detail=f"Password must be at least {MIN_PASSWORD_LENGTH} characters."
+        )
+    if body.preferred_language not in settings.SUPPORTED_LANGUAGES:
+        raise HTTPException(status_code=400, detail=f"Unsupported language: {body.preferred_language}")
+
+    if db.query(User).filter(User.phone == phone).first() is not None:
+        raise HTTPException(status_code=409, detail="An account with this phone number already exists.")
+
+    email = body.email.strip().lower() if body.email else None
+    if email:
+        if not _EMAIL_PATTERN.match(email):
+            raise HTTPException(status_code=400, detail="Enter a valid email address.")
+        if db.query(User).filter(User.email == email).first() is not None:
+            raise HTTPException(status_code=409, detail="An account with this email already exists.")
+        if not body.email_verification_token or not consume_signup_email_verification(
+            db, email, body.email_verification_token.strip()
+        ):
+            raise HTTPException(
+                status_code=400, detail="Email is not verified. Please verify the email address first."
+            )
+
+    new_admin = User(
+        full_name=full_name,
+        phone=phone,
+        password_hash=hash_password(body.password),
+        role="admin",
+        preferred_language=body.preferred_language,
+        email=email,
+        email_verified=email is not None,
+        super_admin=body.super_admin,
+    )
+    db.add(new_admin)
+    db.commit()
+    db.refresh(new_admin)
+    logger.info(
+        "Admin account created by super admin (creator_id=%s, new_admin_id=%s, super_admin=%s)",
+        admin.id, new_admin.id, body.super_admin,
+    )
+    return UserResponse.model_validate(new_admin)
+
+
+@router.get("/admins", response_model=list[UserResponse])
+def list_admins(
+    response: Response,
+    search: str | None = None,
+    page: int | None = None,
+    page_size: int | None = None,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_super_admin),
+) -> list[UserResponse]:
+    """List admin accounts. Super admin only. Same opt-in, additive search/page/page_size contract
+    as GET /workers (list_workers, above) -- omitting page/page_size returns every matching admin
+    unchanged; a caller that opts in gets a real slice plus X-Total-Count. `search` matches
+    full_name/phone (no `ward` here -- an admin's access isn't ward-scoped the way a worker's is,
+    see CreateAdminRequest's own docstring)."""
+    query = db.query(User).filter(User.role == "admin")
+    if search and search.strip():
+        like = f"%{search.strip()}%"
+        query = query.filter(or_(User.full_name.ilike(like), User.phone.ilike(like)))
+    query = query.order_by(User.created_at.desc())
+
+    total = None
+    if page is not None or page_size is not None:
+        total = query.count()
+        safe_page = max(page or 1, 1)
+        safe_size = max(min(page_size or 20, 200), 1)
+        query = query.offset((safe_page - 1) * safe_size).limit(safe_size)
+    admins = query.all()
+    if total is not None:
+        response.headers["X-Total-Count"] = str(total)
+
+    return [UserResponse.model_validate(a) for a in admins]
+
+
+class UpdateAdminRequest(BaseModel):
+    """Request body for a super admin editing another admin's profile -- a PATCH, only fields
+    actually sent are changed, same contract as UpdateWorkerRequest. Deliberately excludes
+    `phone` (the login identifier), same reasoning as there.
+
+    `super_admin`: lets a super admin promote a regular admin to super admin, or demote one back
+    -- omit to leave unchanged. `update_admin()` itself refuses to let a super admin demote their
+    OWN account (see that function's own docstring) -- the only self-service guard needed, since
+    every caller here is already a super admin (require_super_admin) and can never target-and-
+    demote anyone else down to zero remaining super admins this way (the caller themselves is
+    always still one)."""
+
+    full_name: str | None = None
+    preferred_language: str | None = None
+    email: str | None = None
+    email_verification_token: str | None = None
+    super_admin: bool | None = None
+
+
+class ResetAdminPasswordRequest(BaseModel):
+    """Request body for a super admin setting a new password for an admin who's lost access --
+    same "no self-service forgot password flow" reasoning as ResetWorkerPasswordRequest."""
+
+    new_password: str
+
+
+@router.patch("/admins/{admin_id}", response_model=UserResponse)
+def update_admin(
+    admin_id: int,
+    body: UpdateAdminRequest,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_super_admin),
+) -> UserResponse:
+    """Edit an admin's profile (name/preferred language/email/super-admin status). Super admin
+    only. Refuses `super_admin=False` when `admin_id` is the caller's own account -- a super admin
+    demoting themselves mid-session (rather than having another super admin do it) is the one path
+    that could leave them unable to ever promote anyone back if they change their mind, so it's
+    blocked the same way delete_admin() blocks self-deletion."""
+    target = db.query(User).filter(User.id == admin_id, User.role == "admin").first()
+    if target is None:
+        raise HTTPException(status_code=404, detail="Admin not found.")
+
+    if body.full_name is not None:
+        full_name = body.full_name.strip()
+        if not full_name:
+            raise HTTPException(status_code=400, detail="Full name cannot be empty.")
+        target.full_name = full_name
+
+    if body.preferred_language is not None:
+        if body.preferred_language not in settings.SUPPORTED_LANGUAGES:
+            raise HTTPException(status_code=400, detail=f"Unsupported language: {body.preferred_language}")
+        target.preferred_language = body.preferred_language
+
+    if body.email is not None:
+        email = body.email.strip().lower()
+        if not email:
+            target.email = None
+            target.email_verified = False
+        elif target.email is not None and email == target.email.lower():
+            pass  # unchanged from the current, already-(un)verified address -- nothing to prove
+        else:
+            if not _EMAIL_PATTERN.match(email):
+                raise HTTPException(status_code=400, detail="Enter a valid email address.")
+            existing = db.query(User).filter(User.email == email, User.id != target.id).first()
+            if existing is not None:
+                raise HTTPException(status_code=409, detail="An account with this email already exists.")
+            if not body.email_verification_token or not consume_signup_email_verification(
+                db, email, body.email_verification_token.strip()
+            ):
+                raise HTTPException(
+                    status_code=400, detail="Email is not verified. Please verify the email address first."
+                )
+            target.email = email
+            target.email_verified = True
+
+    if body.super_admin is not None:
+        if target.id == admin.id and not body.super_admin:
+            raise HTTPException(status_code=400, detail="You cannot remove your own super admin access.")
+        target.super_admin = body.super_admin
+
+    db.commit()
+    db.refresh(target)
+    logger.info("Admin profile updated by super admin (admin_id=%s, target_admin_id=%s)", admin.id, admin_id)
+    return UserResponse.model_validate(target)
+
+
+@router.post("/admins/{admin_id}/reset-password", response_model=UserResponse)
+def reset_admin_password(
+    admin_id: int,
+    body: ResetAdminPasswordRequest,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_super_admin),
+) -> UserResponse:
+    """Set a new password for an admin who's lost access to their account. Super admin only."""
+    target = db.query(User).filter(User.id == admin_id, User.role == "admin").first()
+    if target is None:
+        raise HTTPException(status_code=404, detail="Admin not found.")
+
+    if len(body.new_password) < MIN_PASSWORD_LENGTH:
+        raise HTTPException(status_code=400, detail=f"Password must be at least {MIN_PASSWORD_LENGTH} characters.")
+
+    target.password_hash = hash_password(body.new_password)
+    db.commit()
+    db.refresh(target)
+    logger.info("Admin password reset by super admin (admin_id=%s, target_admin_id=%s)", admin.id, admin_id)
+    return UserResponse.model_validate(target)
+
+
+@router.delete("/admins/{admin_id}", response_model=DeleteAdminResponse)
+def delete_admin(
+    admin_id: int,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_super_admin),
+) -> DeleteAdminResponse:
+    """Delete an admin account. Super admin only. Beyond the usual not-found check, a super admin
+    can't delete their own account -- this alone already rules out ever reaching zero super admins:
+    every caller here IS a super admin (require_super_admin), so a would-be "last remaining super
+    admin" target can only ever be the caller themselves, which this guard already blocks. A
+    separate "don't delete the last super admin" check would therefore never actually fire in
+    practice -- deliberately left out rather than kept as unreachable code (see this codebase's own
+    convention against validating scenarios that can't happen)."""
+    target = db.query(User).filter(User.id == admin_id, User.role == "admin").first()
+    if target is None:
+        raise HTTPException(status_code=404, detail="Admin not found.")
+    if target.id == admin.id:
+        raise HTTPException(status_code=400, detail="You cannot delete your own account.")
+
+    db.delete(target)
+    db.commit()
+    logger.info("Admin deleted by super admin (admin_id=%s, deleted_admin_id=%s)", admin.id, admin_id)
+    return DeleteAdminResponse(deleted_admin_id=admin_id)
 
 
 @router.delete("/complaints/{complaint_id}", response_model=DeleteComplaintResponse)

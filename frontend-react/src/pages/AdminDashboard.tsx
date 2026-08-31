@@ -109,7 +109,7 @@ function SelectAllCheckbox({ pageIds, selected, onToggle }: { pageIds: number[];
  * ward, summary, AND assigned worker name all at once — so finding "everything about Ramesh"
  * doesn't require a second, separate worker search. */
 export default function AdminDashboard() {
-  const { token } = useAuth();
+  const { token, user } = useAuth();
   const { lang } = useUiLang();
   const toast = useToast();
   const [workers, setWorkers] = useState<WorkerSummary[]>([]);
@@ -331,6 +331,11 @@ export default function AdminDashboard() {
             <Link to="/admin/workers" className="btn btn-ghost btn-sm">
               {t(lang, "admin.manageWorkers")}
             </Link>
+            {user?.super_admin && (
+              <Link to="/admin/admins" className="btn btn-ghost btn-sm">
+                {t(lang, "admin.manageAdmins")}
+              </Link>
+            )}
             <Link to="/admin/ai-monitoring" className="btn btn-ghost btn-sm">
               {t(lang, "admin.viewAiMonitoring")}
             </Link>

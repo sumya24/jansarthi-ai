@@ -282,6 +282,9 @@ class UserResponse(BaseModel):
     district_id: int | None = None
     ward_id: int | None = None
     locality_id: int | None = None
+    # Only meaningful for role="admin" -- see models.py's User.super_admin docstring. Always False
+    # for citizens/workers; the frontend gates the "Manage Admins" nav entry on this being True.
+    super_admin: bool = False
 
     model_config = ConfigDict(from_attributes=True)
 
