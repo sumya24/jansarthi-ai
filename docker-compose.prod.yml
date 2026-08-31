@@ -91,6 +91,15 @@ services:
       # growing to 2.6GB of RAM once before. This env var sets it correctly from first boot here,
       # rather than needing the same manual GraphQL-mutation fix applied by hand after the fact.
       PHOENIX_DEFAULT_RETENTION_POLICY_DAYS: "30"
+      # LIVE-REPORTED: Caddy serves Phoenix's UI under /phoenix-ui* (see deploy/Caddyfile), but
+      # Phoenix itself doesn't know that -- without telling it, its own asset/route references
+      # assume they're served from the root path, so a real trace URL loaded a blank black page
+      # (index.html's dark background rendered, but its JS bundle and internal client-side routing
+      # both broke). Confirmed directly against the installed package
+      # (phoenix.config.ENV_PHOENIX_HOST_ROOT_PATH) that this is the real, supported env var for
+      # exactly this "served behind a reverse proxy under a path prefix" case -- must start with
+      # "/", must not end with one.
+      PHOENIX_HOST_ROOT_PATH: "/phoenix-ui"
     volumes:
       - phoenix_data:/mnt/data
     restart: unless-stopped
