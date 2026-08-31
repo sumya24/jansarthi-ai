@@ -12,7 +12,7 @@ see everything.
 """
 
 import logging
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Literal
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
@@ -1015,6 +1015,95 @@ def complaints_by_service(
         ServiceStatusCount(service_category=service_category, status=status, total=total)
         for service_category, status, total in rows
         if service_category is not None
+    ]
+
+
+class DailyComplaintTrend(BaseModel):
+    """One calendar day's real opened/resolved/accepted/rejected counts -- feeds the worker
+    dashboard's "Opened vs. resolved" activity line chart."""
+
+    date: str
+    opened: int
+    resolved: int
+    accepted: int
+    rejected: int
+
+
+@router.get("/trend", response_model=list[DailyComplaintTrend])
+def complaints_trend(
+    worker_id: int | None = None,
+    days: int = 7,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> list[DailyComplaintTrend]:
+    """Real daily opened/resolved/accepted/rejected counts for the last `days` calendar days,
+    scoped by role exactly like list_complaints()/complaints_by_service() above (and, like
+    complaints_by_service, registered before GET /{complaint_id} so "trend" is never captured as a
+    complaint_id path param). "Opened" comes from Complaint.created_at; "resolved"/"accepted" come
+    from ComplaintStatusHistory.to_status -- deliberately NOT Complaint.status, since a complaint's
+    current status says nothing about WHEN it reached that status, only the status-change audit
+    trail does (see ComplaintStatusHistory's own docstring). "rejected" comes from
+    ComplaintRejection, a separate table (not a status -- a rejected complaint goes right back to
+    "pending"/reassignment, so there's no "rejected" value ComplaintStatusHistory.to_status could
+    ever hold; see ComplaintRejection's own docstring).
+
+    Aggregated in Python, same reasoning as ai_request_log_repository.get_daily_ai_stats' identical
+    pattern -- but unlike that endpoint (which only returns days that actually had activity), this
+    always returns exactly `days` calendar days including zero-count ones, since the chart this
+    feeds needs a fixed x-axis, not a range that shrinks on a quiet day.
+    """
+    opened_query = db.query(Complaint.created_at)
+    resolved_query = (
+        db.query(ComplaintStatusHistory.created_at)
+        .join(Complaint, Complaint.id == ComplaintStatusHistory.complaint_id)
+        .filter(ComplaintStatusHistory.to_status == "resolved")
+    )
+    accepted_query = (
+        db.query(ComplaintStatusHistory.created_at)
+        .join(Complaint, Complaint.id == ComplaintStatusHistory.complaint_id)
+        .filter(ComplaintStatusHistory.to_status == "accepted")
+    )
+    rejected_query = db.query(ComplaintRejection.created_at).join(Complaint, Complaint.id == ComplaintRejection.complaint_id)
+    if current_user.role == "citizen":
+        opened_query = opened_query.filter(Complaint.citizen_id == str(current_user.id))
+        resolved_query = resolved_query.filter(Complaint.citizen_id == str(current_user.id))
+        accepted_query = accepted_query.filter(Complaint.citizen_id == str(current_user.id))
+        rejected_query = rejected_query.filter(Complaint.citizen_id == str(current_user.id))
+    elif current_user.role == "worker":
+        opened_query = opened_query.filter(Complaint.assigned_worker_id == current_user.id)
+        resolved_query = resolved_query.filter(Complaint.assigned_worker_id == current_user.id)
+        accepted_query = accepted_query.filter(Complaint.assigned_worker_id == current_user.id)
+        rejected_query = rejected_query.filter(ComplaintRejection.worker_id == current_user.id)
+    elif current_user.role == "admin" and worker_id is not None:
+        opened_query = opened_query.filter(Complaint.assigned_worker_id == worker_id)
+        resolved_query = resolved_query.filter(Complaint.assigned_worker_id == worker_id)
+        accepted_query = accepted_query.filter(Complaint.assigned_worker_id == worker_id)
+        rejected_query = rejected_query.filter(ComplaintRejection.worker_id == worker_id)
+    # admins with no worker_id: everything, unchanged -- same convention as complaints_by_service.
+
+    def _count_by_day(rows: list[tuple[datetime]]) -> dict[str, int]:
+        by_day: dict[str, int] = {}
+        for (created_at,) in rows:
+            day = created_at.strftime("%Y-%m-%d")
+            by_day[day] = by_day.get(day, 0) + 1
+        return by_day
+
+    opened_by_day = _count_by_day(opened_query.all())
+    resolved_by_day = _count_by_day(resolved_query.all())
+    accepted_by_day = _count_by_day(accepted_query.all())
+    rejected_by_day = _count_by_day(rejected_query.all())
+
+    today = datetime.now(timezone.utc)
+    days_list = [(today - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days - 1, -1, -1)]
+    return [
+        DailyComplaintTrend(
+            date=day,
+            opened=opened_by_day.get(day, 0),
+            resolved=resolved_by_day.get(day, 0),
+            accepted=accepted_by_day.get(day, 0),
+            rejected=rejected_by_day.get(day, 0),
+        )
+        for day in days_list
     ]
 
 

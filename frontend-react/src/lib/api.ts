@@ -478,6 +478,14 @@ export interface ServiceStatusCount {
   total: number;
 }
 
+export interface DailyComplaintTrend {
+  date: string;
+  opened: number;
+  resolved: number;
+  accepted: number;
+  rejected: number;
+}
+
 export interface DailyAiStat {
   date: string;
   request_count: number;
@@ -865,6 +873,16 @@ export const api = {
   // everything, or one worker's own via `workerId`), so this is NOT under /admin.
   complaintsByService: (token: string, workerId?: number) =>
     request<ServiceStatusCount[]>(`/complaints/by-service${workerId !== undefined ? `?worker_id=${workerId}` : ""}`, { token }),
+
+  // Real daily opened/resolved counts (see backend/routes/complaints.py's complaints_trend
+  // docstring for why "resolved" is sourced from ComplaintStatusHistory, not Complaint.status).
+  complaintsTrend: (token: string, opts: { workerId?: number; days?: number } = {}) => {
+    const params = new URLSearchParams();
+    if (opts.workerId !== undefined) params.set("worker_id", String(opts.workerId));
+    if (opts.days !== undefined) params.set("days", String(opts.days));
+    const qs = params.toString();
+    return request<DailyComplaintTrend[]>(`/complaints/trend${qs ? `?${qs}` : ""}`, { token });
+  },
 
   // One request for all five status counts (stat tiles + filter-chip badges) -- see
   // backend/routes/admin.py's ComplaintStatusCounts docstring for why this replaced five
