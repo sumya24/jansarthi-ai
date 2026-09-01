@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import TopBar from "../components/TopBar";
 import StatusBadge from "../components/StatusBadge";
@@ -92,8 +92,22 @@ export default function WorkerDashboard() {
   // which card's modal is showing.
   const [modalFor, setModalFor] = useState<{ id: number; type: ActionModal } | null>(null);
 
+  // LIVE-REPORTED, real race (not test flakiness -- confirmed directly, see below): two `load()`
+  // calls can be in flight at once -- the filter/page/search-driven effect below and accept()'s
+  // own explicit `reload()` right after a status change both call it, and nothing stops an
+  // EARLIER-issued call (still reflecting the complaint's PRE-accept status) from resolving
+  // AFTER a later one (reflecting the just-accepted status), silently overwriting the fresh data
+  // with stale data purely by network/scheduling luck. Confirmed live with direct instrumentation:
+  // accept()'s own reload() fetched and set status "accepted" correctly every time, yet the UI
+  // still occasionally never showed it -- exactly this stale-overwrite pattern, not a bug in
+  // accept() or reload() themselves. `loadRequestIdRef` tags each call with a strictly-increasing
+  // id and only ever commits state from the MOST RECENTLY ISSUED call, so a late-arriving stale
+  // response is silently discarded instead of winning the race.
+  const loadRequestIdRef = useRef(0);
+
   async function load() {
     if (!token) return;
+    const requestId = ++loadRequestIdRef.current;
     setLoading(true);
     setLoadError(null);
     try {
@@ -106,12 +120,14 @@ export default function WorkerDashboard() {
         page,
         pageSize: WORKER_PAGE_SIZE,
       });
+      if (requestId !== loadRequestIdRef.current) return; // superseded by a newer load() -- discard
       setComplaints(data.items);
       setTotal(data.total);
     } catch (err) {
+      if (requestId !== loadRequestIdRef.current) return; // superseded -- discard this error too
       setLoadError(err instanceof ApiError ? err.message : t(lang, "worker.errLoadFailed"));
     } finally {
-      setLoading(false);
+      if (requestId === loadRequestIdRef.current) setLoading(false);
     }
   }
 
