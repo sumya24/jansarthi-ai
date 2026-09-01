@@ -147,7 +147,7 @@ export default function EmailVerifyField({
         <label htmlFor={`${idPrefix}-email`}>
           {t(lang, "auth.email.label")}
           {required ? (
-            <span className="field-required-mark" aria-hidden="true">*</span>
+            <span className="field-required-mark" aria-hidden="true" />
           ) : (
             <span className="field-optional-mark">{t(lang, "signup.homeLocation.optional")}</span>
           )}

@@ -54,10 +54,20 @@ test("an expired/invalid access token is silently refreshed instead of logging t
   const phone = uniquePhone();
   await signUpCitizen(page, phone, "sessiontest123!");
 
+  // LIVE-REPORTED, found via a full e2e run today: this test predates the app's move to httpOnly
+  // cookies (see lib/api.ts's own docstring -- tokens live ONLY in the httpOnly access_token/
+  // refresh_token cookies now, deliberately not readable from page JS, which is exactly why
+  // localStorage.getItem always returned null here). Playwright's own context().cookies()/
+  // addCookies() APIs operate at the browser-automation level, not page JS, so they can still
+  // read/overwrite an httpOnly cookie the same way a real expired one would need recovering from.
+  const cookiesBefore = await page.context().cookies();
+  const accessCookie = cookiesBefore.find((c) => c.name === "access_token");
+  if (!accessCookie) throw new Error("No access_token cookie found after signup -- login itself may be broken.");
+
   // Corrupt ONLY the access token -- the refresh token (still real and valid) is what the
   // interceptor in lib/api.ts should use to silently recover. Any invalid string triggers the
   // same 401 path a genuinely time-expired JWT would (get_current_user rejects both identically).
-  await page.evaluate(() => localStorage.setItem("janmitra.token", "corrupted-invalid-token"));
+  await page.context().addCookies([{ ...accessCookie, value: "corrupted-invalid-token" }]);
 
   // Reload triggers auth.tsx's boot-time /auth/me check with the now-bad access token.
   await page.reload();
@@ -67,10 +77,11 @@ test("an expired/invalid access token is silently refreshed instead of logging t
   await expect(page).toHaveURL(/\/citizen$/);
   await expect(page.getByText("Session Test Citizen")).toBeVisible();
 
-  // The access token in storage must now be a real, different value -- not the corrupted one
-  // still sitting there (which would mean the app just silently swallowed the 401 with no
-  // real recovery).
-  const refreshedToken = await page.evaluate(() => localStorage.getItem("janmitra.token"));
+  // The access token cookie must now be a real, different value -- not the corrupted one still
+  // sitting there (which would mean the app just silently swallowed the 401 with no real
+  // recovery).
+  const cookiesAfter = await page.context().cookies();
+  const refreshedToken = cookiesAfter.find((c) => c.name === "access_token")?.value;
   expect(refreshedToken).not.toBe("corrupted-invalid-token");
   expect(refreshedToken).toBeTruthy();
 });
@@ -79,18 +90,22 @@ test("logout revokes the refresh token server-side, not just locally", async ({ 
   const phone = uniquePhone();
   await signUpCitizen(page, phone, "sessiontest123!");
 
-  const refreshToken = await page.evaluate(() => localStorage.getItem("janmitra.refreshToken"));
+  // LIVE-REPORTED, found via a full e2e run today: same httpOnly-cookie gap as the test above --
+  // reading via page.context().cookies() instead of localStorage, which the app stopped using.
+  const cookiesBeforeLogout = await page.context().cookies();
+  const refreshToken = cookiesBeforeLogout.find((c) => c.name === "refresh_token")?.value;
   expect(refreshToken).toBeTruthy();
 
   await page.getByLabel("Settings").click();
   await page.getByRole("button", { name: "Log out" }).click();
   await expect(page).toHaveURL(/\/welcome$/);
 
-  // Both tokens must be gone from local storage...
-  const tokenAfterLogout = await page.evaluate(() => localStorage.getItem("janmitra.token"));
-  const refreshAfterLogout = await page.evaluate(() => localStorage.getItem("janmitra.refreshToken"));
-  expect(tokenAfterLogout).toBeNull();
-  expect(refreshAfterLogout).toBeNull();
+  // Both cookies must be gone after logout...
+  const cookiesAfterLogout = await page.context().cookies();
+  const tokenAfterLogout = cookiesAfterLogout.find((c) => c.name === "access_token");
+  const refreshAfterLogout = cookiesAfterLogout.find((c) => c.name === "refresh_token");
+  expect(tokenAfterLogout).toBeUndefined();
+  expect(refreshAfterLogout).toBeUndefined();
 
   // ...and the OLD refresh token must be genuinely dead server-side too (not just forgotten
   // locally) -- the real proof this is a server-side revocation, not a client-only clear.

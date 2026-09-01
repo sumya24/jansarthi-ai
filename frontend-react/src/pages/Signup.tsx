@@ -122,7 +122,7 @@ export default function Signup() {
             <div className={`field ${fieldErrors.fullName ? "has-error" : ""}`}>
               <label htmlFor="signup-name">
                 {t(lang, "auth.field.name")}
-                <span className="field-required-mark" aria-hidden="true">*</span>
+                <span className="field-required-mark" aria-hidden="true" />
               </label>
               <input
                 id="signup-name"
@@ -141,7 +141,7 @@ export default function Signup() {
             <div className={`field ${fieldErrors.phone ? "has-error" : ""}`}>
               <label htmlFor="signup-phone">
                 {t(lang, "auth.field.phone")}
-                <span className="field-required-mark" aria-hidden="true">*</span>
+                <span className="field-required-mark" aria-hidden="true" />
               </label>
               <input
                 id="signup-phone"
@@ -173,7 +173,7 @@ export default function Signup() {
             <div className={`field ${fieldErrors.password ? "has-error" : ""}`}>
               <label htmlFor="signup-password">
                 {t(lang, "auth.field.password")}
-                <span className="field-required-mark" aria-hidden="true">*</span>
+                <span className="field-required-mark" aria-hidden="true" />
               </label>
               <PasswordInput
                 lang={lang}
@@ -196,7 +196,7 @@ export default function Signup() {
             <div className={`field ${fieldErrors.confirmPassword ? "has-error" : ""}`}>
               <label htmlFor="signup-confirm-password">
                 {t(lang, "auth.field.confirmPassword")}
-                <span className="field-required-mark" aria-hidden="true">*</span>
+                <span className="field-required-mark" aria-hidden="true" />
               </label>
               <PasswordInput
                 lang={lang}

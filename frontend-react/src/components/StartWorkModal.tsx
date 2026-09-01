@@ -66,7 +66,7 @@ export default function StartWorkModal({
           <div className={`field ${fieldError ? "has-error" : ""}`}>
             <label htmlFor="start-assessment">
               {t(lang, "worker.start.assessmentLabel")}
-              <span className="field-required-mark" aria-hidden="true">*</span>
+              <span className="field-required-mark" aria-hidden="true" />
             </label>
             <textarea
               id="start-assessment"

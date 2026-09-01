@@ -75,7 +75,7 @@ export default function Login() {
             <div className={`field ${fieldErrors.identifier ? "has-error" : ""}`}>
               <label htmlFor="login-identifier">
                 {t(lang, "auth.field.identifier")}
-                <span className="field-required-mark" aria-hidden="true">*</span>
+                <span className="field-required-mark" aria-hidden="true" />
               </label>
               <input
                 id="login-identifier"
@@ -95,7 +95,7 @@ export default function Login() {
             <div className={`field ${fieldErrors.password ? "has-error" : ""}`}>
               <label htmlFor="login-password">
                 {t(lang, "auth.field.password")}
-                <span className="field-required-mark" aria-hidden="true">*</span>
+                <span className="field-required-mark" aria-hidden="true" />
               </label>
               <PasswordInput
                 lang={lang}

@@ -198,7 +198,7 @@ export default function AssignWorkerModal({
             <div className="field">
               <label htmlFor="assign-worker-select">
                 {t(lang, "admin.assignModalLabel")}
-                <span className="field-required-mark" aria-hidden="true">*</span>
+                <span className="field-required-mark" aria-hidden="true" />
               </label>
               {filteredWorkers.length === 0 ? (
                 <p style={{ fontSize: 12.5, color: "var(--ink-2)", margin: "4px 0 0" }}>{t(lang, "admin.assignFilterNoWorkers")}</p>
