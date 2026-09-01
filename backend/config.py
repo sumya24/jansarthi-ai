@@ -61,7 +61,14 @@ class Settings:
     # Ask Sarthi voice assistant TTS (see backend/services/sarvam_client.py's
     # synthesize_speech()) -- one fixed default voice/model for v1, not user-configurable (a
     # cosmetic product decision, not an architectural one -- see the implementation plan).
-    TTS_SPEAKER: str = os.getenv("TTS_SPEAKER", "anushka")
+    # LIVE-REPORTED, part 2: switching TTS_MODEL to bulbul:v3 (below) surfaced a second break --
+    # v3 has its own, completely different valid-speaker list, and "anushka" (a real v2 speaker)
+    # isn't on it. Confirmed directly in production: every TTS call failed with a 400 ("Speaker
+    # 'anushka' is not compatible with model bulbul:v3"), silently degrading every voice reply to
+    # text-only. "priya" is a real bulbul:v3 speaker (confirmed against the exact list Sarvam's own
+    # error message returned) -- swap TTS_SPEAKER again if a different voice is preferred, just
+    # keep it paired with whichever model TTS_MODEL is actually set to.
+    TTS_SPEAKER: str = os.getenv("TTS_SPEAKER", "priya")
     # LIVE-REPORTED: Sarvam deprecated bulbul:v2 (calls now fail outright with a 400 "Model
     # 'bulbul:v2' has been deprecated. Please use 'bulbul:v3' instead.") -- confirmed directly in
     # production logs, every TTS call failing. bulbul:v3 is already what this app's own cost

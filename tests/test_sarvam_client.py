@@ -63,7 +63,7 @@ def test_synthesize_speech_passes_defaults_from_settings():
     _, kwargs = client._client.text_to_speech.convert.call_args
     assert kwargs["text"] == "Hello there."
     assert kwargs["language_code"] == "hi-IN"
-    assert kwargs["speaker"] == "anushka"
+    assert kwargs["speaker"] == "priya"
     assert kwargs["model"] == "bulbul:v3"
     assert kwargs["output_audio_codec"] == "wav"
 
