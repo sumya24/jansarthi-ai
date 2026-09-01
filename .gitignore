@@ -24,8 +24,9 @@ blob-report/
 # committed, just scratch output from local `uvicorn`/`vite` runs.
 *.log
 
-# Word's own lock file for an open .docx (~$<name>.docx) -- never a real file to track.
+# Word/Excel's own lock file for an open .docx/.xlsx (~$<name>.ext) -- never a real file to track.
 ~$*.docx
+~$*.xlsx
 
 # Demo/test account credential lists -- local convenience exports, not source. Real plaintext
 # passwords live in these (the DB itself only ever stores a bcrypt hash) -- never meant to be
@@ -39,6 +40,7 @@ JanSarthi_AI_Manual_Test_Script.docx
 # this repo, not app source or documentation meant for the project itself.
 JanSarthi_AI_Study_Guide.docx
 JanSarthi_AI_Video_Cue_Cards.docx
+JanSarthi_AI_Video_Cue_Cards.backup.docx
 
 # Points to the Drive/Sheets links used to hand this project off to the HCLTech team -- external
 # sharing reference, not source or documentation meant for the repo itself.
