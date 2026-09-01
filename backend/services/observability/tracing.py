@@ -565,7 +565,7 @@ _MODEL_COST_SPAN_NAMES = ["answer_generation", "response_translation", "text_to_
 _MODEL_DISPLAY_INFO: dict[str, dict[str, Any]] = {
     "sarvam-105b": {"label": "Answer Generation", "vendor": "Sarvam AI", "is_free": False},
     "sarvam-translate:v1": {"label": "Reply Translation", "vendor": "Sarvam AI", "is_free": False},
-    "bulbul:v2": {"label": "Text-to-Speech", "vendor": "Sarvam AI", "is_free": False},
+    "bulbul:v3": {"label": "Text-to-Speech", "vendor": "Sarvam AI", "is_free": False},
     "saaras:v3": {"label": "Speech-to-Text", "vendor": "Sarvam AI", "is_free": False},
     "gemini-3.5-flash-lite": {"label": "Photo Captioning", "vendor": "Google Gemini (free tier)", "is_free": True},
     "vikhyatk/moondream2": {"label": "Photo Captioning (fallback)", "vendor": "Local model", "is_free": True},
@@ -704,9 +704,19 @@ def get_model_cost_summary(days: int = 30) -> list[dict[str, Any]]:
     ask_sarthi_service.py's own tracing call sites -- this reads the exact same numbers, not a
     separate computation).
 
-    Fail-open, like everything else in this module: returns an empty list (never raises) if
-    Phoenix is unreachable, unconfigured, or any single query fails -- this is pure observability
-    for an admin dashboard, never something a real citizen request depends on.
+    Fail-open, like everything else in this module: never raises. But "fail-open" used to mean
+    "one slow/failed GraphQL call blanks the ENTIRE panel" -- LIVE-REPORTED on the shared,
+    CPU-constrained production VM: this function makes up to 6 sequential HTTP calls to Phoenix (1
+    project lookup + 1 per `_MODEL_COST_SPAN_NAMES` entry), all inside one try/except. Confirmed
+    directly in production logs: when the backend's own CPU is briefly pinned by something
+    unrelated (e.g. loading the vision-captioning model), Phoenix -- a single process sharing the
+    same constrained CPU -- occasionally can't answer within the timeout (`httpcore.ReadTimeout`),
+    and the old code threw away every model's numbers because of that one slow call, even models
+    whose query had already succeeded moments earlier. That's the exact "shows a model, refresh,
+    shows nothing" flapping reported live. Now each piece degrades independently: the project
+    lookup gets one quick retry (cheap, and the one call every other query depends on), and each
+    span-name query is caught on its own -- a single timed-out model just doesn't have a row this
+    refresh, instead of taking every other model down with it.
     """
     if not _phoenix_enabled():
         return []
@@ -715,38 +725,62 @@ def get_model_cost_summary(days: int = 30) -> list[dict[str, Any]]:
         return []
 
     try:
-        end = datetime.now(timezone.utc)
-        start = end - timedelta(days=days)
-        totals: dict[str, dict[str, float]] = {}
+        return _fetch_model_cost_summary(base_url, days)
+    except Exception:
+        # Ultimate safety net: the project-lookup and per-model loops below already handle their
+        # own known failure modes granularly (see docstring); this only catches something
+        # genuinely unexpected, so this admin-only observability panel degrades to empty instead
+        # of ever bubbling into a 500.
+        logger.warning("Could not fetch Phoenix model cost summary.", exc_info=True)
+        return []
 
-        with httpx.Client(timeout=20.0) as client:
-            project_resp = client.post(
-                base_url,
-                json={
-                    "query": "query($name: String!) { getProjectByName(name: $name) { id } }",
-                    "variables": {"name": settings.PHOENIX_PROJECT_NAME},
-                },
-            )
-            project_resp.raise_for_status()
-            project_data = project_resp.json()
-            project = (project_data.get("data") or {}).get("getProjectByName")
-            if not project:
-                logger.warning("Phoenix project %r not found for model cost summary.", settings.PHOENIX_PROJECT_NAME)
+
+def _fetch_model_cost_summary(base_url: str, days: int) -> list[dict[str, Any]]:
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(days=days)
+    totals: dict[str, dict[str, float]] = {}
+
+    with httpx.Client(timeout=20.0) as client:
+        project_id = None
+        # One retry for the project lookup specifically -- every span query below depends on it,
+        # so it's worth a second, cheap attempt before giving up on the whole panel (unlike the
+        # per-model queries below, there's no "partial" result possible if this one never succeeds).
+        for attempt in range(2):
+            try:
+                project_resp = client.post(
+                    base_url,
+                    json={
+                        "query": "query($name: String!) { getProjectByName(name: $name) { id } }",
+                        "variables": {"name": settings.PHOENIX_PROJECT_NAME},
+                    },
+                )
+                project_resp.raise_for_status()
+                project = (project_resp.json().get("data") or {}).get("getProjectByName")
+                if not project:
+                    logger.warning("Phoenix project %r not found for model cost summary.", settings.PHOENIX_PROJECT_NAME)
+                    return []
+                project_id = project["id"]
+                break
+            except Exception:
+                if attempt == 0:
+                    logger.info("Phoenix project lookup failed once for model cost summary; retrying.", exc_info=True)
+                    continue
+                logger.warning("Could not fetch Phoenix model cost summary (project lookup failed twice).", exc_info=True)
                 return []
-            project_id = project["id"]
 
-            spans_query = """
-                query($id: ID!, $start: DateTime!, $end: DateTime!, $filter: String!) {
-                  node(id: $id) {
-                    ... on Project {
-                      spans(first: 500, timeRange: {start: $start, end: $end}, filterCondition: $filter) {
-                        edges { node { attributes } }
-                      }
-                    }
+        spans_query = """
+            query($id: ID!, $start: DateTime!, $end: DateTime!, $filter: String!) {
+              node(id: $id) {
+                ... on Project {
+                  spans(first: 500, timeRange: {start: $start, end: $end}, filterCondition: $filter) {
+                    edges { node { attributes } }
                   }
                 }
-            """
-            for span_name in _MODEL_COST_SPAN_NAMES:
+              }
+            }
+        """
+        for span_name in _MODEL_COST_SPAN_NAMES:
+            try:
                 resp = client.post(
                     base_url,
                     json={
@@ -761,40 +795,42 @@ def get_model_cost_summary(days: int = 30) -> list[dict[str, Any]]:
                 )
                 resp.raise_for_status()
                 edges = (((resp.json().get("data") or {}).get("node") or {}).get("spans") or {}).get("edges") or []
-                for edge in edges:
-                    try:
-                        attrs = json.loads(edge["node"]["attributes"])
-                    except Exception:
-                        continue
-                    llm = attrs.get("llm") or {}
-                    model_name = llm.get("model_name")
-                    if not model_name:
-                        continue
-                    cost = (llm.get("cost") or {}).get("total") or 0.0
-                    tokens = (llm.get("token_count") or {}).get("total") or 0
-                    bucket = totals.setdefault(model_name, {"cost": 0.0, "tokens": 0.0, "count": 0.0})
-                    bucket["cost"] += cost
-                    bucket["tokens"] += tokens
-                    bucket["count"] += 1
+            except Exception:
+                # Fail-open PER MODEL: this one span name's numbers are missing this refresh, but
+                # whatever the loop already accumulated for other models stays intact below.
+                logger.info("Phoenix span query for %r failed; skipping just that model this refresh.", span_name, exc_info=True)
+                continue
+            for edge in edges:
+                try:
+                    attrs = json.loads(edge["node"]["attributes"])
+                except Exception:
+                    continue
+                llm = attrs.get("llm") or {}
+                model_name = llm.get("model_name")
+                if not model_name:
+                    continue
+                cost = (llm.get("cost") or {}).get("total") or 0.0
+                tokens = (llm.get("token_count") or {}).get("total") or 0
+                bucket = totals.setdefault(model_name, {"cost": 0.0, "tokens": 0.0, "count": 0.0})
+                bucket["cost"] += cost
+                bucket["tokens"] += tokens
+                bucket["count"] += 1
 
-        results = []
-        for model_name, bucket in totals.items():
-            info = _MODEL_DISPLAY_INFO.get(model_name, {"label": model_name, "vendor": "Unknown", "is_free": False})
-            results.append({
-                "model_name": model_name,
-                "label": info["label"],
-                "vendor": info["vendor"],
-                "is_free": info["is_free"],
-                "total_cost_inr": bucket["cost"],
-                "total_tokens": int(bucket["tokens"]),
-                "request_count": int(bucket["count"]),
-            })
-        # Fixed pipeline order (not sorted by cost/volume -- that's exactly the ranking Phoenix's
-        # own widget already does, and hides smaller models under) -- an admin scans the same 5
-        # rows in the same place every time, regardless of which model was busiest recently.
-        order = {name: i for i, name in enumerate(_MODEL_DISPLAY_INFO)}
-        results.sort(key=lambda r: order.get(r["model_name"], len(order)))
-        return results
-    except Exception:
-        logger.warning("Could not fetch Phoenix model cost summary.", exc_info=True)
-        return []
+    results = []
+    for model_name, bucket in totals.items():
+        info = _MODEL_DISPLAY_INFO.get(model_name, {"label": model_name, "vendor": "Unknown", "is_free": False})
+        results.append({
+            "model_name": model_name,
+            "label": info["label"],
+            "vendor": info["vendor"],
+            "is_free": info["is_free"],
+            "total_cost_inr": bucket["cost"],
+            "total_tokens": int(bucket["tokens"]),
+            "request_count": int(bucket["count"]),
+        })
+    # Fixed pipeline order (not sorted by cost/volume -- that's exactly the ranking Phoenix's
+    # own widget already does, and hides smaller models under) -- an admin scans the same 5
+    # rows in the same place every time, regardless of which model was busiest recently.
+    order = {name: i for i, name in enumerate(_MODEL_DISPLAY_INFO)}
+    results.sort(key=lambda r: order.get(r["model_name"], len(order)))
+    return results
