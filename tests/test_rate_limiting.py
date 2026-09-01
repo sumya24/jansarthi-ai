@@ -78,7 +78,17 @@ def test_login_recovers_after_window_expires(client, make_citizen, monkeypatch):
     then a real wall-clock sleep just past it. Window widened to 3s (not 1s): bcrypt's
     deliberately-slow hashing makes each real login call here take ~200ms, so LOGIN_RATE_LIMIT+1
     of them need real headroom to land inside the SAME window and genuinely trip the limit, rather
-    than the earliest ones already aging out before the loop even finishes."""
+    than the earliest ones already aging out before the loop even finishes.
+
+    LIVE-REPORTED: also pins LOGIN_RATE_LIMIT itself, not just the window -- this test used to
+    trust whatever LOGIN_RATE_LIMIT the environment happened to configure, which silently broke
+    the moment a much larger local-dev-only override was in play (see .env's own docstring on
+    that): with a 100x bigger limit but the SAME short window, the ~200ms-per-login loop takes
+    long enough in real wall-clock time that the earliest hits age out of the window before the
+    loop even finishes, so the limit never actually trips and `blocked.status_code == 429` fails.
+    Pinning both together keeps this test's own real behavior fixed regardless of whatever value
+    a deployment's .env happens to set."""
+    monkeypatch.setattr(settings, "LOGIN_RATE_LIMIT", 5)
     monkeypatch.setattr(settings, "LOGIN_RATE_LIMIT_WINDOW_SECONDS", 3)
     make_citizen(phone="9100000005")
 
@@ -170,6 +180,10 @@ def test_ai_requests_up_to_the_limit_all_work(client, monkeypatch, make_citizen)
 
 
 def test_ai_exceeding_limit_returns_429_with_retry_after(client, monkeypatch, make_citizen):
+    # LIVE-REPORTED: pinned rather than trusting the ambient AI_RATE_LIMIT -- see
+    # test_login_recovers_after_window_expires's own identical fix/comment for why trusting
+    # whatever a deployment's .env happens to set silently breaks this test's own real behavior.
+    monkeypatch.setattr(settings, "AI_RATE_LIMIT", 10)
     _install_real_service(monkeypatch)
     token, _ = make_citizen(phone="9100000012")
     for _ in range(settings.AI_RATE_LIMIT):

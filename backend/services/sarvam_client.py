@@ -11,6 +11,7 @@ from sarvamai import SarvamAI
 from tenacity import retry, retry_if_not_exception_type, stop_after_attempt, wait_exponential
 
 from backend.config import settings
+from backend.services.fake_sarvam_sdk import FakeSarvamAI
 from backend.services.sarvam_key_pool import SarvamKeyRotationMixin
 
 logger = logging.getLogger(__name__)
@@ -126,7 +127,11 @@ class SarvamClient(SarvamKeyRotationMixin):
             write=settings.SARVAM_REQUEST_TIMEOUT_SECONDS,
             pool=settings.SARVAM_REQUEST_TIMEOUT_SECONDS,
         )
-        self._init_sarvam_keys(timeout, settings.SARVAM_API_KEYS or settings.SARVAM_API_KEY)
+        self._init_sarvam_keys(
+            timeout,
+            settings.SARVAM_API_KEYS or settings.SARVAM_API_KEY,
+            client_factory=FakeSarvamAI if settings.SARVAM_MOCK_MODE else SarvamAI,
+        )
         if self._client is None:
             logger.warning("SARVAM_API_KEY is not set; Sarvam calls will fail until configured.")
 
