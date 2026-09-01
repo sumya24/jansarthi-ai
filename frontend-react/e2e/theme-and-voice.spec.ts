@@ -45,9 +45,12 @@ test("citizen can switch to voice input, record a complaint, and submit it", asy
 
   // The complaint form now lives in the Report an Issue wizard (Phase 1), not directly on the
   // citizen Home screen — get there first.
-  // Scoped to the hero's own primary button -- a nav-drawer link with the same text also exists
-  // on the page (see components/NavDrawer.tsx), so an unscoped role/name locator is ambiguous.
-  await page.locator("a.btn-primary", { hasText: "Report an Issue" }).click();
+  //
+  // LIVE-REPORTED: the hero "a.btn-primary" button no longer exists on CitizenHome.tsx -- the
+  // nav-drawer link is the only way there now, and it's a real slide-out drawer (needs opening
+  // first). See citizen-signup.spec.ts's own identical fix.
+  await page.getByRole("button", { name: "Open menu" }).click();
+  await page.getByRole("link", { name: "Report an Issue" }).click();
   await expect(page).toHaveURL(/\/citizen\/report$/);
 
   // Location step: pick a ward if the list is non-empty (other specs sharing this dev db may
