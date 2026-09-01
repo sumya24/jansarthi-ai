@@ -970,7 +970,16 @@ export const api = {
   complaintStatusCounts: (token: string) => request<ComplaintStatusCounts>("/admin/complaints/status-counts", { token }),
 
   aiMonitoringSummary: (token: string) => request<AiMonitoringSummary>("/admin/ai-monitoring", { token }),
-  aiMonitoringModelCosts: (token: string) => request<ModelCostEntry[]>("/admin/ai-monitoring/model-costs", { token }),
+  // LIVE-REPORTED: this call has no bound elsewhere in the chain (Caddy's reverse_proxy sets no
+  // read timeout; the backend's own Phoenix queries can legitimately run well past what an admin
+  // will wait, even without an outright Phoenix outage -- see tracing.py's get_model_cost_summary()
+  // docstring), so without a client-side timeout a slow response left the "Cost by model" panel's
+  // loading skeleton up indefinitely -- confirmed via /code-review, not just a slow-render guess.
+  // AbortSignal.timeout() rejects the fetch with an AbortError once exceeded; AdminAiMonitoring.tsx
+  // treats that the same as any other failure (falls back to the empty-panel state), so the UI
+  // degrades to "nothing to show" instead of hanging forever.
+  aiMonitoringModelCosts: (token: string) =>
+    request<ModelCostEntry[]>("/admin/ai-monitoring/model-costs", { token, signal: AbortSignal.timeout(15_000) }),
 
   // Per-day request volume + avg latency -- feeds the Admin dashboard's AI health trend chart
   // (distinct from aiMonitoringSummary's single running total).
