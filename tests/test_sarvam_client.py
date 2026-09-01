@@ -64,7 +64,7 @@ def test_synthesize_speech_passes_defaults_from_settings():
     assert kwargs["text"] == "Hello there."
     assert kwargs["language_code"] == "hi-IN"
     assert kwargs["speaker"] == "anushka"
-    assert kwargs["model"] == "bulbul:v2"
+    assert kwargs["model"] == "bulbul:v3"
     assert kwargs["output_audio_codec"] == "wav"
 
 

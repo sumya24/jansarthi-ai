@@ -62,7 +62,13 @@ class Settings:
     # synthesize_speech()) -- one fixed default voice/model for v1, not user-configurable (a
     # cosmetic product decision, not an architectural one -- see the implementation plan).
     TTS_SPEAKER: str = os.getenv("TTS_SPEAKER", "anushka")
-    TTS_MODEL: str = os.getenv("TTS_MODEL", "bulbul:v2")
+    # LIVE-REPORTED: Sarvam deprecated bulbul:v2 (calls now fail outright with a 400 "Model
+    # 'bulbul:v2' has been deprecated. Please use 'bulbul:v3' instead.") -- confirmed directly in
+    # production logs, every TTS call failing. bulbul:v3 is already what this app's own cost
+    # accounting assumes (see ask_sarthi_service.py's _SARVAM_TTS_COST_PER_CHAR_INR docstring,
+    # priced against bulbul:v3 specifically), so this was a pricing/model mismatch even before the
+    # deprecation made it a hard failure.
+    TTS_MODEL: str = os.getenv("TTS_MODEL", "bulbul:v3")
 
     # LLM used for complaint summary generation (Sarvam's chat completion API by default,
     # so this can reuse SARVAM_API_KEY if LLM_API_KEY is left unset)
