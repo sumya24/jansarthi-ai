@@ -292,13 +292,23 @@ test("a file that isn't really an image is rejected with a clear error, not a si
   // once real wards became available for most cities -- this test doesn't care WHICH ward gets
   // picked (only that an invalid file is rejected later), so picking whatever's real and first
   // works fine, unlike the main test above which needs a SPECIFIC ward matching its own worker.
+  // LIVE-REPORTED: this field doesn't keep one persistent element and toggle `disabled` while its
+  // real ward list loads -- LocationPicker.tsx renders a free-text <input> when `wards.length ===
+  // 0` and swaps to an entirely different <select> once the list populates. A single "check
+  // tagName, then act" is racy against that swap: reading the <input> tag a moment before the
+  // fetch resolves, then acting after it already resolved, targets a locator that has since
+  // re-resolved to the new <select> underneath it -- confirmed live (a "fill" landed on an
+  // already-swapped <select> and failed). Retries the whole check-and-act once rather than
+  // papering over it with an arbitrary sleep.
   const wardField = page.locator("#wizard-ward");
-  if ((await wardField.evaluate((el) => el.tagName)) === "SELECT") {
-    await expect.poll(() => wardField.locator("option").count()).toBeGreaterThan(1);
-    await wardField.selectOption({ index: 1 });
-  } else {
-    await wardField.fill("Test Ward");
-  }
+  await expect(async () => {
+    if ((await wardField.evaluate((el) => el.tagName)) === "SELECT") {
+      await expect.poll(() => wardField.locator("option").count()).toBeGreaterThan(1);
+      await wardField.selectOption({ index: 1 });
+    } else {
+      await wardField.fill("Test Ward");
+    }
+  }).toPass({ intervals: [0], timeout: 10000 });
   await page.getByRole("button", { name: "Next" }).click();
   await page.getByPlaceholder(/Garbage not collected/).fill("Text file disguised as a photo.");
   await page.getByRole("button", { name: "Next" }).click();
