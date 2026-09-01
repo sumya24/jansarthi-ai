@@ -349,8 +349,11 @@ export default function AdminAiMonitoring() {
         <p style={{ fontSize: 12, color: "var(--ink-3)", margin: "0 0 12px" }}>{t(lang, "admin.aiModelCostsSub")}</p>
 
         {modelCostsLoading && (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12, marginBottom: 30 }}>
-            {[0, 1, 2, 3, 4].map((i) => (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12, marginBottom: 30 }}>
+            {/* LIVE-REPORTED: hardcoded to 5 placeholders, but there are 6 real models this app
+                calls (see tracing.py's _MODEL_DISPLAY_INFO) -- a mismatched count here caused a
+                visible layout shift the instant the skeleton was replaced by the real 6-card grid. */}
+            {[0, 1, 2, 3, 4, 5].map((i) => (
               <div key={i} className="surface-card" style={{ padding: 16 }}>
                 <div className="skeleton" style={{ width: "60%", height: 11, marginBottom: 10 }} />
                 <div className="skeleton" style={{ width: "80%", height: 22, marginBottom: 10 }} />
@@ -365,7 +368,7 @@ export default function AdminAiMonitoring() {
         )}
 
         {!modelCostsLoading && modelCosts && modelCosts.length > 0 && (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12, marginBottom: 30 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12, marginBottom: 30 }}>
             {modelCosts.map((m, i) => {
               // Relative to the BUSIEST of the 5 models right now, not a fixed ceiling -- whichever
               // model has the most requests this moment defines "full"; every other tile's bar is
