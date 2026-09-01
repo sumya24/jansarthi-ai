@@ -44,6 +44,11 @@ def main() -> None:
             phone=args.phone,
             password_hash=hash_password(args.password),
             role="admin",
+            # LIVE-REPORTED: this script's own docstring/output call this "the Super Admin
+            # account," but never actually set the flag that makes it one (super_admin defaults
+            # to False -- see models.py) -- every account this script ever created was really
+            # just a regular Admin. Predates the super_admin flag itself; never updated to match.
+            super_admin=True,
             preferred_language=args.language,
         )
         db.add(admin)
