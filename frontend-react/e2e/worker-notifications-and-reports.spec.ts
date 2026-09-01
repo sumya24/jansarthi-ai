@@ -2,18 +2,17 @@ import { test, expect } from "@playwright/test";
 import { execSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { verifySignupEmail, fillHomeLocationPicker, uniqueEmail, uniquePhone } from "./helpers";
+import { verifySignupEmail, fillWorkerLocationPicker, uniqueEmail, uniquePhone, type PickedLocation } from "./helpers";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "../..");
+const PYTHON_BIN = process.platform === "win32" ? "python" : "python3";
 const ADMIN_PHONE = uniquePhone();
 const ADMIN_PASSWORD = "adminpass123";
-const WARD = `Notif Test Ward ${Date.now()}`;
 
 test.beforeAll(() => {
-  const pythonBin = process.platform === "win32" ? "python" : "python3";
   execSync(
-    `${pythonBin} scripts/seed_admin.py --phone ${ADMIN_PHONE} --password ${ADMIN_PASSWORD} --name "Notif Test Admin"`,
+    `${PYTHON_BIN} scripts/seed_admin.py --phone ${ADMIN_PHONE} --password ${ADMIN_PASSWORD} --name "Notif Test Admin"`,
     { cwd: REPO_ROOT, stdio: "pipe" }
   );
 });
@@ -51,16 +50,26 @@ test("worker notification bell, detail-page card rules per status, report visibi
   await page.locator("a.btn-ghost", { hasText: "Manage Workers" }).click();
   await expect(page).toHaveURL(/\/admin\/workers$/);
 
-  for (const [phone, name, ward] of [
-    [workerPhone, "Notif Worker", WARD],
-    [otherWorkerPhone, "Other Worker", `${WARD} (unrelated)`],
+  // LIVE-REPORTED: "Assign to ward" used to be a plain free-text field, letting this test invent
+  // its own ward name and an "(unrelated)" sibling ward for the cross-worker authorization check
+  // below. It's now WorkerLocationPicker.tsx's real State->City->Ward picker (only real,
+  // worker-backed wards are offered) -- see helpers.ts's fillWorkerLocationPicker docstring.
+  // Distinct ward indices just keep the two workers in genuinely different real wards (so Other
+  // Worker's own cross-authorization check below is against a truly different ward, not the same
+  // one); which real wards they land in no longer matters for who gets the FIRST assignment --
+  // see the forced-reassignment call further down, after the complaint is filed.
+  let workerLocation: PickedLocation | undefined;
+  for (const [phone, name, wardIndex] of [
+    [workerPhone, "Notif Worker", 1],
+    [otherWorkerPhone, "Other Worker", 2],
   ] as const) {
     await page.getByRole("button", { name: "+ Add worker" }).click();
     await page.getByLabel("Full name").fill(name);
     await page.getByLabel("Phone number").fill(phone);
     await page.getByLabel("Temporary password").fill("workerpass123");
     await page.getByLabel("Confirm password").fill("workerpass123");
-    await page.getByLabel("Assign to ward").fill(ward);
+    const location = await fillWorkerLocationPicker(page, wardIndex);
+    if (name === "Notif Worker") workerLocation = location;
     await page.getByRole("button", { name: "English", exact: true }).click();
     await page.getByRole("button", { name: "Add worker", exact: true }).click();
     await expect(page.getByText(name).first()).toBeVisible();
@@ -68,23 +77,57 @@ test("worker notification bell, detail-page card rules per status, report visibi
   await logout(page);
 
   // --- Citizen files a complaint into that ward. ---
+  //
+  // LIVE-REPORTED: the wizard's own ward dropdown further down is scoped to the citizen's
+  // registered home CITY (see ReportIssue.tsx's own comment on this) -- explicitly aligning the
+  // citizen's signup city to the worker's real city instead of the generic fillHomeLocationPicker,
+  // whose own independent "index 1" pick has no guarantee of landing in the same place (same
+  // reasoning as complaint-tracking.spec.ts's identical fix).
   await page.goto("/signup");
   await page.getByLabel("Full name").fill("Notif Test Citizen");
   await page.getByLabel("Phone number").fill(citizenPhone);
   await page.getByLabel("Password", { exact: true }).fill("citizenpass123!");
   await page.getByLabel("Email address").fill(uniqueEmail());
   await page.locator("#signup-confirm-password").fill("citizenpass123!");
-  await fillHomeLocationPicker(page);
+  const homeStateField = page.locator("#signup-home-state");
+  await expect.poll(() => homeStateField.locator("option").count()).toBeGreaterThan(1);
+  await homeStateField.selectOption({ label: workerLocation!.state });
+  const homeCityField = page.locator("#signup-home-city");
+  await expect.poll(() => homeCityField.isEnabled()).toBe(true);
+  if ((await homeCityField.evaluate((el) => el.tagName)) === "SELECT") {
+    await homeCityField.selectOption({ label: workerLocation!.city });
+  } else {
+    await homeCityField.fill(workerLocation!.city);
+  }
+  const homeWardField = page.locator("#signup-home-ward");
+  await expect.poll(() => homeWardField.isEnabled()).toBe(true);
+  if ((await homeWardField.evaluate((el) => el.tagName)) === "SELECT") {
+    await homeWardField.selectOption({ index: 1 });
+  } else {
+    await homeWardField.fill("Test Ward");
+  }
   await verifySignupEmail(page);
   await page.getByRole("button", { name: "Create account" }).click();
   await expect(page).toHaveURL(/\/citizen$/);
 
-  // Scoped to the hero's own primary button -- a nav-drawer link with the same text also exists
-  // on the page (see components/NavDrawer.tsx), so an unscoped role/name locator is ambiguous.
-  await page.locator("a.btn-primary", { hasText: "Report an Issue" }).click();
+  // LIVE-REPORTED: the hero "a.btn-primary" button no longer exists on CitizenHome.tsx -- the
+  // nav-drawer link is the only way there now, and it's a real slide-out drawer (needs opening
+  // first). See citizen-signup.spec.ts's own identical fix.
+  await page.getByRole("button", { name: "Open menu" }).click();
+  await page.getByRole("link", { name: "Report an Issue" }).click();
   await expect(page).toHaveURL(/\/citizen\/report$/);
   await page.getByRole("button", { name: "Select location" }).click();
-  await page.locator("#wizard-ward").selectOption(WARD);
+  // LIVE-REPORTED: selectOption(ward) (a bare string, matched against each <option>'s VALUE, not
+  // its visible text) stopped finding a match -- this dropdown's ward list is suffixed with the
+  // real ULB name (e.g. "Ward 3, Bruhat Bengaluru Mahanagara Palike (BBMP)"), a different, more
+  // specific format than the bare ward text fillWorkerLocationPicker captured from the Add Worker
+  // modal's own, differently-formatted picker. Matching by substring against the real rendered
+  // option instead of assuming the two pickers share one text format (same fix as
+  // complaint-tracking.spec.ts).
+  const wizardWardOption = page.locator("#wizard-ward option", { hasText: workerLocation!.ward });
+  await expect.poll(() => wizardWardOption.count()).toBeGreaterThan(0);
+  const wizardWardValue = await wizardWardOption.first().getAttribute("value");
+  await page.locator("#wizard-ward").selectOption(wizardWardValue!);
   await page.getByRole("button", { name: "Next" }).click();
   await page.getByPlaceholder(/Garbage not collected/).fill("Overflowing garbage bin near the bus stop.");
   await page.getByRole("button", { name: "Next" }).click();
@@ -98,7 +141,27 @@ test("worker notification bell, detail-page card rules per status, report visibi
   await expect(page.getByText("Complaint submitted successfully.")).toBeVisible({ timeout: 60000 });
   await logout(page);
 
-  // --- Worker logs in: a notification for the new assignment is waiting, with an unread badge. ---
+  // LIVE-REPORTED: the ward this complaint just landed in already has real seed/demo workers in
+  // it (see scripts/seed_multi_ward_data.py) with a lower id than "Notif Worker" -- auto-
+  // assignment always picks the lowest-id eligible worker in a ward (assignment_service.py), so
+  // the freshly created worker below would never actually receive it. Rather than fake or skip
+  // that real behavior, this drives the SAME backend function a real rejection uses
+  // (assign_next_worker(), via scripts/e2e_force_reassign_to_worker.py) to have every other real
+  // candidate for this specific complaint step aside -- exactly what happens if each of them
+  // individually rejects it -- until it lands on Notif Worker. No seed/demo account is touched.
+  execSync(
+    `${PYTHON_BIN} scripts/e2e_force_reassign_to_worker.py --citizen-phone ${citizenPhone} --keep-phone ${workerPhone}`,
+    { cwd: REPO_ROOT, stdio: "pipe" }
+  );
+
+  // --- Worker logs in: a notification for the assignment is waiting, with an unread badge. ---
+  //
+  // LIVE-REPORTED: the notification title is "Complaint reassigned to you", not "New complaint
+  // assigned" -- assign_next_worker() picks the title based on whether any ComplaintRejection
+  // rows exist for this complaint (is_reassignment), and the forced-reassignment call above
+  // legitimately created some (one per real seed worker it stepped aside), same as if each of
+  // them had genuinely rejected it first. That's the real, correct title for what actually
+  // happened here, not a workaround.
   await login(page, workerPhone, "workerpass123");
   await expect(page).toHaveURL(/\/worker$/);
   const bell = page.getByLabel("Notifications");
@@ -106,12 +169,12 @@ test("worker notification bell, detail-page card rules per status, report visibi
   await expect(page.locator(".notif-badge")).toHaveText("1");
 
   await bell.click();
-  await expect(page.getByText("New complaint assigned")).toBeVisible();
+  await expect(page.getByText("Complaint reassigned to you")).toBeVisible();
   // Opening the panel must NOT itself mark anything read -- the badge must still read 1.
   await expect(page.locator(".notif-badge")).toHaveText("1");
 
   // Clicking the notification opens the complaint's detail page (never a dead end) and marks it read.
-  await page.getByText("New complaint assigned").click();
+  await page.getByText("Complaint reassigned to you").click();
   await expect(page).toHaveURL(/\/worker\/complaints\/\d+$/);
   await expect(page.getByText("Overflowing garbage bin near the bus stop.").first()).toBeVisible();
   await bell.click();
@@ -206,7 +269,9 @@ test("worker rejects a complaint: admin is notified and sees the reason, citizen
   await page.getByLabel("Phone number").fill(workerPhone);
   await page.getByLabel("Temporary password").fill("workerpass123");
   await page.getByLabel("Confirm password").fill("workerpass123");
-  await page.getByLabel("Assign to ward").fill(WARD);
+  // Which real ward this lands in doesn't matter for who gets the assignment -- see the forced-
+  // reassignment call further down, after the complaint is filed.
+  const workerLocation = await fillWorkerLocationPicker(page, 3);
   await page.getByRole("button", { name: "English", exact: true }).click();
   await page.getByRole("button", { name: "Add worker", exact: true }).click();
   await expect(page.getByText("Rejecting Worker").first()).toBeVisible();
@@ -218,15 +283,35 @@ test("worker rejects a complaint: admin is notified and sees the reason, citizen
   await page.getByLabel("Password", { exact: true }).fill("citizenpass123!");
   await page.getByLabel("Email address").fill(uniqueEmail());
   await page.locator("#signup-confirm-password").fill("citizenpass123!");
-  await fillHomeLocationPicker(page);
+  const homeStateField = page.locator("#signup-home-state");
+  await expect.poll(() => homeStateField.locator("option").count()).toBeGreaterThan(1);
+  await homeStateField.selectOption({ label: workerLocation.state });
+  const homeCityField = page.locator("#signup-home-city");
+  await expect.poll(() => homeCityField.isEnabled()).toBe(true);
+  if ((await homeCityField.evaluate((el) => el.tagName)) === "SELECT") {
+    await homeCityField.selectOption({ label: workerLocation.city });
+  } else {
+    await homeCityField.fill(workerLocation.city);
+  }
+  const homeWardField = page.locator("#signup-home-ward");
+  await expect.poll(() => homeWardField.isEnabled()).toBe(true);
+  if ((await homeWardField.evaluate((el) => el.tagName)) === "SELECT") {
+    await homeWardField.selectOption({ index: 1 });
+  } else {
+    await homeWardField.fill("Test Ward");
+  }
   await verifySignupEmail(page);
   await page.getByRole("button", { name: "Create account" }).click();
   await expect(page).toHaveURL(/\/citizen$/);
 
-  await page.locator("a.btn-primary", { hasText: "Report an Issue" }).click();
+  await page.getByRole("button", { name: "Open menu" }).click();
+  await page.getByRole("link", { name: "Report an Issue" }).click();
   await expect(page).toHaveURL(/\/citizen\/report$/);
   await page.getByRole("button", { name: "Select location" }).click();
-  await page.locator("#wizard-ward").selectOption(WARD);
+  const wizardWardOption = page.locator("#wizard-ward option", { hasText: workerLocation.ward });
+  await expect.poll(() => wizardWardOption.count()).toBeGreaterThan(0);
+  const wizardWardValue = await wizardWardOption.first().getAttribute("value");
+  await page.locator("#wizard-ward").selectOption(wizardWardValue!);
   await page.getByRole("button", { name: "Next" }).click();
   await page.getByPlaceholder(/Garbage not collected/).fill("Streetlight has been out for a week.");
   await page.getByRole("button", { name: "Next" }).click();
@@ -248,6 +333,15 @@ test("worker rejects a complaint: admin is notified and sees the reason, citizen
   const complaintDetailUrl = page.url();
   const complaintId = complaintDetailUrl.match(/\/complaints\/(\d+)$/)![1];
   await logout(page);
+
+  // LIVE-REPORTED: same real-seed-worker-wins-by-lowest-id issue as the sibling test above --
+  // this test's own point is exercising the real "Reject" UI action as "Rejecting Worker"
+  // specifically, so that worker needs to hold the INITIAL assignment, not a later one. See
+  // scripts/e2e_force_reassign_to_worker.py's own docstring.
+  execSync(
+    `${PYTHON_BIN} scripts/e2e_force_reassign_to_worker.py --citizen-phone ${citizenPhone} --keep-phone ${workerPhone}`,
+    { cwd: REPO_ROOT, stdio: "pipe" }
+  );
 
   // --- Worker rejects, with a reason. Navigates by id directly (same complaint, worker-side
   // route) rather than matching the citizen's original text, which the AI pipeline may have
@@ -274,7 +368,11 @@ test("worker rejects a complaint: admin is notified and sees the reason, citizen
   await page.getByText("A worker rejected a complaint").click();
   await expect(page).toHaveURL(/\/admin\/complaints\/\d+$/);
   await expect(page.getByText("Rejection History")).toBeVisible();
-  await expect(page.getByText("Rejecting Worker")).toBeVisible();
+  // .first(): this dev db accumulates same-named "Rejecting Worker" accounts across repeated
+  // runs of this spec (a real earlier one can be a genuine candidate this run's own
+  // force-reassign step displaces, logging its own "Rejected by: Rejecting Worker" entry too) --
+  // same reasoning as this file's own worker-table check above.
+  await expect(page.getByText("Rejecting Worker").first()).toBeVisible();
   await expect(page.getByText(rejectionReason)).toBeVisible();
   await logout(page);
 

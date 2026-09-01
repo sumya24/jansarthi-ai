@@ -53,9 +53,18 @@ test("language gate -> landing -> signup validation -> citizen dashboard -> grac
 
   // Start reporting an issue. The complaint form lives in the Report an Issue wizard (Phase 1),
   // still in Marathi since that's the signed-up language.
-  // Scoped to the hero's own primary button -- a nav-drawer link with the same text also exists
-  // on the page (see components/NavDrawer.tsx), so an unscoped role/name locator is ambiguous.
-  await page.locator("a.btn-primary", { hasText: "समस्या नोंदवा" }).click();
+  //
+  // LIVE-REPORTED: this used to be scoped to a hero "a.btn-primary" button on this exact page
+  // (Citizen Home), deliberately distinct from the nav-drawer link with the same text, per this
+  // comment's own original note about avoiding ambiguity between the two. That hero button no
+  // longer exists on CitizenHome.tsx -- confirmed directly, it now lives only on
+  // CitizenDashboard.tsx (the separate "My Complaints" page) -- so the nav-drawer link is the
+  // only "समस्या नोंदवा" control on this page today, and the ambiguity this comment used to guard
+  // against no longer exists either. It's a real slide-out drawer (off-screen via CSS transform
+  // until opened, confirmed directly -- "element is outside of the viewport"), not an
+  // always-visible sidebar, so it needs opening first.
+  await page.getByRole("button", { name: "मेनू उघडा" }).click();
+  await page.getByRole("link", { name: "समस्या नोंदवा" }).click();
   await expect(page).toHaveURL(/\/citizen\/report$/);
 
   // Try to skip straight through without filling anything in — whichever step's client-side

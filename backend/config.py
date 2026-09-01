@@ -86,6 +86,14 @@ class Settings:
     # 1-2 sentence summary would suggest, or the response gets cut off with empty content.
     LLM_MAX_TOKENS: int = int(os.getenv("LLM_MAX_TOKENS", "1024"))
 
+    # Local dev/e2e-testing only -- routes every Sarvam SDK call (STT, TTS, translate, and all
+    # four chat-completion callers: summary/normalization/category/answer-generation) through
+    # backend/services/fake_sarvam_sdk.py's FakeSarvamAI instead of the real network SDK, so
+    # running the Playwright suite repeatedly doesn't burn real Sarvam credits. Off by default --
+    # production's own .env never sets this, and every real deployment keeps hitting the real API
+    # exactly as before. See fake_sarvam_sdk.py's own module docstring for what's faked and why.
+    SARVAM_MOCK_MODE: bool = os.getenv("SARVAM_MOCK_MODE", "false").lower() == "true"
+
     # File storage
     UPLOAD_FOLDER: str = os.getenv("UPLOAD_FOLDER", str(BASE_DIR / "uploads"))
     MAX_PHOTO_SIZE_BYTES: int = 5 * 1024 * 1024  # 5 MB

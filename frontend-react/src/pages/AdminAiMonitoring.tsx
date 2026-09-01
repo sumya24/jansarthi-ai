@@ -522,7 +522,15 @@ export default function AdminAiMonitoring() {
                       }}
                     >
                       {t(lang, "admin.aiColLatency")}
-                      <span aria-hidden="true">{latencySort === "desc" ? "▼" : latencySort === "asc" ? "▲" : "⇅"}</span>
+                      {/* LIVE-REPORTED, same root cause as global.css's .field-required-mark: a
+                          real DOM text node here (even aria-hidden) still shows up in
+                          getByText("Latency", { exact: true })'s plain-text matching, which --
+                          unlike getByLabel -- never did accessible-name computation to begin with,
+                          so aria-hidden was never going to help here regardless of browser
+                          quirks. CSS-generated content is never part of an element's text content
+                          in any query, at the DOM level, not just accessibility -- the fix that
+                          actually applies here. */}
+                      <span aria-hidden="true" className="ai-latency-sort-icon" data-direction={latencySort} />
                     </button>
                   </th>
                   {[t(lang, "admin.aiColCost"), t(lang, "admin.aiColStatus"), t(lang, "admin.aiColTrace")].map((h) => (

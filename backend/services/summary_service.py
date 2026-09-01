@@ -6,6 +6,7 @@ import httpx
 from sarvamai import SarvamAI
 
 from backend.config import get_prompt, settings
+from backend.services.fake_sarvam_sdk import FakeSarvamAI
 from backend.services.sarvam_client import AIServiceError
 from backend.services.sarvam_key_pool import SarvamKeyRotationMixin
 
@@ -28,7 +29,11 @@ class SummaryService(SarvamKeyRotationMixin):
             write=settings.SARVAM_REASONING_READ_TIMEOUT_SECONDS,
             pool=settings.SARVAM_REASONING_READ_TIMEOUT_SECONDS,
         )
-        self._init_sarvam_keys(timeout, settings.SARVAM_API_KEYS or settings.LLM_API_KEY, client_factory=SarvamAI)
+        self._init_sarvam_keys(
+            timeout,
+            settings.SARVAM_API_KEYS or settings.LLM_API_KEY,
+            client_factory=FakeSarvamAI if settings.SARVAM_MOCK_MODE else SarvamAI,
+        )
         if self._client is None:
             logger.warning("LLM_API_KEY is not set; summary generation will fail until configured.")
 

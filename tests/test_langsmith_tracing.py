@@ -39,6 +39,10 @@ def _enable(monkeypatch, client=None):
     monkeypatch.setattr(settings, "LANGSMITH_API_KEY", "ls-test-key")
     fake_client = client if client is not None else Mock()
     monkeypatch.setattr(tracing, "_LangSmithClient", Mock(return_value=fake_client))
+    # enqueue_for_review() now hands its real work off to a background thread (see that
+    # function's own docstring on why) -- run it synchronously here instead, so this module's
+    # tests can assert on its effects immediately after calling it, with no real race to win.
+    monkeypatch.setattr(tracing, "_run_in_background", lambda target, args: target(*args))
     return fake_client
 
 

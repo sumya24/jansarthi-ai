@@ -50,6 +50,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -504,9 +505,37 @@ def enqueue_for_review(run: "_RunTree | _PhoenixOnlyRun | None", reason: str) ->
     annotation (see `_phoenix_enqueue_for_review()`) whenever Phoenix has a span for this run,
     independent of whether LangSmith does. A no-op if `run` is `None`; never raises. `reason` is
     logged locally only (not sent to LangSmith -- the run itself already carries its own
-    `routed_to`/`insufficient_knowledge` outputs, see graph.py's run_graph())."""
+    `routed_to`/`insufficient_knowledge` outputs, see graph.py's run_graph()).
+
+    LIVE-REPORTED GAP: this module's own docstring already promises "non-blocking, fail-open",
+    but the actual review-annotation work below (`_phoenix_enqueue_for_review()`'s `force_flush`
+    plus up to three sequential Phoenix GraphQL round trips, each with its own multi-second
+    timeout) used to run inline, in the SAME request thread, called synchronously from
+    graph.py's own run_graph() right as a citizen's Ask Sarthi request was finishing -- confirmed
+    directly: with Phoenix unreachable, an out-of-scope question's response was delayed by
+    10+ seconds past the point its actual answer was already computed, entirely waiting on a
+    "flag this for review" side-effect the citizen never sees or benefits from. Every call this
+    function makes is already independent of the request's own DB session/response (module-level
+    HTTP clients only, see `_get_client()`/`_phoenix_enqueue_for_review()`), so handing the whole
+    thing to a background thread and returning immediately keeps every real behavior (the
+    annotation still happens, still fails open, still never raises) while actually delivering the
+    non-blocking guarantee this function already claimed to have."""
     if run is None:
         return
+    _run_in_background(_enqueue_for_review_sync, (run, reason))
+
+
+def _run_in_background(target: "Any", args: tuple) -> None:
+    """Runs `target(*args)` on a daemon background thread -- its own function (not inlined into
+    `enqueue_for_review()`) purely so tests can substitute a synchronous call
+    (`lambda target, args: target(*args)`) and assert on the real work's effects immediately,
+    without racing a real thread (see tests/test_langsmith_tracing.py's own `_enable()`)."""
+    threading.Thread(target=target, args=args, daemon=True).start()
+
+
+def _enqueue_for_review_sync(run: "_RunTree | _PhoenixOnlyRun", reason: str) -> None:
+    """The actual (network-bound, potentially slow) review-annotation work -- always run on a
+    background thread by `enqueue_for_review()` above, never inline in the request path."""
     _phoenix_enqueue_for_review(getattr(run, "id", None), reason)
     if not _is_real_langsmith_run(run):
         return

@@ -88,18 +88,31 @@ test("Ask Sarthi: a question with no location asks for clarification instead of 
   // Deliberately NOT fillHomeLocationPicker() here: that helper just picks whichever state
   // happens to be first alphabetically, and since the location-resolution fallback chain
   // includes the citizen's own registered ward as a last resort (see nodes.py's
-  // _resolve_location), landing on a state/city seeded for one of the RAG knowledge base's 30
-  // covered cities (e.g. Ahmedabad/Kolkata/Bengaluru) would resolve a real location and this
-  // test would no longer be testing what its name says -- caught live when this test started
-  // failing after that fallback shipped (the app correctly stopped asking, because it correctly
-  // now knows where the citizen lives). This test's actual job is verifying the "nothing
-  // resolves anywhere, including the account" case, so it needs a ward that's real (seeded,
-  // satisfies the mandatory signup field) but genuinely NOT one of the RAG gazetteer's 30 cities
-  // -- Pune is seeded in this project's own multi-ward test data (real State->City->Ward
-  // hierarchy, see backend/routes/locations.py) but is not in that 30-city list (see
-  // location_extractor.py's module docstring on the two separate, differently-sized location
-  // datasets), so explicitly picking it here (rather than an arbitrary index) keeps this test's
-  // premise deterministic.
+  // _resolve_location), landing on a state/city the RAG knowledge base covers would resolve a
+  // real location and this test would no longer be testing what its name says -- caught live
+  // when this test started failing after that fallback shipped (the app correctly stopped
+  // asking, because it correctly now knows where the citizen lives). This test's actual job is
+  // verifying the "nothing resolves anywhere, including the account" case, so it needs a
+  // ward/city/state that's real (seeded, satisfies the mandatory signup field) but genuinely has
+  // ZERO RAG presence.
+  //
+  // LIVE-REPORTED, correcting this comment's own prior claim: Pune (previously used here) is NOT
+  // a stable choice -- RAG coverage grew from ~30 to 44 cities since this test was written, and
+  // Pune is now one of them (confirmed directly against the RAG gazetteer, loaded straight from
+  // its own chunks.json, not a hand-maintained list, so this genuinely can drift over time).
+  //
+  // The signup location picker only ever offers a State/City/Ward that has at least one real
+  // WORKER assigned (see backend/routes/locations.py's _worker_backed_ward_ids) -- a much smaller
+  // set than the full seeded location dataset, and (live-caught while fixing this) an entire
+  // state, or a seemingly-safe city, can still fail two different ways: absent from the picker
+  // entirely if it has zero worker-backed wards, or present but resolving anyway because the
+  // picker's own "City" level is actually the DISTRICT name, not the municipality (ULB) name --
+  // e.g. "Kanpur Municipal Corporation" (the real ULB) isn't offered at all; the picker shows its
+  // district, "Kanpur Nagar", which RAG DOES cover. Of the worker-backed districts that exist in
+  // this project's own seed data, Karnataka's "Dakshina Kannada" (the district containing
+  // Mangaluru) is confirmed, live against the real running backend (not just RagGazetteer.
+  // find_city() in isolation, which can't see location_resolver.py's own broader district->city
+  // mapping), to genuinely fall through to clarification rather than resolving via Mangaluru.
   await page.goto("/");
   await page.getByRole("button", { name: "English" }).click();
   await expect(page).toHaveURL(/\/welcome$/);
@@ -113,10 +126,10 @@ test("Ask Sarthi: a question with no location asks for clarification instead of 
   await page.locator("#signup-confirm-password").fill("secret123!");
   const stateField = page.locator("#signup-home-state");
   await expect.poll(() => stateField.locator("option").count()).toBeGreaterThan(1);
-  await stateField.selectOption({ label: "Maharashtra" });
+  await stateField.selectOption({ label: "Karnataka" });
   const cityField = page.locator("#signup-home-city");
   await expect.poll(() => cityField.isEnabled()).toBe(true);
-  await cityField.selectOption({ label: "Pune" });
+  await cityField.selectOption({ label: "Dakshina Kannada" });
   const wardField = page.locator("#signup-home-ward");
   await expect.poll(() => wardField.isEnabled()).toBe(true);
   await wardField.selectOption({ index: 1 });
@@ -135,11 +148,12 @@ test("Ask Sarthi: a question with no location asks for clarification instead of 
   // text (see nodes.py's _resolve_location) independently of the RAG gazetteer this test is
   // actually probing, and would file a real complaint (confirmation prompt) instead of ever
   // reaching the generic location-clarification path this test asserts on. Verified live against
-  // the real backend before this change: this exact phrasing, for this exact Pune-registered
-  // account, reliably returns routed_to="NONE_CLARIFICATION_NEEDED" with the three follow-up
-  // options asserted below -- confirming the citizen's own ward genuinely does not resolve via
-  // the RAG gazetteer (Pune is not one of its 30 covered cities), so this test's "nothing
-  // resolves, including the account" premise still holds with this phrasing.
+  // the real backend: this exact phrasing, for this exact Dakshina-Kannada-registered account,
+  // reliably returns routed_to="NONE_CLARIFICATION_NEEDED" with the three follow-up options
+  // asserted below -- confirming the citizen's own ward genuinely does not resolve via the RAG
+  // gazetteer (see this test's own setup comment above for why, confirmed live rather than
+  // assumed), so this test's "nothing resolves, including the account" premise holds with this
+  // phrasing.
   await page.getByPlaceholder(/Ask about a civic service/i).fill("Who do I contact about street lights?");
   // exact: true -- Playwright's accessible-name matching is substring by default, and "Ask"
   // would otherwise also match the floating widget's own "Ask Sarthi" button, which stays

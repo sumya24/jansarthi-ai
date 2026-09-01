@@ -71,8 +71,13 @@ test("admin can view AI Monitoring: real request stats, breakdown, and a recent-
   // trace_url is only non-null when LANGSMITH_TRACE_URL_TEMPLATE is configured for that
   // request (see backend/routes/admin.py) -- assert each row shows one of the two honest
   // states, never assert which, since that depends on env config this test doesn't control.
-  const firstRowTraceCell = rows.first().locator("td").last();
-  await expect(firstRowTraceCell.getByText(/View trace|Not linked/)).toBeVisible();
+  //
+  // LIVE-REPORTED: a trailing "Delete request" action column was added after Trace (an empty
+  // <th /> in the header, see AdminAiMonitoring.tsx) -- .last() on <td> now grabs that action
+  // cell instead of Trace. Matching directly on the Trace text itself instead of a positional
+  // offset from the end, so this doesn't silently break again the next time a column is added.
+  const firstRowTraceCell = rows.first().getByText(/View trace|Not linked/);
+  await expect(firstRowTraceCell).toBeVisible();
 
   // "Back to dashboard" returns to /admin, confirming the two admin sections are actually
   // linked both ways, not a dead end.

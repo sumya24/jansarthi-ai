@@ -1026,4 +1026,11 @@ h1, h2, h3 { text-wrap: balance; margin: 0; }
    defense in depth, even though CSS content alone already guarantees this. */
 .field-required-mark { color: var(--status-critical); margin-left: 2px; }
 .field-required-mark::after { content: "*"; }
+
+/* AdminAiMonitoring's sort-direction indicator on the "Latency" column header -- same CSS-content
+   fix as .field-required-mark above, for the same reason (see AdminAiMonitoring.tsx's own
+   comment at this class's usage). */
+.ai-latency-sort-icon::after { content: "\21c5"; } /* ⇅ */
+.ai-latency-sort-icon[data-direction="desc"]::after { content: "\25bc"; } /* ▼ */
+.ai-latency-sort-icon[data-direction="asc"]::after { content: "\25b2"; } /* ▲ */
 .field-optional-mark { color: var(--ink-2); font-weight: 400; font-size: 11px; margin-left: 5px; }

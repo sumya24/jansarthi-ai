@@ -100,3 +100,70 @@ export async function fillHomeLocationPicker(page: Page): Promise<void> {
     await wardField.fill("Test Ward");
   }
 }
+
+export type PickedLocation = { state: string; city: string; ward: string };
+
+/** Fills the Add/Edit Worker modal's State/City/Ward picker (WorkerLocationPicker.tsx) and
+ * returns the REAL state/city/ward text that ended up selected.
+ *
+ * LIVE-REPORTED GAP: admin-worker-flow.spec.ts used to assign a worker to a made-up, self-
+ * generated ward string ("Ward 14 — Rukadi Road <timestamp>") via a plain free-text field --
+ * that field was later replaced by this real State->City->Ward picker (same redesign
+ * fillHomeLocationPicker's own docstring describes for Signup), which only offers REAL, seeded
+ * wards to choose from. A fabricated ward name can no longer be assigned at all, so the caller
+ * can no longer decide what the "assigned ward" text will be up front -- this helper picks a
+ * real one and hands back its exact displayed text so the caller's own later assertions
+ * (checking the worker table / the worker's own dashboard shows that ward) can assert on
+ * whatever ward genuinely got selected, not a value that was never realistically assignable.
+ *
+ * Returns state/city too (not just ward), added when complaint-tracking.spec.ts live-caught a
+ * second gap: a citizen signed up via fillHomeLocationPicker() lands in whatever state/city THAT
+ * picker's own "index 1" resolves to, independently of wherever THIS picker's own "index 1"
+ * landed for the workers -- two separately-first-alphabetically picks with no guarantee of
+ * landing in the same place at all (worker assignment is further scoped to worker-backed areas
+ * specifically, an even smaller list, so the two reliably diverge). A caller that needs a citizen
+ * and a worker in the SAME real place needs to explicitly select this returned state/city for the
+ * citizen too, rather than calling fillHomeLocationPicker() independently.
+ *
+ * `wardIndex` (default 1): LIVE-REPORTED, a THIRD gap the same fix uncovered -- the old fake,
+ * self-generated ward name (e.g. "Tracking Test Ward <timestamp>") gave every spec file genuine
+ * isolation for free, since no other spec could ever land in the same one by accident. A real,
+ * shared, worker-backed ward has no such guarantee: two spec files both calling this with the
+ * default index 1 land in the literally identical real ward, so a worker created by ONE spec
+ * (e.g. admin-worker-flow.spec.ts's "Ramesh Kadam") becomes a real, eligible candidate for the
+ * OTHER spec's own auto-assignment logic too -- confirmed live: complaint-tracking.spec.ts's
+ * complaint was auto-assigned to "Ramesh Kadam" instead of either of ITS OWN two just-created
+ * workers, simply because he'd been created earlier (alphabetically-earlier spec file, same
+ * ward). Passing a different index per spec file (each still a real, worker-backed ward -- large
+ * ULBs like the ones this ends up landing on have hundreds of wards, so collisions across a
+ * handful of spec files stay very unlikely) restores real isolation without reintroducing a fake
+ * location. */
+export async function fillWorkerLocationPicker(page: Page, wardIndex = 1): Promise<PickedLocation> {
+  const stateField = page.locator("#worker-location-state");
+  await expect.poll(() => stateField.locator("option").count()).toBeGreaterThan(1);
+  await stateField.selectOption({ index: 1 });
+  const state = await stateField.evaluate((el) => (el as HTMLSelectElement).selectedOptions[0].textContent ?? "");
+
+  const cityField = page.locator("#worker-location-city");
+  await expect.poll(() => cityField.isEnabled()).toBe(true);
+  let city: string;
+  if ((await cityField.evaluate((el) => el.tagName)) === "SELECT") {
+    await cityField.selectOption({ index: 1 });
+    city = await cityField.evaluate((el) => (el as HTMLSelectElement).selectedOptions[0].textContent ?? "");
+  } else {
+    city = "Test City";
+    await cityField.fill(city);
+  }
+
+  const wardField = page.locator("#worker-location-ward");
+  await expect.poll(() => wardField.isEnabled()).toBe(true);
+  if ((await wardField.evaluate((el) => el.tagName)) === "SELECT") {
+    await expect.poll(() => wardField.locator("option").count()).toBeGreaterThan(wardIndex);
+    await wardField.selectOption({ index: wardIndex });
+    const ward = await wardField.evaluate((el) => (el as HTMLSelectElement).selectedOptions[0].textContent ?? "");
+    return { state, city, ward };
+  }
+  const ward = "Test Ward";
+  await wardField.fill(ward);
+  return { state, city, ward };
+}

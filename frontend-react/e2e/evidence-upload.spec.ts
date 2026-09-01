@@ -2,13 +2,13 @@ import { test, expect } from "@playwright/test";
 import { execSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { verifySignupEmail, fillHomeLocationPicker, uniqueEmail, uniquePhone } from "./helpers";
+import { verifySignupEmail, fillHomeLocationPicker, fillWorkerLocationPicker, uniqueEmail, uniquePhone } from "./helpers";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "../..");
+const PYTHON_BIN = process.platform === "win32" ? "python" : "python3";
 const ADMIN_PHONE = uniquePhone();
 const ADMIN_PASSWORD = "adminpass123";
-const WARD = `Evidence Test Ward ${Date.now()}`;
 
 // Minimal, genuinely valid 1x1 images (not just "fake bytes with a jpeg-ish prefix") -- real
 // file content, so this test proves actual images survive the full upload -> storage -> gallery
@@ -23,9 +23,8 @@ const PNG_1PX = Buffer.from(
 );
 
 test.beforeAll(() => {
-  const pythonBin = process.platform === "win32" ? "python" : "python3";
   execSync(
-    `${pythonBin} scripts/seed_admin.py --phone ${ADMIN_PHONE} --password ${ADMIN_PASSWORD} --name "Evidence Test Admin"`,
+    `${PYTHON_BIN} scripts/seed_admin.py --phone ${ADMIN_PHONE} --password ${ADMIN_PASSWORD} --name "Evidence Test Admin"`,
     { cwd: REPO_ROOT, stdio: "pipe" }
   );
 });
@@ -65,30 +64,63 @@ test("real multi-file evidence upload, end to end: select -> upload -> storage -
   await page.getByLabel("Phone number").fill(workerPhone);
   await page.getByLabel("Temporary password").fill("workerpass123");
   await page.getByLabel("Confirm password").fill("workerpass123");
-  await page.getByLabel("Assign to ward").fill(WARD);
+  // "Assign to ward" was a free-text field, replaced by a real State->City->Ward picker (see
+  // complaint-tracking.spec.ts's own matching fix). Which real ward this lands in doesn't matter
+  // for who gets the assignment -- see the forced-reassignment call further down, after the
+  // complaint is filed.
+  const workerLocation = await fillWorkerLocationPicker(page, 3);
   await page.getByRole("button", { name: "English", exact: true }).click();
   await page.getByRole("button", { name: "Add worker", exact: true }).click();
   await expect(page.getByText("Evidence Test Worker").first()).toBeVisible();
   await logout(page);
 
   // --- Citizen files a complaint with TWO real photos, selected via the actual file input. ---
+  //
+  // LIVE-REPORTED: fillHomeLocationPicker() independently picks its own "index 1" state/city, no
+  // guarantee of landing in the same real place as the worker above -- explicitly matching
+  // workerLocation's state/city instead (see complaint-tracking.spec.ts's own identical fix).
   await page.goto("/signup");
   await page.getByLabel("Full name").fill("Evidence Test Citizen");
   await page.getByLabel("Phone number").fill(citizenPhone);
   await page.getByLabel("Password", { exact: true }).fill("citizenpass123!");
   await page.getByLabel("Email address").fill(uniqueEmail());
   await page.locator("#signup-confirm-password").fill("citizenpass123!");
-  await fillHomeLocationPicker(page);
+  const homeStateField = page.locator("#signup-home-state");
+  await expect.poll(() => homeStateField.locator("option").count()).toBeGreaterThan(1);
+  await homeStateField.selectOption({ label: workerLocation.state });
+  const homeCityField = page.locator("#signup-home-city");
+  await expect.poll(() => homeCityField.isEnabled()).toBe(true);
+  if ((await homeCityField.evaluate((el) => el.tagName)) === "SELECT") {
+    await homeCityField.selectOption({ label: workerLocation.city });
+  } else {
+    await homeCityField.fill(workerLocation.city);
+  }
+  const homeWardField = page.locator("#signup-home-ward");
+  await expect.poll(() => homeWardField.isEnabled()).toBe(true);
+  if ((await homeWardField.evaluate((el) => el.tagName)) === "SELECT") {
+    await homeWardField.selectOption({ index: 1 });
+  } else {
+    await homeWardField.fill("Test Ward");
+  }
   await verifySignupEmail(page);
   await page.getByRole("button", { name: "Create account" }).click();
   await expect(page).toHaveURL(/\/citizen$/);
 
-  // Scoped to the hero's own primary button -- a nav-drawer link with the same text also exists
-  // on the page (see components/NavDrawer.tsx), so an unscoped role/name locator is ambiguous.
-  await page.locator("a.btn-primary", { hasText: "Report an Issue" }).click();
+  // LIVE-REPORTED: the hero "a.btn-primary" button no longer exists on CitizenHome.tsx -- the
+  // nav-drawer link is the only way there now, and it's a real slide-out drawer (needs opening
+  // first). See citizen-signup.spec.ts's own identical fix.
+  await page.getByRole("button", { name: "Open menu" }).click();
+  await page.getByRole("link", { name: "Report an Issue" }).click();
   await expect(page).toHaveURL(/\/citizen\/report$/);
   await page.getByRole("button", { name: "Select location" }).click();
-  await page.locator("#wizard-ward").selectOption(WARD);
+  // LIVE-REPORTED: selectOption(ward) (matched by VALUE, not visible text) stopped finding a
+  // match -- the wizard's ward list is suffixed with the real ULB name, a different format than
+  // the bare ward text fillWorkerLocationPicker returns. See complaint-tracking.spec.ts's own
+  // identical fix for the full explanation.
+  const wizardWardOption = page.locator("#wizard-ward option", { hasText: workerLocation.ward });
+  await expect.poll(() => wizardWardOption.count()).toBeGreaterThan(0);
+  const wizardWardValue = await wizardWardOption.first().getAttribute("value");
+  await page.locator("#wizard-ward").selectOption(wizardWardValue!);
   await page.getByRole("button", { name: "Next" }).click();
   await page.getByPlaceholder(/Garbage not collected/).fill("Two photos of the same broken streetlight.");
   await page.getByRole("button", { name: "Next" }).click();
@@ -109,6 +141,21 @@ test("real multi-file evidence upload, end to end: select -> upload -> storage -
   await page.getByRole("button", { name: "Next" }).click();
   await page.getByRole("button", { name: "Submit complaint" }).click();
   await expect(page.getByText("Complaint submitted successfully.")).toBeVisible({ timeout: 60000 });
+
+  // LIVE-REPORTED: the ward this complaint just landed in already has real seed/demo workers in
+  // it (see scripts/seed_multi_ward_data.py) with a lower id than "Evidence Test Worker" --
+  // auto-assignment always picks the lowest-id eligible worker in a ward
+  // (assignment_service.py), so the freshly created worker below would never actually receive
+  // it. Rather than fake or skip that real behavior, this drives the SAME backend function a
+  // real rejection uses (assign_next_worker(), via scripts/e2e_force_reassign_to_worker.py) to
+  // have every other real candidate for this specific complaint step aside -- exactly what
+  // happens if each of them individually rejects it -- until it lands on our own worker. No
+  // seed/demo account is touched.
+  execSync(
+    `${PYTHON_BIN} scripts/e2e_force_reassign_to_worker.py --citizen-phone ${citizenPhone} --keep-phone ${workerPhone}`,
+    { cwd: REPO_ROOT, stdio: "pipe" }
+  );
+
   await page.getByRole("link", { name: "Track this complaint" }).click();
   await expect(page).toHaveURL(/\/citizen\/complaints$/);
 
@@ -193,10 +240,11 @@ test("real multi-file evidence upload, end to end: select -> upload -> storage -
 
 test("a file that isn't really an image is rejected with a clear error, not a silent success or a crash", async ({ page }) => {
   test.setTimeout(90000); // real backend round-trip -- see the 60s assertion below for why
-  // Self-contained (its own ward + worker, not the main test's WARD) -- must not depend on the
-  // main test above having already run first to create that ward's worker.
-  const localWard = `Invalid Upload Test Ward ${Date.now()}`;
-
+  // Self-contained (its own worker, not the main test's) -- must not depend on the main test
+  // above having already run first. This test doesn't check WHICH ward/worker the complaint
+  // lands on (only that an invalid file gets rejected), so unlike the main test above, there's no
+  // need to align the citizen's home city with the worker's, or to force-reassign anything --
+  // the WORKER CREATION step itself just needs a real, valid pick.
   await login(page, ADMIN_PHONE, ADMIN_PASSWORD);
   await expect(page).toHaveURL(/\/admin$/);
   await page.locator("a.btn-ghost", { hasText: "Manage Workers" }).click();
@@ -206,7 +254,7 @@ test("a file that isn't really an image is rejected with a clear error, not a si
   await page.getByLabel("Phone number").fill(uniquePhone());
   await page.getByLabel("Temporary password").fill("workerpass123");
   await page.getByLabel("Confirm password").fill("workerpass123");
-  await page.getByLabel("Assign to ward").fill(localWard);
+  await fillWorkerLocationPicker(page, 2);
   await page.getByRole("button", { name: "English", exact: true }).click();
   await page.getByRole("button", { name: "Add worker", exact: true }).click();
   await expect(page.getByText("Invalid Upload Test Worker").first()).toBeVisible();
@@ -230,18 +278,37 @@ test("a file that isn't really an image is rejected with a clear error, not a si
   await page.getByRole("button", { name: "Create account" }).click();
   await expect(page).toHaveURL(/\/citizen$/);
 
-  await page.locator("a.btn-primary", { hasText: "Report an Issue" }).click();
+  // LIVE-REPORTED: the hero "a.btn-primary" button no longer exists on CitizenHome.tsx -- see
+  // citizen-signup.spec.ts's own identical fix.
+  await page.getByRole("button", { name: "Open menu" }).click();
+  await page.getByRole("link", { name: "Report an Issue" }).click();
   await expect(page).toHaveURL(/\/citizen\/report$/);
   await page.getByRole("button", { name: "Select location" }).click();
   // #wizard-ward renders as either a <select> (a manageable real ward list) or a free-text
   // <input> fallback, depending on how many real wards exist in this run's database -- same
   // defensive shape check as helpers.ts's fillHomeLocationPicker, never assume one or the other.
+  //
+  // LIVE-REPORTED: selectOption(localWard) (a fabricated name, matched by VALUE) stopped working
+  // once real wards became available for most cities -- this test doesn't care WHICH ward gets
+  // picked (only that an invalid file is rejected later), so picking whatever's real and first
+  // works fine, unlike the main test above which needs a SPECIFIC ward matching its own worker.
+  // LIVE-REPORTED: this field doesn't keep one persistent element and toggle `disabled` while its
+  // real ward list loads -- LocationPicker.tsx renders a free-text <input> when `wards.length ===
+  // 0` and swaps to an entirely different <select> once the list populates. A single "check
+  // tagName, then act" is racy against that swap: reading the <input> tag a moment before the
+  // fetch resolves, then acting after it already resolved, targets a locator that has since
+  // re-resolved to the new <select> underneath it -- confirmed live (a "fill" landed on an
+  // already-swapped <select> and failed). Retries the whole check-and-act once rather than
+  // papering over it with an arbitrary sleep.
   const wardField = page.locator("#wizard-ward");
-  if ((await wardField.evaluate((el) => el.tagName)) === "SELECT") {
-    await wardField.selectOption(localWard);
-  } else {
-    await wardField.fill(localWard);
-  }
+  await expect(async () => {
+    if ((await wardField.evaluate((el) => el.tagName)) === "SELECT") {
+      await expect.poll(() => wardField.locator("option").count()).toBeGreaterThan(1);
+      await wardField.selectOption({ index: 1 });
+    } else {
+      await wardField.fill("Test Ward");
+    }
+  }).toPass({ intervals: [0], timeout: 10000 });
   await page.getByRole("button", { name: "Next" }).click();
   await page.getByPlaceholder(/Garbage not collected/).fill("Text file disguised as a photo.");
   await page.getByRole("button", { name: "Next" }).click();
