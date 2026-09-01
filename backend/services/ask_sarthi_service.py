@@ -402,12 +402,16 @@ class AskSarthiService:
         # Best-effort real cost: only set when EVERY segment's duration was actually readable --
         # silently summing just the known ones would understate the real total rather than being
         # honestly absent (see audio_duration.py's own docstring for why some segments have no
-        # readable duration at all).
+        # readable duration at all). Kept as its own variable (not just a dict entry) so it can
+        # also be passed into `_run()` as `extra_cost_inr` below -- see that param's own docstring
+        # for why the AiRequestLog row needs it, not just the Phoenix span.
+        stt_cost_inr = 0.0
         segment_durations = [get_audio_duration_seconds(chunk) for chunk in audio_segments]
         if segment_durations and all(d is not None for d in segment_durations):
             total_seconds = sum(segment_durations)
+            stt_cost_inr = total_seconds * _SARVAM_STT_COST_PER_SECOND_INR
             stt_outputs["model_name"] = "saaras:v3"
-            stt_outputs["total_cost_inr"] = total_seconds * _SARVAM_STT_COST_PER_SECOND_INR
+            stt_outputs["total_cost_inr"] = stt_cost_inr
             # Same reasoning as the translation/TTS spans: STT is billed per SECOND of audio, not
             # per token, so Phoenix's own per-model dashboard widgets have nothing to work with
             # unless this slot carries a real duration-derived count. Milliseconds (not whole
@@ -452,7 +456,8 @@ class AskSarthiService:
             image_description=image_description,
         )
         base_response, final_state, latency_ms = self._run(
-            db, ctx, initial_state, language, root_run=root_run, trace_id=trace_id, request_id=request_id, end_root_run=False,
+            db, ctx, initial_state, language, root_run=root_run, trace_id=trace_id, request_id=request_id,
+            end_root_run=False, extra_cost_inr=stt_cost_inr,
         )
 
         audio_base64: str | None = None
@@ -465,12 +470,13 @@ class AskSarthiService:
         tts_span = tracing.start_child_run(root_run, "text_to_speech", "llm", inputs={"answer_length": len(base_response.answer)})
         try:
             audio_base64 = self._sarvam_client.synthesize_speech_long(base_response.answer, tts_bcp47)
+            tts_cost_inr = len(base_response.answer) * _SARVAM_TTS_COST_PER_CHAR_INR
             tracing.end_run(
                 tts_span,
                 outputs={
                     "audio_produced": True,
                     "model_name": settings.TTS_MODEL,
-                    "total_cost_inr": len(base_response.answer) * _SARVAM_TTS_COST_PER_CHAR_INR,
+                    "total_cost_inr": tts_cost_inr,
                     # Same reasoning as _localize()'s response_translation span (orchestration/
                     # nodes.py): TTS is billed per character, not per token, so Phoenix's own
                     # per-model cost/token dashboard widgets have nothing to work with unless this
@@ -480,6 +486,12 @@ class AskSarthiService:
                     "total_tokens": len(base_response.answer),
                 },
             )
+            # LIVE-REPORTED: TTS's real cost is only known here, AFTER `_run()` (above) already
+            # wrote this turn's AiRequestLog row -- STT's cost got folded in at insert time (see
+            # `extra_cost_inr`), but TTS needs this separate follow-up update instead. Best-effort
+            # like every other AiRequestLog write; never raises, so a logging hiccup here can't
+            # turn a successful voice reply into a failed request.
+            ai_request_log_repository.add_to_ai_request_cost(db, request_id=request_id, additional_cost_inr=tts_cost_inr)
         except AIServiceError as exc:
             logger.warning("Ask Sarthi voice flow: TTS failed, returning text-only: %s", exc)
             tracing.end_run(tts_span, outputs={"audio_produced": False}, error=str(exc))
@@ -559,6 +571,7 @@ class AskSarthiService:
         trace_id: uuid.UUID | None = None,
         request_id: str | None = None,
         end_root_run: bool = True,
+        extra_cost_inr: float = 0.0,
     ) -> tuple[AskSarthiResponse, GraphState, float]:
         """Shared tail end of `ask()`/`ask_with_image()`/`ask_voice()`: run the graph, record the
         AiRequestLog row, translate the final state into `AskSarthiResponse`. Extracted so every
@@ -577,6 +590,15 @@ class AskSarthiService:
         (`ask_with_image()`, nothing runs after) or leaves it open (`ask_voice()`, TTS runs after).
         On an exception, an externally-owned root run is always ended here with the error --
         there's no "later" for a raised exception to still add a TTS span to.
+
+        `extra_cost_inr`: LIVE-REPORTED gap -- the AiRequestLog row this method writes only ever
+        carried the answer-generation LLM's own cost (`final_state["ai_cost_inr"]`), silently
+        omitting real, paid Sarvam STT cost that `ask_voice()` already knows by the time it calls
+        this (computed before the graph runs) -- see `ai_request_log_repository.
+        add_to_ai_request_cost()`'s own docstring for the matching TTS-side gap (known only AFTER
+        this method returns, so it's folded in via a separate follow-up call there instead).
+        Defaults to 0.0 -- every other caller (`ask()`/`ask_with_image()`) has no non-graph cost
+        to add, so this changes nothing for them.
         """
         trace_id = trace_id or uuid.uuid4()
         request_id = request_id or trace_id.hex[:12]
@@ -647,6 +669,9 @@ class AskSarthiService:
                 success=False,
                 error_type=type(exc).__name__,
                 latency_ms=latency_ms,
+                # STT (if this was a voice request) genuinely ran and cost money before the graph
+                # ever raised -- see this method's own extra_cost_inr docstring.
+                ai_cost_inr=extra_cost_inr or None,
             )
             # Checked on the failure path too -- a string of failing requests is exactly the
             # sustained-error-rate case admins most need alerted on. Best-effort, see that
@@ -697,7 +722,17 @@ class AskSarthiService:
             success=True,
             error_type=None,
             latency_ms=latency_ms,
-            ai_cost_inr=final_state.get("ai_cost_inr"),
+            # See this method's own extra_cost_inr docstring: folds in STT's real cost (known
+            # before the graph ran) alongside whatever the graph's own answer-generation call
+            # cost, so a voice turn's logged cost is never just the LLM's own share of it. `or
+            # None` (not a bare 0.0) so a turn with genuinely zero cost either way still shows as
+            # "no cost incurred" rather than a real ₹0.0000 -- matches every other caller's
+            # existing behavior when final_state has no cost of its own.
+            ai_cost_inr=(
+                (final_state.get("ai_cost_inr") or 0.0) + extra_cost_inr
+                if (final_state.get("ai_cost_inr") is not None or extra_cost_inr)
+                else None
+            ),
             ai_model_name=final_state.get("ai_model_name"),
             ai_total_tokens=final_state.get("ai_total_tokens"),
         )

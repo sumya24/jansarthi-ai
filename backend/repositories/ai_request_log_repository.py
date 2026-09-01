@@ -79,6 +79,37 @@ def record_ai_request(
         db.rollback()
 
 
+def add_to_ai_request_cost(db: Session, *, request_id: str, additional_cost_inr: float) -> None:
+    """LIVE-REPORTED: the Admin AI Monitoring "Recent Requests" table's COST column only ever
+    showed the answer-generation LLM's own cost (`record_ai_request()`'s `ai_cost_inr` param,
+    set from `GraphState.ai_cost_inr` -- see that field's own docstring), silently omitting real,
+    PAID costs from Sarvam's speech-to-text/text-to-speech calls that also happened in the same
+    voice turn but outside the graph itself -- a citizen's voice question could genuinely cost
+    money on STT+TTS alone even on a turn where no LLM call happened at all (e.g. a clarifying
+    question), and the table showed a bare "--" as if nothing was spent.
+
+    Called AFTER `record_ai_request()` has already written the row -- ask_sarthi_service.py's
+    `ask_voice()` only knows the real TTS cost once synthesis finishes, which is after `_run()`
+    (and its own `record_ai_request()` call) has already returned. Adds to whatever `ai_cost_inr`
+    that row already has (treating an existing `None` as "no cost yet", not "definitely
+    incurred") rather than overwriting it, so STT's own cost (passed into `_run()` as
+    `extra_cost_inr` and folded into the row at insert time) is never lost.
+
+    Best-effort, like `record_ai_request()`: this is on the same "never break a response that's
+    already been sent to the citizen" contract, so any failure here is caught and logged, never
+    raised."""
+    try:
+        row = db.query(AiRequestLog).filter(AiRequestLog.request_id == request_id).one_or_none()
+        if row is None:
+            logger.warning("Could not add to AiRequestLog cost -- no row found (request_id=%s)", request_id)
+            return
+        row.ai_cost_inr = (row.ai_cost_inr or 0.0) + additional_cost_inr
+        db.commit()
+    except Exception:
+        logger.warning("Could not add to AiRequestLog cost (request_id=%s)", request_id, exc_info=True)
+        db.rollback()
+
+
 def get_ai_monitoring_summary(db: Session, since: datetime | None = None) -> dict:
     """Aggregate counts/rates for the Admin dashboard's top-level AI Monitoring tiles.
 
