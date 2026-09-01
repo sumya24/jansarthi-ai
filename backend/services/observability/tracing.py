@@ -51,6 +51,7 @@ import json
 import logging
 import re
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -706,17 +707,30 @@ def get_model_cost_summary(days: int = 30) -> list[dict[str, Any]]:
 
     Fail-open, like everything else in this module: never raises. But "fail-open" used to mean
     "one slow/failed GraphQL call blanks the ENTIRE panel" -- LIVE-REPORTED on the shared,
-    CPU-constrained production VM: this function makes up to 6 sequential HTTP calls to Phoenix (1
-    project lookup + 1 per `_MODEL_COST_SPAN_NAMES` entry), all inside one try/except. Confirmed
-    directly in production logs: when the backend's own CPU is briefly pinned by something
-    unrelated (e.g. loading the vision-captioning model), Phoenix -- a single process sharing the
-    same constrained CPU -- occasionally can't answer within the timeout (`httpcore.ReadTimeout`),
-    and the old code threw away every model's numbers because of that one slow call, even models
-    whose query had already succeeded moments earlier. That's the exact "shows a model, refresh,
-    shows nothing" flapping reported live. Now each piece degrades independently: the project
-    lookup gets one quick retry (cheap, and the one call every other query depends on), and each
-    span-name query is caught on its own -- a single timed-out model just doesn't have a row this
-    refresh, instead of taking every other model down with it.
+    CPU-constrained production VM: this function used to make up to 6 sequential HTTP calls to
+    Phoenix (1 project lookup + 1 per `_MODEL_COST_SPAN_NAMES` entry), all inside one try/except.
+    Confirmed directly in production logs: when the backend's own CPU is briefly pinned by
+    something unrelated (e.g. loading the vision-captioning model), Phoenix -- a single process
+    sharing the same constrained CPU -- occasionally can't answer within the timeout
+    (`httpcore.ReadTimeout`), and the old code threw away every model's numbers because of that one
+    slow call, even models whose query had already succeeded moments earlier. That's the exact
+    "shows a model, refresh, shows nothing" flapping reported live. Now each piece degrades
+    independently: the project lookup gets one quick retry (cheap, and the one call every other
+    query depends on), and each span-name query is caught on its own -- a single timed-out model
+    just doesn't have a row this refresh, instead of taking every other model down with it.
+
+    LIVE-REPORTED, round 2 -- found via /code-review after the panel was STILL reported stuck on
+    its loading skeleton even after the fix above and a VM upsize: the per-model resilience fix
+    didn't bound how long a SLOW (not failed) Phoenix could make the whole batch take. The 5
+    span-name queries still ran strictly sequentially, and httpx's own `timeout=` only bounds the
+    gap BETWEEN chunks, not a call's total duration -- a Phoenix that's merely slow (scanning up to
+    500 spans per model, 5 models, one connection) could legitimately take far longer than any
+    admin would wait, with nothing in the chain (Caddy's reverse_proxy, this function, or the old
+    frontend fetch with no timeout of its own -- see api.ts's aiMonitoringModelCosts) ever cutting
+    it short. Now the 5 queries run concurrently (ThreadPoolExecutor) with a real wall-clock cap
+    per query (`future.result(timeout=...)`, which the underlying httpx `timeout=` alone can't
+    provide) -- the whole batch takes roughly as long as the single slowest query, not the sum of
+    all 5, and nothing waits past that cap regardless of how the network behaves.
     """
     if not _phoenix_enabled():
         return []
@@ -779,42 +793,58 @@ def _fetch_model_cost_summary(base_url: str, days: int) -> list[dict[str, Any]]:
               }
             }
         """
-        for span_name in _MODEL_COST_SPAN_NAMES:
-            try:
-                resp = client.post(
-                    base_url,
-                    json={
-                        "query": spans_query,
-                        "variables": {
-                            "id": project_id,
-                            "start": start.isoformat(),
-                            "end": end.isoformat(),
-                            "filter": f'name == "{span_name}"',
-                        },
+
+        def _fetch_span_edges(span_name: str) -> list[dict[str, Any]]:
+            resp = client.post(
+                base_url,
+                json={
+                    "query": spans_query,
+                    "variables": {
+                        "id": project_id,
+                        "start": start.isoformat(),
+                        "end": end.isoformat(),
+                        "filter": f'name == "{span_name}"',
                     },
-                )
-                resp.raise_for_status()
-                edges = (((resp.json().get("data") or {}).get("node") or {}).get("spans") or {}).get("edges") or []
-            except Exception:
-                # Fail-open PER MODEL: this one span name's numbers are missing this refresh, but
-                # whatever the loop already accumulated for other models stays intact below.
-                logger.info("Phoenix span query for %r failed; skipping just that model this refresh.", span_name, exc_info=True)
-                continue
-            for edge in edges:
+                },
+            )
+            resp.raise_for_status()
+            return (((resp.json().get("data") or {}).get("node") or {}).get("spans") or {}).get("edges") or []
+
+        # LIVE-REPORTED, found via /code-review: these 5 queries used to run strictly sequentially
+        # on one connection -- worst case, up to 5x this single query's own latency stacked on top
+        # of the project lookup above, easily exceeding what an admin (or the frontend's own 15s
+        # timeout, see api.ts's aiMonitoringModelCosts) will wait, even with Phoenix merely slow
+        # rather than down. Running them concurrently means the whole batch takes roughly as long
+        # as the SLOWEST single query, not the sum of all 5. `future.result(timeout=...)` also
+        # enforces a real wall-clock cap per query -- unlike httpx's own `timeout=`, which only
+        # bounds the gap BETWEEN chunks, not the call's total duration (a response trickling in
+        # just under that gap could otherwise run far longer than the configured timeout).
+        with ThreadPoolExecutor(max_workers=len(_MODEL_COST_SPAN_NAMES)) as pool:
+            future_to_span = {pool.submit(_fetch_span_edges, name): name for name in _MODEL_COST_SPAN_NAMES}
+            for future in future_to_span:
+                span_name = future_to_span[future]
                 try:
-                    attrs = json.loads(edge["node"]["attributes"])
+                    edges = future.result(timeout=10.0)
                 except Exception:
+                    # Fail-open PER MODEL: this one span name's numbers are missing this refresh,
+                    # but whatever the loop already accumulated for other models stays intact below.
+                    logger.info("Phoenix span query for %r failed; skipping just that model this refresh.", span_name, exc_info=True)
                     continue
-                llm = attrs.get("llm") or {}
-                model_name = llm.get("model_name")
-                if not model_name:
-                    continue
-                cost = (llm.get("cost") or {}).get("total") or 0.0
-                tokens = (llm.get("token_count") or {}).get("total") or 0
-                bucket = totals.setdefault(model_name, {"cost": 0.0, "tokens": 0.0, "count": 0.0})
-                bucket["cost"] += cost
-                bucket["tokens"] += tokens
-                bucket["count"] += 1
+                for edge in edges:
+                    try:
+                        attrs = json.loads(edge["node"]["attributes"])
+                    except Exception:
+                        continue
+                    llm = attrs.get("llm") or {}
+                    model_name = llm.get("model_name")
+                    if not model_name:
+                        continue
+                    cost = (llm.get("cost") or {}).get("total") or 0.0
+                    tokens = (llm.get("token_count") or {}).get("total") or 0
+                    bucket = totals.setdefault(model_name, {"cost": 0.0, "tokens": 0.0, "count": 0.0})
+                    bucket["cost"] += cost
+                    bucket["tokens"] += tokens
+                    bucket["count"] += 1
 
     results = []
     for model_name, bucket in totals.items():

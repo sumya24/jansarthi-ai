@@ -79,6 +79,14 @@ export default function AdminAiMonitoring() {
   // Phoenix outage should only ever empty this one panel, never the rest of the page.
   const [modelCosts, setModelCosts] = useState<ModelCostEntry[] | null>(null);
   const [modelCostsLoading, setModelCostsLoading] = useState(true);
+  // LIVE-REPORTED race, found via /code-review: the effect below re-fires loadModelCosts()
+  // whenever `token` changes -- including a silent access-token refresh, which can happen mid-
+  // session with no user action at all (see api.ts's shared refreshInFlight). If an earlier call
+  // (old token) is still in flight when a newer one (new token) starts, and the OLDER one happens
+  // to resolve LAST (e.g. it hit a slower Phoenix query), its stale data would silently overwrite
+  // the newer, correct data. This ref counts each call; a response only gets applied if it's still
+  // the most recent one requested by the time it resolves.
+  const modelCostsRequestId = useRef(0);
   const [requests, setRequests] = useState<AiRequestLogEntry[]>([]);
   // LIVE-REPORTED GAP: this table always fetched just the newest 20 requests, with no way to see
   // any older ones -- same real, server-side pagination pattern as the main Admin Dashboard's
@@ -126,16 +134,22 @@ export default function AdminAiMonitoring() {
 
   async function loadModelCosts() {
     if (!token) return;
+    const requestId = ++modelCostsRequestId.current;
     setModelCostsLoading(true);
     try {
-      setModelCosts(await api.aiMonitoringModelCosts(token));
+      const result = await api.aiMonitoringModelCosts(token);
+      if (requestId !== modelCostsRequestId.current) return; // a newer call has since started
+      setModelCosts(result);
     } catch {
       // Best-effort, silent -- a Phoenix outage here shouldn't plant a second error banner next
       // to the main one above; an empty panel (see the render below) already reads as "nothing
-      // to show" without needing its own error message.
+      // to show" without needing its own error message. Also reached on the 15s client-side
+      // timeout (see api.ts's aiMonitoringModelCosts) so a hung request degrades to "nothing to
+      // show" instead of leaving the skeleton up forever.
+      if (requestId !== modelCostsRequestId.current) return;
       setModelCosts([]);
     } finally {
-      setModelCostsLoading(false);
+      if (requestId === modelCostsRequestId.current) setModelCostsLoading(false);
     }
   }
 
