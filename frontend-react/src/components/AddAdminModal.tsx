@@ -91,7 +91,7 @@ export default function AddAdminModal({ onClose, onCreated }: { onClose: () => v
             <div className={`field ${fieldErrors.fullName ? "has-error" : ""}`}>
               <label htmlFor="admin-name">
                 {t(lang, "addWorker.fullName")}
-                <span className="field-required-mark" aria-hidden="true">*</span>
+                <span className="field-required-mark" aria-hidden="true" />
               </label>
               <input id="admin-name" type="text" value={fullName} onChange={(e) => setFullName(e.target.value)} placeholder={t(lang, "addWorker.fullNamePlaceholder")} />
               {fieldErrors.fullName && <div className="field-error">{t(lang, "common.fieldRequired")}</div>}
@@ -99,7 +99,7 @@ export default function AddAdminModal({ onClose, onCreated }: { onClose: () => v
             <div className={`field ${fieldErrors.phone ? "has-error" : ""}`}>
               <label htmlFor="admin-phone">
                 {t(lang, "addWorker.phone")}
-                <span className="field-required-mark" aria-hidden="true">*</span>
+                <span className="field-required-mark" aria-hidden="true" />
               </label>
               <input id="admin-phone" type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="98xxxxxxxx" />
               {fieldErrors.phone && <div className="field-error">{t(lang, "common.fieldRequired")}</div>}
@@ -107,7 +107,7 @@ export default function AddAdminModal({ onClose, onCreated }: { onClose: () => v
             <div className={`field ${fieldErrors.password ? "has-error" : ""}`}>
               <label htmlFor="admin-password">
                 {t(lang, "addWorker.tempPassword")}
-                <span className="field-required-mark" aria-hidden="true">*</span>
+                <span className="field-required-mark" aria-hidden="true" />
               </label>
               <input id="admin-password" type="text" value={password} onChange={(e) => setPassword(e.target.value)} />
               {fieldErrors.password && <div className="field-error">{t(lang, "common.fieldRequired")}</div>}
@@ -115,7 +115,7 @@ export default function AddAdminModal({ onClose, onCreated }: { onClose: () => v
             <div className={`field ${fieldErrors.confirmPassword ? "has-error" : ""}`}>
               <label htmlFor="admin-confirm-password">
                 {t(lang, "auth.field.confirmPassword")}
-                <span className="field-required-mark" aria-hidden="true">*</span>
+                <span className="field-required-mark" aria-hidden="true" />
               </label>
               <input
                 id="admin-confirm-password"

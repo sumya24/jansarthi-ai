@@ -110,7 +110,7 @@ export default function AddWorkerModal({ onClose, onCreated }: { onClose: () => 
           <div className={`field ${fieldErrors.fullName ? "has-error" : ""}`}>
             <label htmlFor="worker-name">
               {t(lang, "addWorker.fullName")}
-              <span className="field-required-mark" aria-hidden="true">*</span>
+              <span className="field-required-mark" aria-hidden="true" />
             </label>
             <input id="worker-name" type="text" value={fullName} onChange={(e) => setFullName(e.target.value)} placeholder={t(lang, "addWorker.fullNamePlaceholder")} />
             {fieldErrors.fullName && <div className="field-error">{t(lang, "common.fieldRequired")}</div>}
@@ -118,7 +118,7 @@ export default function AddWorkerModal({ onClose, onCreated }: { onClose: () => 
           <div className={`field ${fieldErrors.phone ? "has-error" : ""}`}>
             <label htmlFor="worker-phone">
               {t(lang, "addWorker.phone")}
-              <span className="field-required-mark" aria-hidden="true">*</span>
+              <span className="field-required-mark" aria-hidden="true" />
             </label>
             <input id="worker-phone" type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="98xxxxxxxx" />
             {fieldErrors.phone && <div className="field-error">{t(lang, "common.fieldRequired")}</div>}
@@ -126,7 +126,7 @@ export default function AddWorkerModal({ onClose, onCreated }: { onClose: () => 
           <div className={`field ${fieldErrors.password ? "has-error" : ""}`}>
             <label htmlFor="worker-password">
               {t(lang, "addWorker.tempPassword")}
-              <span className="field-required-mark" aria-hidden="true">*</span>
+              <span className="field-required-mark" aria-hidden="true" />
             </label>
             <input id="worker-password" type="text" value={password} onChange={(e) => setPassword(e.target.value)} />
             {fieldErrors.password && <div className="field-error">{t(lang, "common.fieldRequired")}</div>}
@@ -134,7 +134,7 @@ export default function AddWorkerModal({ onClose, onCreated }: { onClose: () => 
           <div className={`field ${fieldErrors.confirmPassword ? "has-error" : ""}`}>
             <label htmlFor="worker-confirm-password">
               {t(lang, "auth.field.confirmPassword")}
-              <span className="field-required-mark" aria-hidden="true">*</span>
+              <span className="field-required-mark" aria-hidden="true" />
             </label>
             <input
               id="worker-confirm-password"
@@ -158,7 +158,7 @@ export default function AddWorkerModal({ onClose, onCreated }: { onClose: () => 
           <div className={`field ${fieldErrors.ward ? "has-error" : ""}`}>
             <label>
               {t(lang, "addWorker.ward")}
-              <span className="field-required-mark" aria-hidden="true">*</span>
+              <span className="field-required-mark" aria-hidden="true" />
             </label>
             <WorkerLocationPicker lang={lang} onChange={setLocation} hasError={fieldErrors.ward} />
             {fieldErrors.ward && <div className="field-error">{t(lang, "common.fieldRequired")}</div>}

@@ -64,7 +64,7 @@ export default function RejectComplaintModal({
           <div className={`field ${fieldError ? "has-error" : ""}`}>
             <label htmlFor="reject-reason">
               {t(lang, "worker.reject.reasonLabel")}
-              <span className="field-required-mark" aria-hidden="true">*</span>
+              <span className="field-required-mark" aria-hidden="true" />
             </label>
             <textarea
               id="reject-reason"

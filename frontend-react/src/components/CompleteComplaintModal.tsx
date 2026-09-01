@@ -67,7 +67,7 @@ export default function CompleteComplaintModal({
           <div className={`field ${fieldError ? "has-error" : ""}`}>
             <label htmlFor="completion-status">
               {t(lang, "worker.complete.statusLabel")}
-              <span className="field-required-mark" aria-hidden="true">*</span>
+              <span className="field-required-mark" aria-hidden="true" />
             </label>
             <textarea
               id="completion-status"

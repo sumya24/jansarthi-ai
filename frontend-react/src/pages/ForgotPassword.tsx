@@ -95,7 +95,7 @@ export default function ForgotPassword() {
               <div className={`field ${fieldErrors.email ? "has-error" : ""}`}>
                 <label htmlFor="forgot-email">
                   {t(lang, "auth.email.label")}
-                  <span className="field-required-mark" aria-hidden="true">*</span>
+                  <span className="field-required-mark" aria-hidden="true" />
                 </label>
                 <input
                   id="forgot-email"
@@ -122,7 +122,7 @@ export default function ForgotPassword() {
               <div className={`field ${fieldErrors.code ? "has-error" : ""}`}>
                 <label htmlFor="forgot-code">
                   {t(lang, "auth.field.otpCode")}
-                  <span className="field-required-mark" aria-hidden="true">*</span>
+                  <span className="field-required-mark" aria-hidden="true" />
                 </label>
                 <input
                   id="forgot-code"
@@ -142,7 +142,7 @@ export default function ForgotPassword() {
               <div className={`field ${fieldErrors.newPassword ? "has-error" : ""}`}>
                 <label htmlFor="forgot-new-password">
                   {t(lang, "auth.changePassword.new")}
-                  <span className="field-required-mark" aria-hidden="true">*</span>
+                  <span className="field-required-mark" aria-hidden="true" />
                 </label>
                 <PasswordInput
                   lang={lang}

@@ -204,7 +204,7 @@ export default function LocationPicker({
           ) : (
             <>
               {t(lang, "citizen.ward")}
-              <span className="field-required-mark" aria-hidden="true">*</span>
+              <span className="field-required-mark" aria-hidden="true" />
             </>
           )}
         </label>

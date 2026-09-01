@@ -228,7 +228,7 @@ export default function HomeLocationPicker({
       <div className="field home-location-row">
         <label htmlFor="signup-home-state">
           {t(lang, "signup.homeLocation.state")}
-          <span className="field-required-mark" aria-hidden="true">*</span>
+          <span className="field-required-mark" aria-hidden="true" />
         </label>
         {!statesLoaded ? (
           <select id="signup-home-state" value="" disabled>
@@ -261,7 +261,7 @@ export default function HomeLocationPicker({
       <div className="field home-location-row">
         <label htmlFor="signup-home-city">
           {t(lang, "signup.homeLocation.city")}
-          <span className="field-required-mark" aria-hidden="true">*</span>
+          <span className="field-required-mark" aria-hidden="true" />
         </label>
         {!cityReady ? (
           <select id="signup-home-city" value="" disabled>
@@ -288,7 +288,7 @@ export default function HomeLocationPicker({
       <div className="field home-location-row">
         <label htmlFor="signup-home-ward">
           {t(lang, "signup.homeLocation.ward")}
-          <span className="field-required-mark" aria-hidden="true">*</span>
+          <span className="field-required-mark" aria-hidden="true" />
         </label>
         {!wardReady ? (
           <select id="signup-home-ward" value="" disabled>

@@ -65,7 +65,7 @@ export default function ProgressUpdateModal({
           <div className={`field ${fieldError ? "has-error" : ""}`}>
             <label htmlFor="progress-update-text">
               {t(lang, "worker.update.textLabel")}
-              <span className="field-required-mark" aria-hidden="true">*</span>
+              <span className="field-required-mark" aria-hidden="true" />
             </label>
             <textarea
               id="progress-update-text"

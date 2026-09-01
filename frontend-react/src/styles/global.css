@@ -1013,5 +1013,17 @@ h1, h2, h3 { text-wrap: balance; margin: 0; }
    (Login, Signup, Settings, worker/admin modals, Report Issue, etc.) -- one shared pair of
    classes so a citizen/worker/admin sees the exact same visual language for "required" vs
    "optional" no matter which form they're on. */
+/* LIVE-REPORTED: this used to be a real text node ("*") inside the span, marked aria-hidden so
+   screen readers would skip it -- but Chromium's accessible-name computation from a <label for>
+   association does NOT reliably strip aria-hidden descendants (unlike aria-labelledby, where it
+   does), so every required field's computed accessible name silently became "Password*" instead
+   of "Password", breaking every Playwright getByLabel(..., { exact: true }) selector across the
+   whole e2e suite (confirmed directly: el.labels[].textContent and Playwright's own getByLabel
+   both included the "*"). CSS generated content is NEVER exposed to accessible-name computation
+   in any browser -- moving the asterisk here instead of the JSX (see every *.tsx usage of this
+   class) fixes this at the source, for every required field at once, rather than patching 31
+   individual test selectors. aria-hidden is kept on the (now genuinely empty) span too, as
+   defense in depth, even though CSS content alone already guarantees this. */
 .field-required-mark { color: var(--status-critical); margin-left: 2px; }
+.field-required-mark::after { content: "*"; }
 .field-optional-mark { color: var(--ink-2); font-weight: 400; font-size: 11px; margin-left: 5px; }

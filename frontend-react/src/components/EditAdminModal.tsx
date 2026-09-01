@@ -102,7 +102,7 @@ export default function EditAdminModal({
             <div className={`field ${fieldErrors.fullName ? "has-error" : ""}`}>
               <label htmlFor="edit-admin-name">
                 {t(lang, "addWorker.fullName")}
-                <span className="field-required-mark" aria-hidden="true">*</span>
+                <span className="field-required-mark" aria-hidden="true" />
               </label>
               <input id="edit-admin-name" type="text" value={fullName} onChange={(e) => setFullName(e.target.value)} />
               {fieldErrors.fullName && <div className="field-error">{t(lang, "common.fieldRequired")}</div>}
@@ -173,7 +173,7 @@ export default function EditAdminModal({
               <div className={`field ${fieldErrors.confirmNewPassword ? "has-error" : ""}`}>
                 <label htmlFor="edit-admin-confirm-password">
                   {t(lang, "auth.field.confirmPassword")}
-                  <span className="field-required-mark" aria-hidden="true">*</span>
+                  <span className="field-required-mark" aria-hidden="true" />
                 </label>
                 <input
                   id="edit-admin-confirm-password"

@@ -201,7 +201,7 @@ export default function SettingsModal({ onClose, onLogout }: { onClose: () => vo
         <div className={`field ${profileFieldErrors.fullName ? "has-error" : ""}`}>
           <label htmlFor="settings-name">
             {t(lang, "settings.fullName")}
-            <span className="field-required-mark" aria-hidden="true">*</span>
+            <span className="field-required-mark" aria-hidden="true" />
           </label>
           <input
             id="settings-name"
@@ -287,7 +287,7 @@ export default function SettingsModal({ onClose, onLogout }: { onClose: () => vo
             <div className={`field ${passwordFieldErrors.currentPassword ? "has-error" : ""}`}>
               <label htmlFor="settings-current-password">
                 {t(lang, "auth.changePassword.current")}
-                <span className="field-required-mark" aria-hidden="true">*</span>
+                <span className="field-required-mark" aria-hidden="true" />
               </label>
               <PasswordInput
                 lang={lang}
@@ -303,7 +303,7 @@ export default function SettingsModal({ onClose, onLogout }: { onClose: () => vo
             <div className={`field ${passwordFieldErrors.newPassword ? "has-error" : ""}`}>
               <label htmlFor="settings-new-password">
                 {t(lang, "auth.changePassword.new")}
-                <span className="field-required-mark" aria-hidden="true">*</span>
+                <span className="field-required-mark" aria-hidden="true" />
               </label>
               <PasswordInput
                 lang={lang}
@@ -321,7 +321,7 @@ export default function SettingsModal({ onClose, onLogout }: { onClose: () => vo
             <div className={`field ${passwordFieldErrors.confirmNewPassword ? "has-error" : ""}`}>
               <label htmlFor="settings-confirm-new-password">
                 {t(lang, "auth.changePassword.confirmNew")}
-                <span className="field-required-mark" aria-hidden="true">*</span>
+                <span className="field-required-mark" aria-hidden="true" />
               </label>
               <PasswordInput
                 lang={lang}
@@ -357,7 +357,7 @@ export default function SettingsModal({ onClose, onLogout }: { onClose: () => vo
                 <div className={`field ${emailFieldErrors.newEmail ? "has-error" : ""}`}>
                   <label htmlFor="settings-new-email">
                     {t(lang, "auth.email.label")}
-                    <span className="field-required-mark" aria-hidden="true">*</span>
+                    <span className="field-required-mark" aria-hidden="true" />
                   </label>
                   <input
                     id="settings-new-email"
@@ -379,7 +379,7 @@ export default function SettingsModal({ onClose, onLogout }: { onClose: () => vo
                     <div className={`field ${emailFieldErrors.emailCode ? "has-error" : ""}`}>
                       <label htmlFor="settings-email-code">
                         {t(lang, "auth.field.otpCode")}
-                        <span className="field-required-mark" aria-hidden="true">*</span>
+                        <span className="field-required-mark" aria-hidden="true" />
                       </label>
                       <input
                         id="settings-email-code"

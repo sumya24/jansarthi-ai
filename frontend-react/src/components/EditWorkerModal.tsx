@@ -110,7 +110,7 @@ export default function EditWorkerModal({
           <div className={`field ${fieldErrors.fullName ? "has-error" : ""}`}>
             <label htmlFor="edit-worker-name">
               {t(lang, "addWorker.fullName")}
-              <span className="field-required-mark" aria-hidden="true">*</span>
+              <span className="field-required-mark" aria-hidden="true" />
             </label>
             <input id="edit-worker-name" type="text" value={fullName} onChange={(e) => setFullName(e.target.value)} />
             {fieldErrors.fullName && <div className="field-error">{t(lang, "common.fieldRequired")}</div>}
@@ -118,7 +118,7 @@ export default function EditWorkerModal({
           <div className={`field ${fieldErrors.ward ? "has-error" : ""}`}>
             <label>
               {t(lang, "addWorker.ward")}
-              <span className="field-required-mark" aria-hidden="true">*</span>
+              <span className="field-required-mark" aria-hidden="true" />
             </label>
             <WorkerLocationPicker
               lang={lang}
@@ -181,7 +181,7 @@ export default function EditWorkerModal({
             <div className={`field ${fieldErrors.confirmNewPassword ? "has-error" : ""}`}>
               <label htmlFor="edit-worker-confirm-password">
                 {t(lang, "auth.field.confirmPassword")}
-                <span className="field-required-mark" aria-hidden="true">*</span>
+                <span className="field-required-mark" aria-hidden="true" />
               </label>
               <input
                 id="edit-worker-confirm-password"
