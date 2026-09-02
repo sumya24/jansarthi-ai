@@ -163,9 +163,20 @@ not a fixed target, so it re-bases itself automatically as usage shifts).
   questions the knowledge base couldn't answer). Phoenix's closest equivalent is a per-span
   annotation (`createSpanAnnotations`) — `_phoenix_enqueue_for_review()` tags the matching span
   `needs_review` whenever `insufficient_knowledge` or `routed_to == "NONE_OUT_OF_SCOPE"` fires (same
-  trigger as the LangSmith side, see `graph.py`). One real timing bug here: Phoenix batches span
-  exports, so querying for the just-ended span immediately afterward found nothing until a
-  `force_flush(timeout_millis=2000)` was added right before the lookup.
+  trigger as the LangSmith side, see `graph.py`). Two real timing bugs found here, both confirmed
+  directly against production rather than guessed:
+  1. Phoenix batches span exports, so querying for the just-ended span immediately afterward found
+     nothing until a `force_flush(timeout_millis=2000)` was added right before the lookup.
+  2. Even after that fix, the annotation still never actually appeared in production — confirmed
+     via a direct GraphQL check that `spanAnnotationNameCounts` stayed empty despite real
+     out-of-scope questions firing this path many times. Root cause: `force_flush()` only
+     guarantees the span was *exported*, not that Phoenix's own backend has finished
+     *ingesting/indexing* it yet — the lookup query came back 200 OK ~4 seconds after the span
+     ended, but the span wasn't in the result set (confirmed the same span WAS queryable moments
+     later). Since this whole function already runs on a background thread with nothing waiting on
+     it, it now retries the lookup up to `_REVIEW_SPAN_LOOKUP_ATTEMPTS` times (1.5s apart) before
+     giving up, and the mutation itself now checks its own response for GraphQL-level errors
+     (which come back as HTTP 200, so `raise_for_status()` alone never caught them).
 
 ## 9. Admin alerts — "High AI latency" / "High AI error rate"
 
