@@ -137,7 +137,11 @@ test("real multi-file evidence upload, end to end: select -> upload -> storage -
   // AI Understanding step's badge text depends on which classification layer succeeded (real
   // model vs. keyword fallback, see ReportIssue.tsx) -- assert on the stable .dev-badge class
   // instead of either layer's specific wording.
-  await expect(page.locator(".dev-badge")).toBeVisible({ timeout: 3000 });
+  //
+  // LIVE-REPORTED: widened from 3000ms -- this is normally near-instant, but occasionally took
+  // just over 3s under real, repeated-run load, same reasoning as this suite's other widened
+  // timeouts (see helpers.ts's own comment on the same pattern).
+  await expect(page.locator(".dev-badge")).toBeVisible({ timeout: 8000 });
   await page.getByRole("button", { name: "Next" }).click();
   await page.getByRole("button", { name: "Submit complaint" }).click();
   await expect(page.getByText("Complaint submitted successfully.")).toBeVisible({ timeout: 60000 });
@@ -200,7 +204,12 @@ test("real multi-file evidence upload, end to end: select -> upload -> storage -
   // rendered twice over, once in the Updates timeline and again in the Resolution Report section
   // below it (the report intentionally repeats the same real facts already shown above, exactly
   // like the PDF does -- see ComplaintReportView.tsx), so 10 thumbnails total.
-  await expect(page.locator(".evidence-thumb")).toHaveCount(10);
+  //
+  // LIVE-REPORTED: widened from the default 5s -- the Resolution Report section only renders
+  // once its own separate getComplaintReport() fetch resolves (see WorkerComplaintDetail.tsx),
+  // one more real round trip after the status itself already flips to resolved, so this needs
+  // the same real headroom as this suite's other widened timeouts under real, repeated-run load.
+  await expect(page.locator(".evidence-thumb")).toHaveCount(10, { timeout: 15000 });
 
   // Click a thumbnail -> lightbox opens with a real, loadable image.
   await page.locator(".evidence-thumb").first().click();
