@@ -49,12 +49,19 @@ def record_ai_request(
     ai_cost_inr: float | None = None,
     ai_model_name: str | None = None,
     ai_total_tokens: int | None = None,
+    needs_review: bool = False,
 ) -> None:
     """Persist one Ask Sarthi request's outcome. Best-effort -- see this module's docstring.
 
     `ai_cost_inr`/`ai_model_name`/`ai_total_tokens` default to None so every existing caller/test
     not yet passing them keeps working unchanged -- only non-None when a real Sarvam
-    answer-generation LLM call happened this turn (see GraphState's own docstring)."""
+    answer-generation LLM call happened this turn (see GraphState's own docstring).
+
+    `needs_review` defaults to False for the same reason -- only the one success-path call site
+    in AskSarthiService._run() passes the real value (mirroring tracing.enqueue_for_review()'s own
+    trigger condition); the guardrail-blocked and exception paths are a different category (a
+    blocked/failed request, not "the KB genuinely doesn't have an answer") and correctly stay
+    False."""
     try:
         db.add(
             AiRequestLog(
@@ -71,6 +78,7 @@ def record_ai_request(
                 ai_cost_inr=ai_cost_inr,
                 ai_model_name=ai_model_name,
                 ai_total_tokens=ai_total_tokens,
+                needs_review=needs_review,
             )
         )
         db.commit()
@@ -154,6 +162,10 @@ def get_ai_monitoring_summary(db: Session, since: datetime | None = None) -> dic
         # notification landed on this page with no way to tell which requests were actually slow.
         "latency_alert_threshold_ms": _LATENCY_ALERT_THRESHOLD_MS,
         "clarification_requests": by_route.get("NONE_CLARIFICATION_NEEDED", 0),
+        # Real count of requests the knowledge base genuinely couldn't answer over this same
+        # window -- see AiRequestLog.needs_review's own docstring. Powers the AI Monitoring page's
+        # "Needs Review" card; get_recent_needs_review_requests() below supplies the actual list.
+        "needs_review_count": sum(1 for r in rows if r.needs_review),
     }
 
 
@@ -232,6 +244,19 @@ def get_recent_ai_requests_page(
     safe_size = max(min(page_size, 100), 1)
     rows = query.offset((safe_page - 1) * safe_size).limit(safe_size).all()
     return rows, total
+
+
+def get_recent_needs_review_requests(db: Session, limit: int = 10) -> list[AiRequestLog]:
+    """Most recent knowledge-base-gap requests first -- feeds the Admin AI Monitoring page's
+    "Needs Review" card (see AiRequestLog.needs_review's own docstring for exactly which requests
+    qualify). Same ordering tiebreaker as get_recent_ai_requests() above, for the same reason."""
+    return (
+        db.query(AiRequestLog)
+        .filter(AiRequestLog.needs_review.is_(True))
+        .order_by(AiRequestLog.id.desc())
+        .limit(limit)
+        .all()
+    )
 
 
 def delete_ai_request_log(db: Session, log_id: int) -> bool:

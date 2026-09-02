@@ -537,6 +537,7 @@ export interface AiMonitoringSummary {
   out_of_scope_requests: number;
   clarification_requests: number;
   latency_alert_threshold_ms: number;
+  needs_review_count: number;
 }
 
 /** One row of the "Cost by model" panel -- see backend/routes/admin.py's ModelCostEntry and
@@ -1005,6 +1006,12 @@ export const api = {
     if (dateTo) qs.set("date_to", dateTo);
     return requestPaginated<AiRequestLogEntry>(`/admin/ai-monitoring/requests?${qs}`, { token });
   },
+
+  // Most recent requests the knowledge base genuinely couldn't answer (see backend's
+  // AiRequestLog.needs_review docstring) -- feeds the AI Monitoring page's "Needs Review" card.
+  // Same row shape as aiMonitoringRequests() above, just pre-filtered server-side.
+  aiMonitoringNeedsReview: (token: string, limit = 10) =>
+    request<AiRequestLogEntry[]>(`/admin/ai-monitoring/needs-review?limit=${limit}`, { token }),
 
   askSarthi: (
     token: string,

@@ -1001,6 +1001,7 @@ class AiMonitoringSummary(BaseModel):
     out_of_scope_requests: int
     clarification_requests: int
     latency_alert_threshold_ms: float
+    needs_review_count: int
 
 
 class AiRequestLogEntry(BaseModel):
@@ -1125,6 +1126,39 @@ def ai_monitoring_requests(
         response.headers["X-Total-Count"] = str(total)
     else:
         rows = ai_request_log_repository.get_recent_ai_requests(db, limit=min(max(limit, 1), 200))
+    return [
+        AiRequestLogEntry(
+            id=row.id,
+            request_id=row.request_id,
+            intent=row.intent,
+            service_category=row.service_category,
+            routed_to=row.routed_to,
+            success=row.success,
+            error_type=row.error_type,
+            latency_ms=row.latency_ms,
+            created_at=row.created_at,
+            trace_url=tracing.get_trace_url(row.langsmith_trace_id),
+            phoenix_trace_url=tracing.get_phoenix_trace_url(row.phoenix_trace_id),
+            ai_cost_inr=row.ai_cost_inr,
+            ai_model_name=row.ai_model_name,
+            ai_total_tokens=row.ai_total_tokens,
+        )
+        for row in rows
+    ]
+
+
+@router.get("/ai-monitoring/needs-review", response_model=list[AiRequestLogEntry])
+def ai_monitoring_needs_review(
+    limit: int = 10,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_role("admin")),
+) -> list[AiRequestLogEntry]:
+    """Most recent requests the knowledge base genuinely couldn't answer -- see
+    models.py's AiRequestLog.needs_review docstring for exactly which requests qualify. Feeds the
+    Admin AI Monitoring page's "Needs Review" card. Same response shape as GET
+    /ai-monitoring/requests (including phoenix_trace_url) -- clicking through goes straight to
+    that request's real trace/question text in Phoenix, this table only tracks which ones qualify."""
+    rows = ai_request_log_repository.get_recent_needs_review_requests(db, limit=min(max(limit, 1), 50))
     return [
         AiRequestLogEntry(
             id=row.id,
