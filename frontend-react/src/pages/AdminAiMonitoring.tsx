@@ -12,6 +12,12 @@ import { useToast } from "../lib/toast";
 import "../styles/dashboard.css";
 
 const REQUESTS_PAGE_SIZE = 20;
+// A few automatic attempts, a few seconds apart, before loadModelCosts() ever gives up and shows
+// the retry button -- absorbs a short blip (a mid-restart request right after a deploy, a
+// momentary network hiccup) silently, so the manual button below is only ever needed for a
+// longer/genuine outage, not the common brief case. See modelCostsError's own comment.
+const MODEL_COSTS_AUTO_RETRIES = 2;
+const MODEL_COSTS_RETRY_DELAY_MS = 4000;
 
 /** See AdminWorkers.tsx's/AdminDashboard.tsx's own copies of this component for the full
  * rationale (header checkbox reflecting the CURRENT page's selection state, `indeterminate`
@@ -79,6 +85,14 @@ export default function AdminAiMonitoring() {
   // Phoenix outage should only ever empty this one panel, never the rest of the page.
   const [modelCosts, setModelCosts] = useState<ModelCostEntry[] | null>(null);
   const [modelCostsLoading, setModelCostsLoading] = useState(true);
+  // LIVE-REPORTED: this panel only ever fetched once, on mount -- a real, reproduced failure mode
+  // right around a deploy (the backend briefly returns 502 for ~20-60s while it restarts and
+  // rewarms its embedding model, see docs/DEPLOYMENT_GCP.md) meant a page load that happened to
+  // land in that window showed "No requests" and then just sat there, indistinguishable from a
+  // genuinely empty account, with no way to recover short of a full page reload. Distinguished
+  // from a genuine empty state (modelCosts === [], a real success with nothing to show) so the
+  // retry affordance below only ever appears on an actual failure.
+  const [modelCostsError, setModelCostsError] = useState(false);
   // LIVE-REPORTED race, found via /code-review: the effect below re-fires loadModelCosts()
   // whenever `token` changes -- including a silent access-token refresh, which can happen mid-
   // session with no user action at all (see api.ts's shared refreshInFlight). If an earlier call
@@ -87,13 +101,6 @@ export default function AdminAiMonitoring() {
   // the newer, correct data. This ref counts each call; a response only gets applied if it's still
   // the most recent one requested by the time it resolves.
   const modelCostsRequestId = useRef(0);
-  // Real questions the knowledge base couldn't answer -- see backend's AiRequestLog.needs_review
-  // docstring. Same independent-load, same request-id race guard as modelCosts above (its own
-  // panel, own failure mode -- a Phoenix outage empties model costs; a needs-review load failure
-  // just leaves this one card silently empty rather than a second error banner).
-  const [needsReview, setNeedsReview] = useState<AiRequestLogEntry[] | null>(null);
-  const [needsReviewLoading, setNeedsReviewLoading] = useState(true);
-  const needsReviewRequestId = useRef(0);
   const [requests, setRequests] = useState<AiRequestLogEntry[]>([]);
   // LIVE-REPORTED GAP: this table always fetched just the newest 20 requests, with no way to see
   // any older ones -- same real, server-side pagination pattern as the main Admin Dashboard's
@@ -143,38 +150,29 @@ export default function AdminAiMonitoring() {
     if (!token) return;
     const requestId = ++modelCostsRequestId.current;
     setModelCostsLoading(true);
-    try {
-      const result = await api.aiMonitoringModelCosts(token);
-      if (requestId !== modelCostsRequestId.current) return; // a newer call has since started
-      setModelCosts(result);
-    } catch {
-      // Best-effort, silent -- a Phoenix outage here shouldn't plant a second error banner next
-      // to the main one above; an empty panel (see the render below) already reads as "nothing
-      // to show" without needing its own error message. Also reached on the 15s client-side
-      // timeout (see api.ts's aiMonitoringModelCosts) so a hung request degrades to "nothing to
-      // show" instead of leaving the skeleton up forever.
-      if (requestId !== modelCostsRequestId.current) return;
-      setModelCosts([]);
-    } finally {
-      if (requestId === modelCostsRequestId.current) setModelCostsLoading(false);
-    }
-  }
-
-  async function loadNeedsReview() {
-    if (!token) return;
-    const requestId = ++needsReviewRequestId.current;
-    setNeedsReviewLoading(true);
-    try {
-      const result = await api.aiMonitoringNeedsReview(token);
-      if (requestId !== needsReviewRequestId.current) return; // a newer call has since started
-      setNeedsReview(result);
-    } catch {
-      // Best-effort, silent -- same reasoning as loadModelCosts() above: this card degrading to
-      // empty is enough, it shouldn't plant a second error banner next to the main one.
-      if (requestId !== needsReviewRequestId.current) return;
-      setNeedsReview([]);
-    } finally {
-      if (requestId === needsReviewRequestId.current) setNeedsReviewLoading(false);
+    setModelCostsError(false);
+    for (let attempt = 0; attempt <= MODEL_COSTS_AUTO_RETRIES; attempt++) {
+      try {
+        const result = await api.aiMonitoringModelCosts(token);
+        if (requestId !== modelCostsRequestId.current) return; // a newer call has since started
+        setModelCosts(result);
+        setModelCostsLoading(false);
+        return;
+      } catch {
+        if (requestId !== modelCostsRequestId.current) return;
+        if (attempt < MODEL_COSTS_AUTO_RETRIES) {
+          await new Promise((resolve) => setTimeout(resolve, MODEL_COSTS_RETRY_DELAY_MS));
+          continue;
+        }
+        // Every attempt failed -- e.g. a Phoenix outage, or (LIVE-REPORTED) a page load that
+        // landed in the ~20-60s window right after a deploy while the backend restarts. Distinct
+        // from a genuine "no models used yet" empty state (see modelCostsError's own comment) --
+        // renders as its own message below, not silently read as "nothing to show".
+        if (requestId !== modelCostsRequestId.current) return;
+        setModelCosts([]);
+        setModelCostsError(true);
+        setModelCostsLoading(false);
+      }
     }
   }
 
@@ -218,7 +216,7 @@ export default function AdminAiMonitoring() {
       // of those live-computed totals) rather than just splicing the row out client-side --
       // matches how deleting a complaint/worker elsewhere in Admin already reloads from the
       // server instead of trusting a local guess at the new state.
-      await Promise.all([loadSummary(), loadRequests(), loadNeedsReview()]);
+      await Promise.all([loadSummary(), loadRequests()]);
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : t(lang, "admin.aiRequestDeleteErrFailed"));
     } finally {
@@ -268,7 +266,6 @@ export default function AdminAiMonitoring() {
   useEffect(() => {
     loadSummary();
     loadModelCosts();
-    loadNeedsReview();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
@@ -369,102 +366,6 @@ export default function AdminAiMonitoring() {
           </>
         )}
 
-        {/* "Needs Review": real questions the knowledge base couldn't answer -- see backend's
-            AiRequestLog.needs_review docstring. Amber/pending accent (not red/critical -- this is
-            a real, calm backlog to work through, not an error state) reusing the app's own
-            existing --status-pending token rather than a new color, same "semantic color, not a
-            new accent" principle the rest of this page's own model-cost cards already follow. */}
-        <div className="section-label" style={{ marginBottom: 2, display: "flex", alignItems: "center", gap: 8 }}>
-          <span>{t(lang, "admin.aiNeedsReview")}</span>
-          {!!summary && summary.needs_review_count > 0 && (
-            <span
-              className="mono"
-              style={{
-                fontSize: 11,
-                fontWeight: 700,
-                color: "var(--status-pending)",
-                background: "var(--status-pending-bg)",
-                padding: "1px 8px",
-                borderRadius: 999,
-              }}
-            >
-              {summary.needs_review_count}
-            </span>
-          )}
-        </div>
-        <p style={{ fontSize: 12, color: "var(--ink-3)", margin: "0 0 12px" }}>{t(lang, "admin.aiNeedsReviewSub")}</p>
-
-        {needsReviewLoading && (
-          <div className="surface-card" style={{ padding: 16, marginBottom: 30 }}>
-            {[0, 1, 2].map((i) => (
-              <div key={i} className="skeleton" style={{ width: "100%", height: 16, marginBottom: i < 2 ? 10 : 0 }} />
-            ))}
-          </div>
-        )}
-
-        {!needsReviewLoading && needsReview && needsReview.length === 0 && (
-          <div
-            className="surface-card"
-            style={{ padding: "14px 16px", marginBottom: 30, borderLeft: "3px solid var(--status-resolved)", color: "var(--ink-2)", fontSize: 13 }}
-          >
-            {t(lang, "admin.aiNeedsReviewEmpty")}
-          </div>
-        )}
-
-        {!needsReviewLoading && needsReview && needsReview.length > 0 && (
-          <div className="surface-card" style={{ marginBottom: 30, overflow: "hidden" }}>
-            {needsReview.map((r, i) => {
-              const isOutOfScope = r.routed_to === "NONE_OUT_OF_SCOPE";
-              const reasonLabel = t(lang, isOutOfScope ? "admin.aiNeedsReviewReasonOutOfScope" : "admin.aiNeedsReviewReasonInsufficientKnowledge");
-              return (
-                <div
-                  key={r.id}
-                  className="table-row-hover enter"
-                  style={{
-                    "--stagger": Math.min(i, 6),
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    gap: 12,
-                    padding: "12px 16px",
-                    borderBottom: i < needsReview.length - 1 ? "1px solid var(--line)" : undefined,
-                    borderLeft: "3px solid var(--status-pending)",
-                  } as React.CSSProperties}
-                >
-                  <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
-                    <span
-                      className="mono"
-                      style={{
-                        fontSize: 10.5,
-                        fontWeight: 700,
-                        textTransform: "uppercase",
-                        letterSpacing: "0.03em",
-                        color: "var(--status-pending)",
-                        background: "var(--status-pending-bg)",
-                        padding: "3px 8px",
-                        borderRadius: 999,
-                        flexShrink: 0,
-                      }}
-                    >
-                      {reasonLabel}
-                    </span>
-                    <span style={{ fontSize: 12.5, color: "var(--ink-2)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {new Date(r.created_at).toLocaleString()}
-                      {r.intent ? ` · ${r.intent}` : ""}
-                    </span>
-                  </div>
-                  {/* LIVE-REPORTED: a "View Phoenix trace" link here was redundant with the exact
-                      same link the Recent Requests table below already shows for this same row --
-                      and Phoenix's own trace view is read-only (a bare "needs_review" label, no
-                      reasoning, nothing actionable), so it wasn't earning its place twice. Removed
-                      here; still reachable via the table below for anyone who genuinely wants the
-                      raw technical trace. */}
-                </div>
-              );
-            })}
-          </div>
-        )}
-
         <div className="section-label" style={{ marginBottom: 2 }}>
           <span>{t(lang, "admin.aiModelCosts")}</span>
         </div>
@@ -485,7 +386,16 @@ export default function AdminAiMonitoring() {
           </div>
         )}
 
-        {!modelCostsLoading && modelCosts && modelCosts.length === 0 && (
+        {/* No manual retry button here on purpose -- the auto-retry in loadModelCosts() above
+            already handles the real, common case (a page load landing in a deploy's brief restart
+            window) silently. This plain line is what's left on the rare case even THAT fails --
+            same plain-text treatment as the genuine-empty state right below, just worded for what
+            actually happened, not a styled card+button that stood out from the rest of the page. */}
+        {!modelCostsLoading && modelCostsError && (
+          <p style={{ color: "var(--ink-2)", marginBottom: 30 }}>{t(lang, "admin.aiModelCostsErr")}</p>
+        )}
+
+        {!modelCostsLoading && !modelCostsError && modelCosts && modelCosts.length === 0 && (
           <p style={{ color: "var(--ink-2)", marginBottom: 30 }}>{t(lang, "admin.aiEmpty")}</p>
         )}
 
