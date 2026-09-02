@@ -386,16 +386,13 @@ export default function AdminAiMonitoring() {
           </div>
         )}
 
+        {/* No manual retry button here on purpose -- the auto-retry in loadModelCosts() above
+            already handles the real, common case (a page load landing in a deploy's brief restart
+            window) silently. This plain line is what's left on the rare case even THAT fails --
+            same plain-text treatment as the genuine-empty state right below, just worded for what
+            actually happened, not a styled card+button that stood out from the rest of the page. */}
         {!modelCostsLoading && modelCostsError && (
-          <div
-            className="surface-card"
-            style={{ padding: "14px 16px", marginBottom: 30, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}
-          >
-            <span style={{ color: "var(--ink-2)", fontSize: 13 }}>{t(lang, "admin.aiModelCostsErr")}</span>
-            <button className="btn btn-ghost btn-sm" onClick={loadModelCosts}>
-              {t(lang, "admin.aiModelCostsRetry")}
-            </button>
-          </div>
+          <p style={{ color: "var(--ink-2)", marginBottom: 30 }}>{t(lang, "admin.aiModelCostsErr")}</p>
         )}
 
         {!modelCostsLoading && !modelCostsError && modelCosts && modelCosts.length === 0 && (
