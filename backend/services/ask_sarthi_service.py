@@ -735,6 +735,11 @@ class AskSarthiService:
             ),
             ai_model_name=final_state.get("ai_model_name"),
             ai_total_tokens=final_state.get("ai_total_tokens"),
+            # Same trigger condition as graph.py's run_graph() uses for tracing.enqueue_for_review()
+            # (see that call site) -- kept in sync deliberately: both exist to surface the same real
+            # "knowledge base couldn't answer this" gap, just to two different places (Phoenix's
+            # trace annotation vs. this app's own Admin AI Monitoring "Needs Review" card).
+            needs_review=bool(final_state.get("insufficient_knowledge")) or final_state.get("routed_to") == "NONE_OUT_OF_SCOPE",
         )
         ai_request_log_repository.check_and_fire_alerts(db)
 

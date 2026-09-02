@@ -609,6 +609,15 @@ class AiRequestLog(Base):
             under the same conditions as ai_cost_inr.
         ai_total_tokens: Real total token count (prompt + completion) from Sarvam's own response,
             or None under the same conditions as ai_cost_inr.
+        needs_review: True for exactly the same requests `tracing.enqueue_for_review()` flags in
+            Phoenix/LangSmith (`insufficient_knowledge` was true, or `routed_to ==
+            "NONE_OUT_OF_SCOPE"` -- see graph.py's run_graph()) -- a real citizen question the
+            knowledge base couldn't answer. Persisted locally (same "PostgreSQL/SQLite is the
+            operational source of truth" principle as the rest of this table) so the Admin AI
+            Monitoring page can show a real "Needs Review" panel without depending on Phoenix
+            being reachable or on knowing its GraphQL filter syntax -- Phoenix's own trace (via
+            `phoenix_trace_id`) is still the place to read the actual question text, this column
+            only tracks WHICH requests qualify and lets the dashboard link straight to it.
     """
 
     __tablename__ = "ai_request_logs"
@@ -628,6 +637,7 @@ class AiRequestLog(Base):
     ai_cost_inr: Mapped[float | None] = mapped_column(Float, nullable=True)
     ai_model_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
     ai_total_tokens: Mapped[int | None] = mapped_column(nullable=True)
+    needs_review: Mapped[bool] = mapped_column(nullable=False, default=False)
 
 
 class AiAlertState(Base):

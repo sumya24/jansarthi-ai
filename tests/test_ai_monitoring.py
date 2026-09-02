@@ -63,6 +63,7 @@ def test_summary_is_all_zero_with_no_requests(db_session):
         "out_of_scope_requests": 0,
         "clarification_requests": 0,
         "latency_alert_threshold_ms": ai_request_log_repository._LATENCY_ALERT_THRESHOLD_MS,
+        "needs_review_count": 0,
     }
 
 
@@ -97,6 +98,36 @@ def test_summary_aggregates_counts_and_rates(db_session):
     assert summary["average_latency_ms"] == sum([100, 200, 300, 50, 40, 10, 20, 5]) / 8
 
 
+def test_summary_counts_needs_review_requests(db_session):
+    _seed_logs(
+        db_session,
+        [
+            {**_BASE_ROW, "routed_to": "NONE_OUT_OF_SCOPE", "needs_review": True},
+            {**_BASE_ROW, "routed_to": "RAG", "needs_review": True},  # insufficient_knowledge case
+            {**_BASE_ROW, "routed_to": "RAG", "needs_review": False},
+        ],
+    )
+    db = db_session()
+    summary = ai_request_log_repository.get_ai_monitoring_summary(db)
+    db.close()
+    assert summary["needs_review_count"] == 2
+
+
+def test_get_recent_needs_review_requests_only_returns_flagged_rows_newest_first(db_session):
+    _seed_logs(
+        db_session,
+        [
+            {**_BASE_ROW, "request_id": "flagged-1", "needs_review": True},
+            {**_BASE_ROW, "request_id": "not-flagged", "needs_review": False},
+            {**_BASE_ROW, "request_id": "flagged-2", "needs_review": True},
+        ],
+    )
+    db = db_session()
+    rows = ai_request_log_repository.get_recent_needs_review_requests(db)
+    db.close()
+    assert [r.request_id for r in rows] == ["flagged-2", "flagged-1"]
+
+
 def test_get_recent_ai_requests_orders_newest_first_and_respects_limit(db_session):
     _seed_logs(db_session, [{**_BASE_ROW, "request_id": f"req-{i}"} for i in range(5)])
     db = db_session()
@@ -126,6 +157,28 @@ def test_record_ai_request_persists_a_row(db_session):
     assert len(rows) == 1
     assert rows[0].request_id == "xyz"
     assert rows[0].langsmith_trace_id == "11111111-1111-1111-1111-111111111111"
+    assert rows[0].needs_review is False  # default, unless the caller explicitly passes True
+
+
+def test_record_ai_request_persists_needs_review_flag(db_session):
+    db = db_session()
+    ai_request_log_repository.record_ai_request(
+        db,
+        request_id="xyz",
+        langsmith_trace_id=None,
+        phoenix_trace_id=None,
+        conversation_id=None,
+        intent="TYPE_B_SERVICE_INFO",
+        service_category=None,
+        routed_to="NONE_OUT_OF_SCOPE",
+        success=True,
+        error_type=None,
+        latency_ms=50.0,
+        needs_review=True,
+    )
+    rows = db.query(AiRequestLog).all()
+    db.close()
+    assert rows[0].needs_review is True
 
 
 def test_record_ai_request_never_raises_on_db_failure(db_session):
@@ -161,6 +214,31 @@ def test_ai_monitoring_requests_requires_admin(client, make_worker):
     token, _ = make_worker(phone="9000000002")
     response = client.get("/admin/ai-monitoring/requests", headers={"Authorization": f"Bearer {token}"})
     assert response.status_code == 403
+
+
+def test_ai_monitoring_needs_review_requires_admin(client, make_worker):
+    token, _ = make_worker(phone="9000000003")
+    response = client.get("/admin/ai-monitoring/needs-review", headers={"Authorization": f"Bearer {token}"})
+    assert response.status_code == 403
+
+
+def test_ai_monitoring_needs_review_returns_only_flagged_requests(client, make_admin, db_session):
+    make_admin(phone="9999999999", password="adminpass")
+    token = _login(client, "9999999999", "adminpass")
+    _seed_logs(
+        db_session,
+        [
+            {**_BASE_ROW, "request_id": "flagged", "routed_to": "NONE_OUT_OF_SCOPE", "needs_review": True},
+            {**_BASE_ROW, "request_id": "not-flagged", "routed_to": "RAG", "needs_review": False},
+        ],
+    )
+
+    response = client.get("/admin/ai-monitoring/needs-review", headers={"Authorization": f"Bearer {token}"})
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) == 1
+    assert body[0]["request_id"] == "flagged"
+    assert body[0]["routed_to"] == "NONE_OUT_OF_SCOPE"
 
 
 def test_ai_monitoring_summary_accessible_to_admin(client, make_admin, db_session):
