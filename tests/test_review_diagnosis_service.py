@@ -8,9 +8,9 @@ from unittest.mock import Mock
 from backend.services.review_diagnosis_service import ReviewDiagnosisService
 
 
-def _fake_chat_response(text: str | None) -> Mock:
+def _fake_chat_response(text: str | None, finish_reason: str = "stop") -> Mock:
     message = Mock(content=text)
-    choice = Mock(message=message)
+    choice = Mock(message=message, finish_reason=finish_reason)
     return Mock(choices=[choice])
 
 
@@ -90,3 +90,46 @@ def test_diagnose_returns_none_on_empty_model_output(monkeypatch):
     result = service.diagnose(question="Some question", reason="insufficient_knowledge", service_category=None, city=None, state=None)
 
     assert result is None
+
+
+def test_diagnose_returns_none_when_model_exhausts_token_budget_on_reasoning(monkeypatch, caplog):
+    """LIVE-REPORTED, confirmed directly against production: sarvam-105b (a reasoning model) can
+    spend its ENTIRE max_tokens budget on internal reasoning_content and emit no final answer at
+    all -- message.content comes back None with finish_reason="length", even with
+    reasoning_effort="low". Regression guard for the actual bug found (a too-small hardcoded
+    max_tokens): must fail open to None (with a clear log line, not silently), never raise or
+    return the reasoning text itself."""
+    monkeypatch.setattr("backend.services.review_diagnosis_service.settings.LLM_API_KEY", "fake-key")
+    fake_client = Mock()
+    fake_client.chat.completions.return_value = _fake_chat_response(None, finish_reason="length")
+    monkeypatch.setattr(
+        "backend.services.review_diagnosis_service.SarvamAI", lambda api_subscription_key, timeout=None: fake_client
+    )
+
+    service = ReviewDiagnosisService()
+    with caplog.at_level("WARNING"):
+        result = service.diagnose(question="Some question", reason="insufficient_knowledge", service_category=None, city=None, state=None)
+
+    assert result is None
+    assert "finish_reason=length" in caplog.text
+
+
+def test_diagnose_uses_the_same_token_budget_as_other_reasoning_model_callers(monkeypatch):
+    """Regression guard for the exact real bug found in production: a hardcoded small max_tokens
+    (200) reproduced sarvam-105b's own reasoning-budget-exhaustion failure mode even with
+    reasoning_effort="low". Must use settings.LLM_MAX_TOKENS -- the same budget
+    summary_service.py/answer_generation_service.py already rely on -- not a smaller, ad-hoc value
+    specific to this one call site."""
+    monkeypatch.setattr("backend.services.review_diagnosis_service.settings.LLM_API_KEY", "fake-key")
+    monkeypatch.setattr("backend.services.review_diagnosis_service.settings.LLM_MAX_TOKENS", 4096)
+    fake_client = Mock()
+    fake_client.chat.completions.return_value = _fake_chat_response("A real explanation.")
+    monkeypatch.setattr(
+        "backend.services.review_diagnosis_service.SarvamAI", lambda api_subscription_key, timeout=None: fake_client
+    )
+
+    service = ReviewDiagnosisService()
+    service.diagnose(question="Some question", reason="insufficient_knowledge", service_category=None, city=None, state=None)
+
+    _, call_kwargs = fake_client.chat.completions.call_args
+    assert call_kwargs["max_tokens"] == 4096
