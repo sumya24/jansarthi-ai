@@ -369,6 +369,17 @@ def run_graph(
     # KB should potentially cover. Routed here, not scored/blocked in any way; a no-op whenever
     # tracing is disabled. Fires regardless of who owns the root run's lifecycle.
     if merged.get("insufficient_knowledge") or merged.get("routed_to") == "NONE_OUT_OF_SCOPE":
-        tracing.enqueue_for_review(root_run, reason=merged.get("routed_to") or "insufficient_knowledge")
+        tracing.enqueue_for_review(
+            root_run,
+            reason=merged.get("routed_to") or "insufficient_knowledge",
+            # Real diagnostic context for tracing.py's own LLM-generated explanation (see
+            # review_diagnosis_service.py) -- user_message (not normalized_message) is the
+            # citizen's own original wording, matching what an admin/developer reading the
+            # explanation later would actually want to see referenced.
+            question=merged.get("user_message"),
+            service_category=merged.get("service_category"),
+            city=merged.get("location_city"),
+            state=merged.get("location_state"),
+        )
 
     return merged  # type: ignore[return-value]

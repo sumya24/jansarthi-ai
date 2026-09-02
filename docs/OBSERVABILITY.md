@@ -177,6 +177,15 @@ not a fixed target, so it re-bases itself automatically as usage shifts).
      it, it now retries the lookup up to `_REVIEW_SPAN_LOOKUP_ATTEMPTS` times (1.5s apart) before
      giving up, and the mutation itself now checks its own response for GraphQL-level errors
      (which come back as HTTP 200, so `raise_for_status()` alone never caught them).
+  3. The annotation's `label` alone only ever carried the bare routing code
+     (`NONE_OUT_OF_SCOPE`/`insufficient_knowledge`) — not useful for an admin trying to decide
+     what content to actually add. `_phoenix_enqueue_for_review()` now also generates a real,
+     LLM-produced `explanation` (`review_diagnosis_service.py`, a genuine Phoenix
+     `CreateSpanAnnotationInput` field, confirmed via schema introspection — not invented) that
+     explains *why* the question fell outside coverage and what to add. Deliberately called only
+     for requests already flagged (a small minority of traffic), and only from this same
+     background thread — the extra Sarvam round trip never reaches the citizen or adds to the
+     app's cost on the (large) majority of requests that already succeed.
 
 ## 9. Admin alerts — "High AI latency" / "High AI error rate"
 

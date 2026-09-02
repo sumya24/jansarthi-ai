@@ -379,7 +379,11 @@ def test_insufficient_knowledge_is_enqueued_for_review(monkeypatch):
     monkeypatch.setattr(nodes_module.tracing, "end_run", lambda run, **kw: None)
 
     enqueued = []
-    monkeypatch.setattr(graph_module.tracing, "enqueue_for_review", lambda run, reason: enqueued.append((run, reason)))
+    # Accepts the real, current call signature (run, reason, plus the keyword-only diagnostic
+    # context -- question/service_category/city/state -- added alongside review_diagnosis_service.py,
+    # see graph.py's own call site) rather than just (run, reason), so this test doesn't need
+    # updating again for every future optional param added the same way.
+    monkeypatch.setattr(graph_module.tracing, "enqueue_for_review", lambda run, reason, **kw: enqueued.append((run, reason, kw)))
 
     class _EmptyRetriever:
         def retrieve(self, *args, **kwargs):
@@ -396,7 +400,11 @@ def test_insufficient_knowledge_is_enqueued_for_review(monkeypatch):
     run_graph(compiled, deps, _minimal_ctx(), initial_state)
 
     assert len(enqueued) == 1
-    assert enqueued[0] == ("FAKE_ROOT", "RAG")
+    run, reason, kw = enqueued[0]
+    assert (run, reason) == ("FAKE_ROOT", "RAG")
+    # The real citizen question text is threaded through -- see review_diagnosis_service.py's own
+    # need for it to generate a real explanation, not just the bare routing reason.
+    assert kw["question"] == "Who should I contact for garbage collection in Mohali?"
 
 
 def test_out_of_scope_is_enqueued_for_review(monkeypatch):
@@ -404,7 +412,9 @@ def test_out_of_scope_is_enqueued_for_review(monkeypatch):
     monkeypatch.setattr(graph_module.tracing, "end_run", lambda run, **kw: None)
 
     enqueued = []
-    monkeypatch.setattr(graph_module.tracing, "enqueue_for_review", lambda run, reason: enqueued.append((run, reason)))
+    # See test_insufficient_knowledge_is_enqueued_for_review's own comment on why this accepts
+    # **kw rather than just (run, reason).
+    monkeypatch.setattr(graph_module.tracing, "enqueue_for_review", lambda run, reason, **kw: enqueued.append((run, reason, kw)))
 
     compiled = build_graph()
     initial_state = {
@@ -416,13 +426,15 @@ def test_out_of_scope_is_enqueued_for_review(monkeypatch):
     run_graph(compiled, _minimal_deps(), _minimal_ctx(), initial_state)
 
     assert len(enqueued) == 1
-    assert enqueued[0] == ("FAKE_ROOT", "NONE_OUT_OF_SCOPE")
+    run, reason, kw = enqueued[0]
+    assert (run, reason) == ("FAKE_ROOT", "NONE_OUT_OF_SCOPE")
+    assert kw["question"] == "I need a new electricity connection"
 
 
 def test_successful_answer_is_not_enqueued_for_review(client, monkeypatch, make_citizen):
     """A question the pipeline COULD answer must never end up in the knowledge-base-gap queue --
     only genuine misses/out-of-scope routes should."""
-    monkeypatch.setattr(graph_module.tracing, "enqueue_for_review", lambda run, reason: (_ for _ in ()).throw(
+    monkeypatch.setattr(graph_module.tracing, "enqueue_for_review", lambda run, reason, **kw: (_ for _ in ()).throw(
         AssertionError(f"should not have enqueued a successfully-answered request (reason={reason})")
     ))
 

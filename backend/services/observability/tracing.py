@@ -111,6 +111,10 @@ _client: "_LangSmithClient | None" = None
 _client_unavailable = False
 _review_queue_id: "uuid.UUID | None" = None
 _review_queue_unavailable = False
+# Lazily constructed, process-lifetime singleton -- same "build once, reuse" shape as every other
+# service class in this codebase (e.g. AskSarthiService's own module-level `_service`), not
+# rebuilt per call. See _get_review_diagnosis_service() below and review_diagnosis_service.py.
+_review_diagnosis_service: "Any" = None
 
 # Arize Phoenix -- a second, self-hosted tracing backend, purely additive alongside everything
 # above (see this module's docstring for why). Keyed by the SAME id LangSmith's RunTree already
@@ -507,13 +511,28 @@ def _get_review_queue_id() -> "uuid.UUID | None":
         return None
 
 
-def enqueue_for_review(run: "_RunTree | _PhoenixOnlyRun | None", reason: str) -> None:
+def enqueue_for_review(
+    run: "_RunTree | _PhoenixOnlyRun | None",
+    reason: str,
+    *,
+    question: str | None = None,
+    service_category: str | None = None,
+    city: str | None = None,
+    state: str | None = None,
+) -> None:
     """Flags `run` (the Ask Sarthi request's root span) for review -- LangSmith's Annotation Queue
     when a real LangSmith run exists (see `_get_review_queue_id()`), and/or a Phoenix span
     annotation (see `_phoenix_enqueue_for_review()`) whenever Phoenix has a span for this run,
     independent of whether LangSmith does. A no-op if `run` is `None`; never raises. `reason` is
     logged locally only (not sent to LangSmith -- the run itself already carries its own
     `routed_to`/`insufficient_knowledge` outputs, see graph.py's run_graph()).
+
+    `question`/`service_category`/`city`/`state` are optional and Phoenix-only (see
+    `_phoenix_enqueue_for_review()`'s own docstring) -- when `question` is present, the Phoenix
+    annotation gets a real, LLM-generated `explanation` of why this specific question fell outside
+    the knowledge base's coverage (see `review_diagnosis_service.py`), not just the bare `reason`
+    category label. All default to `None` so every existing caller/test not yet passing them keeps
+    working unchanged, just without an explanation attached.
 
     LIVE-REPORTED GAP: this module's own docstring already promises "non-blocking, fail-open",
     but the actual review-annotation work below (`_phoenix_enqueue_for_review()`'s `force_flush`
@@ -527,10 +546,12 @@ def enqueue_for_review(run: "_RunTree | _PhoenixOnlyRun | None", reason: str) ->
     HTTP clients only, see `_get_client()`/`_phoenix_enqueue_for_review()`), so handing the whole
     thing to a background thread and returning immediately keeps every real behavior (the
     annotation still happens, still fails open, still never raises) while actually delivering the
-    non-blocking guarantee this function already claimed to have."""
+    non-blocking guarantee this function already claimed to have. This is also exactly why the
+    real, extra Sarvam call `question` triggers below is safe to make here: it's already on a
+    background thread with nothing waiting on it, so its own latency never reaches the citizen."""
     if run is None:
         return
-    _run_in_background(_enqueue_for_review_sync, (run, reason))
+    _run_in_background(_enqueue_for_review_sync, (run, reason, question, service_category, city, state))
 
 
 def _run_in_background(target: "Any", args: tuple) -> None:
@@ -541,10 +562,17 @@ def _run_in_background(target: "Any", args: tuple) -> None:
     threading.Thread(target=target, args=args, daemon=True).start()
 
 
-def _enqueue_for_review_sync(run: "_RunTree | _PhoenixOnlyRun", reason: str) -> None:
+def _enqueue_for_review_sync(
+    run: "_RunTree | _PhoenixOnlyRun",
+    reason: str,
+    question: str | None = None,
+    service_category: str | None = None,
+    city: str | None = None,
+    state: str | None = None,
+) -> None:
     """The actual (network-bound, potentially slow) review-annotation work -- always run on a
     background thread by `enqueue_for_review()` above, never inline in the request path."""
-    _phoenix_enqueue_for_review(getattr(run, "id", None), reason)
+    _phoenix_enqueue_for_review(getattr(run, "id", None), reason, question, service_category, city, state)
     if not _is_real_langsmith_run(run):
         return
     queue_id = _get_review_queue_id()
@@ -622,13 +650,42 @@ def _phoenix_graphql_base_url() -> str | None:
     return endpoint[: -len(suffix)] + "/graphql"
 
 
-def _phoenix_enqueue_for_review(run_id: uuid.UUID | None, reason: str) -> None:
+def _get_review_diagnosis_service() -> "Any":
+    """Lazily constructs (and caches for this process's lifetime) the ReviewDiagnosisService used
+    to generate a real explanation for a flagged review annotation -- imported here, not at module
+    scope, specifically so this purely-observability module doesn't pay the cost of importing the
+    `sarvamai` SDK (and everything review_diagnosis_service.py itself imports) unless a request
+    actually gets flagged for review; the overwhelming majority of requests never reach this."""
+    global _review_diagnosis_service
+    if _review_diagnosis_service is None:
+        from backend.services.review_diagnosis_service import ReviewDiagnosisService
+
+        _review_diagnosis_service = ReviewDiagnosisService()
+    return _review_diagnosis_service
+
+
+def _phoenix_enqueue_for_review(
+    run_id: uuid.UUID | None,
+    reason: str,
+    question: str | None = None,
+    service_category: str | None = None,
+    city: str | None = None,
+    state: str | None = None,
+) -> None:
     """Phoenix's own counterpart to `enqueue_for_review()`'s LangSmith Annotation Queue --
     Phoenix has no equivalent "queue" concept, so this tags the matching span directly with a
     `needs_review` span annotation instead (Phoenix's own closest capability, confirmed via its
     GraphQL schema's `createSpanAnnotations` mutation). Fail-open like everything else in this
     module: a no-op if Phoenix is disabled, this run never got a Phoenix span (see
     `_phoenix_trace_ids`/`_phoenix_span_ids`), or any part of the lookup/mutation fails.
+
+    When `question` is given, this ALSO generates a real, LLM-produced `explanation` (confirmed a
+    real field on Phoenix's own CreateSpanAnnotationInput, not invented -- see
+    review_diagnosis_service.py) and attaches it alongside the bare `reason` label -- so opening
+    this annotation in Phoenix shows genuine reasoning about why the knowledge base fell short and
+    what to add, not just a category code. Generating it is itself fail-open (see
+    ReviewDiagnosisService.diagnose()'s own docstring): a failure there just means no `explanation`
+    is attached, never a reason to skip the annotation itself.
 
     Root spans are always named "ask_sarthi_graph" (see graph.py's `start_root_run()` call
     site) -- filtering Phoenix's spans by that name, then matching the exact trace/span id
@@ -724,25 +781,38 @@ def _phoenix_enqueue_for_review(run_id: uuid.UUID | None, reason: str) -> None:
                 )
                 return
 
+            # Real diagnostic reasoning (see review_diagnosis_service.py's own docstring for why
+            # this is safe/cheap here: only ever reached for an already-flagged, already-rare
+            # request, and already on this background thread so its latency never reaches the
+            # citizen). `redact_text()` applied for the same reason every other free-text field
+            # sent to Phoenix goes through it (see this module's own docstring) -- the explanation
+            # can reference detail from the citizen's own question.
+            explanation = redact_text(_get_review_diagnosis_service().diagnose(
+                question=question, reason=reason, service_category=service_category, city=city, state=state,
+            )) if question else None
+
             annotate_mutation = """
                 mutation($input: [CreateSpanAnnotationInput!]!) {
                   createSpanAnnotations(input: $input) { spanAnnotations { id } }
                 }
             """
+            annotation_input: dict[str, Any] = {
+                "spanId": span_graphql_id,
+                "name": "needs_review",
+                "annotatorKind": "CODE" if explanation is None else "LLM",
+                "label": reason,
+                "metadata": {},
+                "source": "API",
+            }
+            if explanation:
+                annotation_input["explanation"] = explanation
             annotate_resp = client.post(
                 base_url,
                 json={
                     "query": annotate_mutation,
                     "variables": {
                         "input": [
-                            {
-                                "spanId": span_graphql_id,
-                                "name": "needs_review",
-                                "annotatorKind": "CODE",
-                                "label": reason,
-                                "metadata": {},
-                                "source": "API",
-                            }
+                            annotation_input
                         ]
                     },
                 },
