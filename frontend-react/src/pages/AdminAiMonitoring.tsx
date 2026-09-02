@@ -12,6 +12,12 @@ import { useToast } from "../lib/toast";
 import "../styles/dashboard.css";
 
 const REQUESTS_PAGE_SIZE = 20;
+// A few automatic attempts, a few seconds apart, before loadModelCosts() ever gives up and shows
+// the retry button -- absorbs a short blip (a mid-restart request right after a deploy, a
+// momentary network hiccup) silently, so the manual button below is only ever needed for a
+// longer/genuine outage, not the common brief case. See modelCostsError's own comment.
+const MODEL_COSTS_AUTO_RETRIES = 2;
+const MODEL_COSTS_RETRY_DELAY_MS = 4000;
 
 /** See AdminWorkers.tsx's/AdminDashboard.tsx's own copies of this component for the full
  * rationale (header checkbox reflecting the CURRENT page's selection state, `indeterminate`
@@ -79,6 +85,14 @@ export default function AdminAiMonitoring() {
   // Phoenix outage should only ever empty this one panel, never the rest of the page.
   const [modelCosts, setModelCosts] = useState<ModelCostEntry[] | null>(null);
   const [modelCostsLoading, setModelCostsLoading] = useState(true);
+  // LIVE-REPORTED: this panel only ever fetched once, on mount -- a real, reproduced failure mode
+  // right around a deploy (the backend briefly returns 502 for ~20-60s while it restarts and
+  // rewarms its embedding model, see docs/DEPLOYMENT_GCP.md) meant a page load that happened to
+  // land in that window showed "No requests" and then just sat there, indistinguishable from a
+  // genuinely empty account, with no way to recover short of a full page reload. Distinguished
+  // from a genuine empty state (modelCosts === [], a real success with nothing to show) so the
+  // retry affordance below only ever appears on an actual failure.
+  const [modelCostsError, setModelCostsError] = useState(false);
   // LIVE-REPORTED race, found via /code-review: the effect below re-fires loadModelCosts()
   // whenever `token` changes -- including a silent access-token refresh, which can happen mid-
   // session with no user action at all (see api.ts's shared refreshInFlight). If an earlier call
@@ -136,20 +150,29 @@ export default function AdminAiMonitoring() {
     if (!token) return;
     const requestId = ++modelCostsRequestId.current;
     setModelCostsLoading(true);
-    try {
-      const result = await api.aiMonitoringModelCosts(token);
-      if (requestId !== modelCostsRequestId.current) return; // a newer call has since started
-      setModelCosts(result);
-    } catch {
-      // Best-effort, silent -- a Phoenix outage here shouldn't plant a second error banner next
-      // to the main one above; an empty panel (see the render below) already reads as "nothing
-      // to show" without needing its own error message. Also reached on the 15s client-side
-      // timeout (see api.ts's aiMonitoringModelCosts) so a hung request degrades to "nothing to
-      // show" instead of leaving the skeleton up forever.
-      if (requestId !== modelCostsRequestId.current) return;
-      setModelCosts([]);
-    } finally {
-      if (requestId === modelCostsRequestId.current) setModelCostsLoading(false);
+    setModelCostsError(false);
+    for (let attempt = 0; attempt <= MODEL_COSTS_AUTO_RETRIES; attempt++) {
+      try {
+        const result = await api.aiMonitoringModelCosts(token);
+        if (requestId !== modelCostsRequestId.current) return; // a newer call has since started
+        setModelCosts(result);
+        setModelCostsLoading(false);
+        return;
+      } catch {
+        if (requestId !== modelCostsRequestId.current) return;
+        if (attempt < MODEL_COSTS_AUTO_RETRIES) {
+          await new Promise((resolve) => setTimeout(resolve, MODEL_COSTS_RETRY_DELAY_MS));
+          continue;
+        }
+        // Every attempt failed -- e.g. a Phoenix outage, or (LIVE-REPORTED) a page load that
+        // landed in the ~20-60s window right after a deploy while the backend restarts. Distinct
+        // from a genuine "no models used yet" empty state (see modelCostsError's own comment) --
+        // shows a real retry button instead of silently reading as "nothing to show".
+        if (requestId !== modelCostsRequestId.current) return;
+        setModelCosts([]);
+        setModelCostsError(true);
+        setModelCostsLoading(false);
+      }
     }
   }
 
@@ -363,7 +386,19 @@ export default function AdminAiMonitoring() {
           </div>
         )}
 
-        {!modelCostsLoading && modelCosts && modelCosts.length === 0 && (
+        {!modelCostsLoading && modelCostsError && (
+          <div
+            className="surface-card"
+            style={{ padding: "14px 16px", marginBottom: 30, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}
+          >
+            <span style={{ color: "var(--ink-2)", fontSize: 13 }}>{t(lang, "admin.aiModelCostsErr")}</span>
+            <button className="btn btn-ghost btn-sm" onClick={loadModelCosts}>
+              {t(lang, "admin.aiModelCostsRetry")}
+            </button>
+          </div>
+        )}
+
+        {!modelCostsLoading && !modelCostsError && modelCosts && modelCosts.length === 0 && (
           <p style={{ color: "var(--ink-2)", marginBottom: 30 }}>{t(lang, "admin.aiEmpty")}</p>
         )}
 
