@@ -88,15 +88,26 @@ class ReviewDiagnosisService(SarvamKeyRotationMixin):
             response = self._call_sarvam(lambda client: client.chat.completions(
                 model=settings.LLM_MODEL,
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=200,
-                # Low reasoning effort -- this is a short, focused diagnostic note, not a
-                # multi-step reasoning task; matches summary_service.py's own "low" choice for the
-                # same reason (a high-effort budget would otherwise risk the model spending its
-                # whole token budget on internal reasoning_content and never emitting the answer).
+                # LIVE-REPORTED (confirmed directly against production, not guessed): a hardcoded
+                # 200 here reproduced sarvam-105b's own well-known reasoning-model failure mode
+                # (see summary_service.py's own comment on this) EVEN with reasoning_effort="low"
+                # -- finish_reason came back "length" with reasoning_content fully populated but
+                # message.content empty, i.e. the entire budget was spent on internal reasoning
+                # before any final answer token was emitted. settings.LLM_MAX_TOKENS (1024) is the
+                # same budget every other reasoning-model caller in this app already uses for
+                # exactly this reason -- this prompt gets no special exemption from that budget.
+                max_tokens=settings.LLM_MAX_TOKENS,
                 reasoning_effort="low",
             ))
-            content = response.choices[0].message.content
-            return content.strip() if content and content.strip() else None
+            choice = response.choices[0]
+            content = choice.message.content
+            if not content or not content.strip():
+                logger.warning(
+                    "Review diagnosis returned no content (finish_reason=%s); annotation will carry no explanation.",
+                    choice.finish_reason,
+                )
+                return None
+            return content.strip()
         except Exception:
             logger.warning("Review diagnosis generation failed; annotation will carry no explanation.", exc_info=True)
             return None
