@@ -167,7 +167,7 @@ export default function AdminAiMonitoring() {
         // Every attempt failed -- e.g. a Phoenix outage, or (LIVE-REPORTED) a page load that
         // landed in the ~20-60s window right after a deploy while the backend restarts. Distinct
         // from a genuine "no models used yet" empty state (see modelCostsError's own comment) --
-        // shows a real retry button instead of silently reading as "nothing to show".
+        // renders as its own message below, not silently read as "nothing to show".
         if (requestId !== modelCostsRequestId.current) return;
         setModelCosts([]);
         setModelCostsError(true);
