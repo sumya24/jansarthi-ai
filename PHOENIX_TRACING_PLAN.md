@@ -646,3 +646,39 @@ import/collection errors project-wide, confirming no other file references the o
 Live-verified once more with a real, fresh Sarvam call: real cost (`$0.00029` prompt + `$0.00115`
 completion for one real answer), real model name (`sarvam-105b`), and `OK` status all showed up
 correctly in Phoenix's own span data, checked directly via its REST API.
+
+## Round 4 (2026-09-02): review-annotation was silently a no-op in production, ever
+
+While preparing a demo, checked whether Phoenix's Evaluators/annotation data was actually populated
+in production — it wasn't. `spanAnnotationNameCounts`/`traceAnnotationNameCounts`/
+`documentEvaluationNames` all came back empty via a direct GraphQL query against the live project,
+despite real out-of-scope/insufficient-knowledge questions having fired `enqueue_for_review()` many
+times over the preceding week.
+
+**Root cause, confirmed live, not guessed**: `_phoenix_enqueue_for_review()`'s Round 3-era
+`force_flush(timeout_millis=2000)` fix (see §8 above / `docs/OBSERVABILITY.md`) only closed the
+"Phoenix batches exports" gap — it guarantees the span was *exported* over OTLP, not that Phoenix's
+own backend has finished *ingesting and indexing* it into something queryable via GraphQL yet.
+Reproduced directly: asked a real out-of-scope question against production, then grepped the
+backend's own logs for the resulting GraphQL calls. The project lookup and the spans-lookup query
+both came back `200 OK` about 4 seconds after the span ended — but the spans-lookup's result set
+didn't include this run's span, so `span_graphql_id` came back `None` and the function returned
+before ever reaching the annotation mutation (exactly the same silent-no-op shape the Round 3 fix
+was meant to close, just with a longer real-world gap than one flush call covers). Confirmed this
+wasn't a permanent gap either — the exact same span, looked up again a few minutes later, was there.
+
+**Fix**: since this whole function already runs on a background thread (an earlier, separate fix —
+see `enqueue_for_review()`'s own docstring — moved the real network work off the citizen's request
+thread), there's no cost to retrying the spans-lookup a few times with a short delay before giving
+up. Added `_REVIEW_SPAN_LOOKUP_ATTEMPTS` (4) / `_REVIEW_SPAN_LOOKUP_RETRY_DELAY_SECONDS` (1.5s) to
+`tracing.py`. Also hardened the mutation call itself to check its own response for GraphQL-level
+errors and log a warning if present — it previously assumed success unconditionally, which would
+have been a second, quieter way for this to silently do nothing (GraphQL reports a failed mutation
+as HTTP 200 with an `errors` array, not an HTTP error status, so `raise_for_status()` alone can't
+catch it).
+
+**Testing**: 7 new tests added to `tests/test_langsmith_tracing.py` against a fake `httpx.Client`
+double, covering immediate success, retry-until-found, give-up-after-max-attempts (no raise, no
+bogus mutation call), and a GraphQL-error-in-mutation-response being logged. Full
+`test_langsmith_tracing.py` + `test_ask_sarthi.py`: 116 passed, 1 skipped (pre-existing), no
+regressions. See PR #75 for the deploy-and-verify-in-production follow-through.

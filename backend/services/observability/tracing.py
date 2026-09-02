@@ -51,6 +51,7 @@ import json
 import logging
 import re
 import threading
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -98,6 +99,13 @@ except Exception:  # pragma: no cover -- defensive: package genuinely missing/br
 _EMAIL_RE = re.compile(r"[\w.+-]+@[\w.-]+\.\w+")
 _LONG_DIGIT_RUN_RE = re.compile(r"\d{7,}")  # phone numbers, most long ID-like numbers
 _MAX_TEXT_LEN = 2000
+
+# How many times _phoenix_enqueue_for_review() re-queries for its own just-ended span before
+# giving up, and how long it waits between attempts -- see that function's docstring for the
+# LIVE-REPORTED gap this closes: force_flush() only guarantees the span was EXPORTED, not that
+# Phoenix's own backend has finished ingesting it and made it queryable via GraphQL yet.
+_REVIEW_SPAN_LOOKUP_ATTEMPTS = 4
+_REVIEW_SPAN_LOOKUP_RETRY_DELAY_SECONDS = 1.5
 
 _client: "_LangSmithClient | None" = None
 _client_unavailable = False
@@ -627,14 +635,29 @@ def _phoenix_enqueue_for_review(run_id: uuid.UUID | None, reason: str) -> None:
     client-side from the (small) result set, avoids needing to guess Phoenix's filter-expression
     syntax for raw OTel ids directly.
 
-    LIVE-REPORTED gap this fixes: called right after `end_run()` in the SAME request, so the
-    root span's own `.end()` call happened only moments earlier -- Phoenix's exporter batches
+    LIVE-REPORTED gap this fixes (round 1): called right after `end_run()` in the SAME request, so
+    the root span's own `.end()` call happened only moments earlier -- Phoenix's exporter batches
     spans rather than sending them the instant `.end()` is called (`_get_phoenix_tracer()` uses
     `batch=True`), so querying immediately found nothing and this silently no-opped every time
     (confirmed directly: 2 of the 3 expected GraphQL calls fired, the 3rd -- the actual
     annotation mutation -- never did, because the span lookup came back empty). Forcing a flush
     of the just-ended span before querying closes that gap; capped at 2s so a slow/unresponsive
-    Phoenix can't add real latency to a citizen's request."""
+    Phoenix can't add real latency to a citizen's request.
+
+    LIVE-REPORTED gap this fixes (round 2, found live in production after `enqueue_for_review()`
+    itself was moved to a background thread): `force_flush()` only guarantees the span was
+    EXPORTED over OTLP -- it says nothing about how long Phoenix's own backend then takes to
+    ingest and index that span before it's actually queryable via GraphQL. Confirmed directly
+    against production: right after a real out-of-scope question, the project lookup and the
+    spans query both came back 200 OK within ~4 seconds of the span ending, but the spans query's
+    result set didn't yet include this run's span -- so `span_graphql_id` came back `None` and the
+    function returned before ever reaching the mutation, exactly the silent-no-op failure mode
+    round 1 above was meant to close, just with a longer real-world gap than a single flush call
+    covers. Confirmed this isn't a permanent gap either: the exact same span was present and
+    queryable moments later. Since this whole function already runs on a background thread (see
+    `enqueue_for_review()`'s own docstring) with nothing waiting on it, there's no cost to a
+    citizen's request in simply re-querying a few times with a short delay before giving up --
+    `_REVIEW_SPAN_LOOKUP_ATTEMPTS`/`_REVIEW_SPAN_LOOKUP_RETRY_DELAY_SECONDS` above."""
     if run_id is None or not _phoenix_enabled():
         return
     trace_id = _phoenix_trace_ids.get(run_id)
@@ -674,21 +697,31 @@ def _phoenix_enqueue_for_review(run_id: uuid.UUID | None, reason: str) -> None:
                   }
                 }
             """
-            spans_resp = client.post(
-                base_url,
-                json={"query": spans_query, "variables": {"id": project["id"], "filter": 'name == "ask_sarthi_graph"'}},
-            )
-            spans_resp.raise_for_status()
-            edges = (((spans_resp.json().get("data") or {}).get("node") or {}).get("spans") or {}).get("edges", [])
-            span_graphql_id = next(
-                (
-                    e["node"]["id"]
-                    for e in edges
-                    if e["node"]["context"]["traceId"] == trace_id and e["node"]["context"]["spanId"] == span_id
-                ),
-                None,
-            )
+            span_graphql_id = None
+            for attempt in range(_REVIEW_SPAN_LOOKUP_ATTEMPTS):
+                spans_resp = client.post(
+                    base_url,
+                    json={"query": spans_query, "variables": {"id": project["id"], "filter": 'name == "ask_sarthi_graph"'}},
+                )
+                spans_resp.raise_for_status()
+                edges = (((spans_resp.json().get("data") or {}).get("node") or {}).get("spans") or {}).get("edges", [])
+                span_graphql_id = next(
+                    (
+                        e["node"]["id"]
+                        for e in edges
+                        if e["node"]["context"]["traceId"] == trace_id and e["node"]["context"]["spanId"] == span_id
+                    ),
+                    None,
+                )
+                if span_graphql_id is not None:
+                    break
+                if attempt < _REVIEW_SPAN_LOOKUP_ATTEMPTS - 1:
+                    time.sleep(_REVIEW_SPAN_LOOKUP_RETRY_DELAY_SECONDS)
             if span_graphql_id is None:
+                logger.info(
+                    "Phoenix: span for run_id=%s still not queryable after %d attempts; skipping review annotation.",
+                    run_id, _REVIEW_SPAN_LOOKUP_ATTEMPTS,
+                )
                 return
 
             annotate_mutation = """
@@ -696,7 +729,7 @@ def _phoenix_enqueue_for_review(run_id: uuid.UUID | None, reason: str) -> None:
                   createSpanAnnotations(input: $input) { spanAnnotations { id } }
                 }
             """
-            client.post(
+            annotate_resp = client.post(
                 base_url,
                 json={
                     "query": annotate_mutation,
@@ -714,6 +747,16 @@ def _phoenix_enqueue_for_review(run_id: uuid.UUID | None, reason: str) -> None:
                     },
                 },
             )
+            # GraphQL reports business-logic failures (e.g. a malformed input) as HTTP 200 with an
+            # "errors" array, not as an HTTP error status -- raise_for_status() alone would never
+            # catch that, so this would otherwise be a second, quieter way for this mutation to
+            # silently do nothing (same failure shape as the round-2 gap above, different cause).
+            annotate_resp.raise_for_status()
+            errors = annotate_resp.json().get("errors")
+            if errors:
+                logger.warning(
+                    "Phoenix: createSpanAnnotations returned GraphQL errors for run_id=%s: %s", run_id, errors,
+                )
     except Exception:
         logger.warning("Phoenix: failed to annotate span for review (run_id=%s, reason=%s)", run_id, reason, exc_info=True)
 
