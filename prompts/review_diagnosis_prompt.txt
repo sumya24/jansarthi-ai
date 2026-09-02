@@ -1,0 +1,13 @@
+A citizen asked JanSarthi AI, a municipal civic-services assistant for India, the following
+question. The system could NOT answer it from its knowledge base.
+
+Question: {question}
+Why the system could not answer: {reason}
+Detected service category: {service_category}
+Detected location: {location}
+
+In 2-3 short sentences, explain: (1) the likely reason this specific question falls outside the
+current knowledge base's coverage, and (2) what specific kind of official content (e.g. a
+particular city's service page, a specific scheme's documentation) should be added to close this
+exact gap. Be concise and specific to this question, not generic. Do not repeat the question back.
+Respond with only the explanation text, no preamble.

@@ -453,11 +453,12 @@ export default function AdminAiMonitoring() {
                       {r.intent ? ` · ${r.intent}` : ""}
                     </span>
                   </div>
-                  {r.phoenix_trace_url && (
-                    <a href={r.phoenix_trace_url} target="_blank" rel="noopener noreferrer" style={{ fontSize: 12.5, flexShrink: 0 }}>
-                      {t(lang, "admin.aiViewPhoenixTrace")}
-                    </a>
-                  )}
+                  {/* LIVE-REPORTED: a "View Phoenix trace" link here was redundant with the exact
+                      same link the Recent Requests table below already shows for this same row --
+                      and Phoenix's own trace view is read-only (a bare "needs_review" label, no
+                      reasoning, nothing actionable), so it wasn't earning its place twice. Removed
+                      here; still reachable via the table below for anyone who genuinely wants the
+                      raw technical trace. */}
                 </div>
               );
             })}

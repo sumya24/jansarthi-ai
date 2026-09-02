@@ -682,3 +682,41 @@ double, covering immediate success, retry-until-found, give-up-after-max-attempt
 bogus mutation call), and a GraphQL-error-in-mutation-response being logged. Full
 `test_langsmith_tracing.py` + `test_ask_sarthi.py`: 116 passed, 1 skipped (pre-existing), no
 regressions. See PR #75 for the deploy-and-verify-in-production follow-through.
+
+## Round 5 (2026-09-02): a real LLM-generated explanation, not just a bare routing-code label
+
+After Round 4 shipped, live-verified in Phoenix's own UI: the `needs_review` annotation was real,
+but opening it just showed a bare category label (`NONE_OUT_OF_SCOPE`) — no reasoning, nothing an
+admin could act on beyond "this one needs review." Explicitly requested: attach a real explanation
+of *why* the knowledge base fell short and *what specific content* would close that gap — shown in
+Phoenix directly (not a new panel in this app's own UI, which already has the "Needs Review" card
+from the prior PR for at-a-glance visibility).
+
+**Confirmed real, not invented**: introspected Phoenix's own GraphQL schema —
+`CreateSpanAnnotationInput` has a genuine `explanation: String` field (and `score: Float`,
+unused here) sitting alongside the `label` this app was already sending. `AnnotatorKind` has a
+real `LLM` enum value too (previously this app only ever sent `CODE`).
+
+**New: `backend/services/review_diagnosis_service.py`** — `ReviewDiagnosisService`, the same
+`SarvamKeyRotationMixin` shape every other Sarvam-calling service in this app already uses. Given
+the citizen's real question, the routing reason, and detected category/location, asks Sarvam for a
+short (2-3 sentence) explanation via a new prompt file (`prompts/review_diagnosis_prompt.txt`).
+Fail-open like every other optional AI call here: any failure (unconfigured, network error, empty
+output) returns `None`, never raises — the annotation itself still gets created either way, just
+without an `explanation` (falls back to `annotatorKind: CODE`, exactly Round 4's behavior).
+
+**Deliberately NOT called on every request** — only for requests ALREADY flagged `needs_review`
+(a small minority of real traffic; most questions ARE answered), and only from the same background
+thread `enqueue_for_review()` already hands this whole flow off to (see Round 4) — so this real,
+extra Sarvam round trip adds zero citizen-facing latency and zero cost on the large majority of
+requests that already succeed. `graph.py`'s own `enqueue_for_review()` call site now threads
+through `question`/`service_category`/`city`/`state` (all new, optional, keyword-only — every
+existing caller/test not yet passing them keeps working exactly as before, just without an
+explanation attached).
+
+**Testing**: 5 new tests for `ReviewDiagnosisService` itself (success, unconfigured, no-question,
+call failure, empty output — all fail open to `None` except the success case), plus 4 new tests in
+`test_langsmith_tracing.py` covering the explanation being attached/omitted correctly and the
+context threading all the way from the public `enqueue_for_review()` down to the Phoenix mutation.
+Full suite re-run after this change: no regressions (see git history for the exact count at the
+time this landed).

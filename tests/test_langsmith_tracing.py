@@ -504,3 +504,121 @@ def test_phoenix_enqueue_for_review_is_noop_when_no_span_ids_recorded(monkeypatc
     tracing._phoenix_enqueue_for_review(uuid.uuid4(), reason="insufficient_knowledge")
 
     assert fake_client.calls == []
+
+
+# --- Phoenix review-annotation: real LLM-generated explanation (review_diagnosis_service.py) ---
+
+
+def _stub_review_diagnosis_service(monkeypatch, explanation):
+    """Replaces the lazily-constructed ReviewDiagnosisService singleton with a fake whose
+    diagnose() returns a fixed value -- keeps these tests isolated from Sarvam entirely, same
+    "fake the seam, not the network" approach the rest of this file already uses for Phoenix/
+    LangSmith. Also resets tracing.py's own cached singleton so an earlier test's stub can never
+    leak into a later one."""
+    monkeypatch.setattr(tracing, "_review_diagnosis_service", None)
+    fake_service = Mock()
+    fake_service.diagnose.return_value = explanation
+    monkeypatch.setattr(tracing, "_get_review_diagnosis_service", lambda: fake_service)
+    return fake_service
+
+
+def test_phoenix_enqueue_for_review_attaches_real_explanation_when_question_given(monkeypatch):
+    run_id, fake_client = _enable_phoenix_review(
+        monkeypatch,
+        responses=[
+            _PROJECT_RESP,
+            _spans_resp([_MATCHING_EDGE]),
+            {"data": {"createSpanAnnotations": {"spanAnnotations": [{"id": "ann-1"}]}}},
+        ],
+    )
+    fake_service = _stub_review_diagnosis_service(
+        monkeypatch, "This question is about a service not yet covered for this city's knowledge base."
+    )
+
+    tracing._phoenix_enqueue_for_review(
+        run_id, "NONE_OUT_OF_SCOPE", question="Who do I contact for a new electricity connection?",
+        service_category=None, city="Surat", state="Gujarat",
+    )
+
+    fake_service.diagnose.assert_called_once_with(
+        question="Who do I contact for a new electricity connection?",
+        reason="NONE_OUT_OF_SCOPE", service_category=None, city="Surat", state="Gujarat",
+    )
+    mutation_input = fake_client.calls[-1]["variables"]["input"][0]
+    assert mutation_input["explanation"] == "This question is about a service not yet covered for this city's knowledge base."
+    assert mutation_input["annotatorKind"] == "LLM"  # a real explanation was attached -> LLM, not CODE
+
+
+def test_phoenix_enqueue_for_review_omits_explanation_when_diagnosis_returns_none(monkeypatch):
+    """The diagnosis call itself is fail-open (see review_diagnosis_service.py) -- a None result
+    (Sarvam unconfigured, the call failed) must still let the annotation itself go through, just
+    without an explanation field, same annotatorKind as before this feature existed."""
+    run_id, fake_client = _enable_phoenix_review(
+        monkeypatch,
+        responses=[
+            _PROJECT_RESP,
+            _spans_resp([_MATCHING_EDGE]),
+            {"data": {"createSpanAnnotations": {"spanAnnotations": [{"id": "ann-1"}]}}},
+        ],
+    )
+    _stub_review_diagnosis_service(monkeypatch, None)
+
+    tracing._phoenix_enqueue_for_review(
+        run_id, "insufficient_knowledge", question="Some question", service_category=None, city=None, state=None,
+    )
+
+    mutation_input = fake_client.calls[-1]["variables"]["input"][0]
+    assert "explanation" not in mutation_input
+    assert mutation_input["annotatorKind"] == "CODE"
+
+
+def test_phoenix_enqueue_for_review_skips_diagnosis_when_no_question_given(monkeypatch):
+    """No `question` passed at all (e.g. an older caller, or enqueue_for_review()'s own default)
+    -- must not even construct the diagnosis service, matching every existing test in this file
+    that calls _phoenix_enqueue_for_review() with just (run_id, reason)."""
+    run_id, fake_client = _enable_phoenix_review(
+        monkeypatch,
+        responses=[
+            _PROJECT_RESP,
+            _spans_resp([_MATCHING_EDGE]),
+            {"data": {"createSpanAnnotations": {"spanAnnotations": [{"id": "ann-1"}]}}},
+        ],
+    )
+    fake_service = _stub_review_diagnosis_service(monkeypatch, "should never be used")
+
+    tracing._phoenix_enqueue_for_review(run_id, "NONE_OUT_OF_SCOPE")
+
+    fake_service.diagnose.assert_not_called()
+    mutation_input = fake_client.calls[-1]["variables"]["input"][0]
+    assert "explanation" not in mutation_input
+    assert mutation_input["annotatorKind"] == "CODE"
+
+
+def test_enqueue_for_review_threads_diagnosis_context_through_to_phoenix(monkeypatch):
+    """The public enqueue_for_review() -> _enqueue_for_review_sync() -> _phoenix_enqueue_for_review()
+    chain must actually carry question/service_category/city/state all the way through, not just
+    the two originally-supported positional args."""
+    _enable(monkeypatch)  # LangSmith side -- irrelevant here beyond not erroring
+    monkeypatch.setattr(settings, "PHOENIX_TRACING", True)
+    monkeypatch.setattr(tracing, "_phoenix_register", Mock())
+    monkeypatch.setattr(tracing, "_phoenix_provider", None)
+
+    captured = {}
+
+    def fake_phoenix_enqueue(run_id, reason, question=None, service_category=None, city=None, state=None):
+        captured.update(reason=reason, question=question, service_category=service_category, city=city, state=state)
+
+    monkeypatch.setattr(tracing, "_phoenix_enqueue_for_review", fake_phoenix_enqueue)
+
+    tracing.enqueue_for_review(
+        Mock(id="run-1"), "NONE_OUT_OF_SCOPE",
+        question="Who do I contact for a water leak?", service_category="WATER_DRAINAGE", city="Pune", state="Maharashtra",
+    )
+
+    assert captured == {
+        "reason": "NONE_OUT_OF_SCOPE",
+        "question": "Who do I contact for a water leak?",
+        "service_category": "WATER_DRAINAGE",
+        "city": "Pune",
+        "state": "Maharashtra",
+    }
