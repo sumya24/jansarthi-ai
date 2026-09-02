@@ -87,13 +87,6 @@ export default function AdminAiMonitoring() {
   // the newer, correct data. This ref counts each call; a response only gets applied if it's still
   // the most recent one requested by the time it resolves.
   const modelCostsRequestId = useRef(0);
-  // Real questions the knowledge base couldn't answer -- see backend's AiRequestLog.needs_review
-  // docstring. Same independent-load, same request-id race guard as modelCosts above (its own
-  // panel, own failure mode -- a Phoenix outage empties model costs; a needs-review load failure
-  // just leaves this one card silently empty rather than a second error banner).
-  const [needsReview, setNeedsReview] = useState<AiRequestLogEntry[] | null>(null);
-  const [needsReviewLoading, setNeedsReviewLoading] = useState(true);
-  const needsReviewRequestId = useRef(0);
   const [requests, setRequests] = useState<AiRequestLogEntry[]>([]);
   // LIVE-REPORTED GAP: this table always fetched just the newest 20 requests, with no way to see
   // any older ones -- same real, server-side pagination pattern as the main Admin Dashboard's
@@ -160,24 +153,6 @@ export default function AdminAiMonitoring() {
     }
   }
 
-  async function loadNeedsReview() {
-    if (!token) return;
-    const requestId = ++needsReviewRequestId.current;
-    setNeedsReviewLoading(true);
-    try {
-      const result = await api.aiMonitoringNeedsReview(token);
-      if (requestId !== needsReviewRequestId.current) return; // a newer call has since started
-      setNeedsReview(result);
-    } catch {
-      // Best-effort, silent -- same reasoning as loadModelCosts() above: this card degrading to
-      // empty is enough, it shouldn't plant a second error banner next to the main one.
-      if (requestId !== needsReviewRequestId.current) return;
-      setNeedsReview([]);
-    } finally {
-      if (requestId === needsReviewRequestId.current) setNeedsReviewLoading(false);
-    }
-  }
-
   async function loadRequests() {
     if (!token) return;
     const first = isFirstRequestsLoad.current;
@@ -218,7 +193,7 @@ export default function AdminAiMonitoring() {
       // of those live-computed totals) rather than just splicing the row out client-side --
       // matches how deleting a complaint/worker elsewhere in Admin already reloads from the
       // server instead of trusting a local guess at the new state.
-      await Promise.all([loadSummary(), loadRequests(), loadNeedsReview()]);
+      await Promise.all([loadSummary(), loadRequests()]);
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : t(lang, "admin.aiRequestDeleteErrFailed"));
     } finally {
@@ -268,7 +243,6 @@ export default function AdminAiMonitoring() {
   useEffect(() => {
     loadSummary();
     loadModelCosts();
-    loadNeedsReview();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
@@ -367,102 +341,6 @@ export default function AdminAiMonitoring() {
               ))}
             </div>
           </>
-        )}
-
-        {/* "Needs Review": real questions the knowledge base couldn't answer -- see backend's
-            AiRequestLog.needs_review docstring. Amber/pending accent (not red/critical -- this is
-            a real, calm backlog to work through, not an error state) reusing the app's own
-            existing --status-pending token rather than a new color, same "semantic color, not a
-            new accent" principle the rest of this page's own model-cost cards already follow. */}
-        <div className="section-label" style={{ marginBottom: 2, display: "flex", alignItems: "center", gap: 8 }}>
-          <span>{t(lang, "admin.aiNeedsReview")}</span>
-          {!!summary && summary.needs_review_count > 0 && (
-            <span
-              className="mono"
-              style={{
-                fontSize: 11,
-                fontWeight: 700,
-                color: "var(--status-pending)",
-                background: "var(--status-pending-bg)",
-                padding: "1px 8px",
-                borderRadius: 999,
-              }}
-            >
-              {summary.needs_review_count}
-            </span>
-          )}
-        </div>
-        <p style={{ fontSize: 12, color: "var(--ink-3)", margin: "0 0 12px" }}>{t(lang, "admin.aiNeedsReviewSub")}</p>
-
-        {needsReviewLoading && (
-          <div className="surface-card" style={{ padding: 16, marginBottom: 30 }}>
-            {[0, 1, 2].map((i) => (
-              <div key={i} className="skeleton" style={{ width: "100%", height: 16, marginBottom: i < 2 ? 10 : 0 }} />
-            ))}
-          </div>
-        )}
-
-        {!needsReviewLoading && needsReview && needsReview.length === 0 && (
-          <div
-            className="surface-card"
-            style={{ padding: "14px 16px", marginBottom: 30, borderLeft: "3px solid var(--status-resolved)", color: "var(--ink-2)", fontSize: 13 }}
-          >
-            {t(lang, "admin.aiNeedsReviewEmpty")}
-          </div>
-        )}
-
-        {!needsReviewLoading && needsReview && needsReview.length > 0 && (
-          <div className="surface-card" style={{ marginBottom: 30, overflow: "hidden" }}>
-            {needsReview.map((r, i) => {
-              const isOutOfScope = r.routed_to === "NONE_OUT_OF_SCOPE";
-              const reasonLabel = t(lang, isOutOfScope ? "admin.aiNeedsReviewReasonOutOfScope" : "admin.aiNeedsReviewReasonInsufficientKnowledge");
-              return (
-                <div
-                  key={r.id}
-                  className="table-row-hover enter"
-                  style={{
-                    "--stagger": Math.min(i, 6),
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    gap: 12,
-                    padding: "12px 16px",
-                    borderBottom: i < needsReview.length - 1 ? "1px solid var(--line)" : undefined,
-                    borderLeft: "3px solid var(--status-pending)",
-                  } as React.CSSProperties}
-                >
-                  <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
-                    <span
-                      className="mono"
-                      style={{
-                        fontSize: 10.5,
-                        fontWeight: 700,
-                        textTransform: "uppercase",
-                        letterSpacing: "0.03em",
-                        color: "var(--status-pending)",
-                        background: "var(--status-pending-bg)",
-                        padding: "3px 8px",
-                        borderRadius: 999,
-                        flexShrink: 0,
-                      }}
-                    >
-                      {reasonLabel}
-                    </span>
-                    <span style={{ fontSize: 12.5, color: "var(--ink-2)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {new Date(r.created_at).toLocaleString()}
-                      {r.intent ? ` · ${r.intent}` : ""}
-                    </span>
-                  </div>
-                  {/* LIVE-REPORTED: a "View Phoenix trace" link here was redundant with the exact
-                      same link the Recent Requests table below already shows for this same row --
-                      and Phoenix's own trace view is read-only (a bare "needs_review" label, no
-                      reasoning, nothing actionable), so it wasn't earning its place twice. Removed
-                      here; still reachable via the table below for anyone who genuinely wants the
-                      raw technical trace. */}
-                </div>
-              );
-            })}
-          </div>
         )}
 
         <div className="section-label" style={{ marginBottom: 2 }}>
