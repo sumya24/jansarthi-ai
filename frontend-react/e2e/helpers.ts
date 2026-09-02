@@ -81,11 +81,20 @@ export async function fillHomeLocationPicker(page: Page): Promise<void> {
   // this fixes: under load (backend still warming up, or contending with other requests), the
   // fetch can take longer than expected, and a bare selectOption({index: 1}) against a select
   // that still only has its placeholder option just spins until the whole test times out.
-  await expect.poll(() => stateField.locator("option").count()).toBeGreaterThan(1);
+  //
+  // LIVE-REPORTED: the default 5s poll timeout wasn't enough margin -- a real, repeated-run
+  // machine (many e2e runs back to back, real backend + real browser, no mocking of this
+  // endpoint) occasionally took just over 5s to answer this one call, flaking a handful of
+  // otherwise-solid tests. 15s is real, measured headroom (every observed case resolved in
+  // 1-2s even when "slow"), not a guess -- same "widen based on live timing, not intuition"
+  // approach this suite already uses for the AI-pipeline waits elsewhere. This is the ONE
+  // shared place every one of this suite's location-picker polls was widened from, in every
+  // spec file that has its own inline copy of this same wait.
+  await expect.poll(() => stateField.locator("option").count(), { timeout: 15000 }).toBeGreaterThan(1);
   await stateField.selectOption({ index: 1 });
 
   const cityField = page.locator("#signup-home-city");
-  await expect.poll(() => cityField.isEnabled()).toBe(true);
+  await expect.poll(() => cityField.isEnabled(), { timeout: 15000 }).toBe(true);
   if ((await cityField.evaluate((el) => el.tagName)) === "SELECT") {
     await cityField.selectOption({ index: 1 });
   } else {
@@ -93,7 +102,7 @@ export async function fillHomeLocationPicker(page: Page): Promise<void> {
   }
 
   const wardField = page.locator("#signup-home-ward");
-  await expect.poll(() => wardField.isEnabled()).toBe(true);
+  await expect.poll(() => wardField.isEnabled(), { timeout: 15000 }).toBe(true);
   if ((await wardField.evaluate((el) => el.tagName)) === "SELECT") {
     await wardField.selectOption({ index: 1 });
   } else {
@@ -140,12 +149,12 @@ export type PickedLocation = { state: string; city: string; ward: string };
  * location. */
 export async function fillWorkerLocationPicker(page: Page, wardIndex = 1): Promise<PickedLocation> {
   const stateField = page.locator("#worker-location-state");
-  await expect.poll(() => stateField.locator("option").count()).toBeGreaterThan(1);
+  await expect.poll(() => stateField.locator("option").count(), { timeout: 15000 }).toBeGreaterThan(1);
   await stateField.selectOption({ index: 1 });
   const state = await stateField.evaluate((el) => (el as HTMLSelectElement).selectedOptions[0].textContent ?? "");
 
   const cityField = page.locator("#worker-location-city");
-  await expect.poll(() => cityField.isEnabled()).toBe(true);
+  await expect.poll(() => cityField.isEnabled(), { timeout: 15000 }).toBe(true);
   let city: string;
   if ((await cityField.evaluate((el) => el.tagName)) === "SELECT") {
     await cityField.selectOption({ index: 1 });
@@ -156,9 +165,9 @@ export async function fillWorkerLocationPicker(page: Page, wardIndex = 1): Promi
   }
 
   const wardField = page.locator("#worker-location-ward");
-  await expect.poll(() => wardField.isEnabled()).toBe(true);
+  await expect.poll(() => wardField.isEnabled(), { timeout: 15000 }).toBe(true);
   if ((await wardField.evaluate((el) => el.tagName)) === "SELECT") {
-    await expect.poll(() => wardField.locator("option").count()).toBeGreaterThan(wardIndex);
+    await expect.poll(() => wardField.locator("option").count(), { timeout: 15000 }).toBeGreaterThan(wardIndex);
     await wardField.selectOption({ index: wardIndex });
     const ward = await wardField.evaluate((el) => (el as HTMLSelectElement).selectedOptions[0].textContent ?? "");
     return { state, city, ward };

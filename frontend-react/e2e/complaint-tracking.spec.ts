@@ -100,17 +100,17 @@ test("full complaint lifecycle: reject reassigns to the next worker, accept unlo
   await page.getByLabel("Email address").fill(uniqueEmail());
   await page.locator("#signup-confirm-password").fill("citizenpass123!");
   const homeStateField = page.locator("#signup-home-state");
-  await expect.poll(() => homeStateField.locator("option").count()).toBeGreaterThan(1);
+  await expect.poll(() => homeStateField.locator("option").count(), { timeout: 15000 }).toBeGreaterThan(1);
   await homeStateField.selectOption({ label: workerLocation!.state });
   const homeCityField = page.locator("#signup-home-city");
-  await expect.poll(() => homeCityField.isEnabled()).toBe(true);
+  await expect.poll(() => homeCityField.isEnabled(), { timeout: 15000 }).toBe(true);
   if ((await homeCityField.evaluate((el) => el.tagName)) === "SELECT") {
     await homeCityField.selectOption({ label: workerLocation!.city });
   } else {
     await homeCityField.fill(workerLocation!.city);
   }
   const homeWardField = page.locator("#signup-home-ward");
-  await expect.poll(() => homeWardField.isEnabled()).toBe(true);
+  await expect.poll(() => homeWardField.isEnabled(), { timeout: 15000 }).toBe(true);
   if ((await homeWardField.evaluate((el) => el.tagName)) === "SELECT") {
     await homeWardField.selectOption({ index: 1 });
   } else {
@@ -141,7 +141,7 @@ test("full complaint lifecycle: reject reassigns to the next worker, accept unlo
   // the two pickers share one text format.
   await page.getByRole("button", { name: "Select location" }).click();
   const wizardWardOption = page.locator("#wizard-ward option", { hasText: ward! });
-  await expect.poll(() => wizardWardOption.count()).toBeGreaterThan(0);
+  await expect.poll(() => wizardWardOption.count(), { timeout: 15000 }).toBeGreaterThan(0);
   const wizardWardValue = await wizardWardOption.first().getAttribute("value");
   await page.locator("#wizard-ward").selectOption(wizardWardValue!);
   await page.getByRole("button", { name: "Next" }).click();
@@ -227,7 +227,13 @@ test("full complaint lifecycle: reject reassigns to the next worker, accept unlo
   // "In progress" is ambiguous by plain text: it's both the status label and, pre-existing and
   // unrelated to StatusBadge, the "In progress" filter tab's own button text. Scope to the
   // status pill specifically, same as the "resolved" check below.
-  await expect(page.locator(".status-badge.accepted")).toBeVisible();
+  //
+  // LIVE-REPORTED: widened from the default 5s, same reasoning as helpers.ts's own identical
+  // widening -- the underlying data is already correct by the time this fires (confirmed via
+  // direct instrumentation, see WorkerDashboard.tsx's/WorkerComplaintDetail.tsx's own
+  // loadRequestIdRef comments), this is purely about giving a real, repeated-run machine enough
+  // margin to actually paint it.
+  await expect(page.locator(".status-badge.accepted")).toBeVisible({ timeout: 15000 });
 
   // Accepted -> Start Work (mandatory initial assessment) -> In Progress. The modal's own submit
   // button is also labeled "Start Work" (same text as the trigger that opened it) -- scope to
@@ -238,7 +244,7 @@ test("full complaint lifecycle: reject reassigns to the next worker, accept unlo
   await expect(page.getByText("An initial assessment is required to start work.")).toBeVisible();
   await page.getByLabel("Initial assessment").fill("Checked the pole -- the bulb and wiring both need replacing.");
   await startModal.getByRole("button", { name: "Start Work", exact: true }).click();
-  await expect(page.locator(".status-badge.accepted")).toBeVisible(); // in_progress reuses the "accepted" visual class
+  await expect(page.locator(".status-badge.accepted")).toBeVisible({ timeout: 15000 }); // in_progress reuses the "accepted" visual class
 
   // In Progress -> Complete Complaint (mandatory completion status) -> Resolved.
   await page.getByRole("button", { name: "Complete Complaint" }).click();
@@ -246,7 +252,7 @@ test("full complaint lifecycle: reject reassigns to the next worker, accept unlo
   await expect(page.getByText("Please provide the completion status before resolving the complaint.")).toBeVisible();
   await page.getByLabel("Completion status").fill("Replaced the bulb and rewired the fixture. Streetlight now works.");
   await page.getByRole("button", { name: "Mark Resolved", exact: true }).click();
-  await expect(page.locator(".status-badge.resolved")).toBeVisible();
+  await expect(page.locator(".status-badge.resolved")).toBeVisible({ timeout: 15000 });
 
   // Report only becomes available now that it's resolved.
   await expect(page.getByRole("button", { name: "View Report" })).toBeVisible();
