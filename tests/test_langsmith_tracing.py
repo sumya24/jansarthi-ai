@@ -342,3 +342,165 @@ def test_enqueue_for_review_swallows_add_failure(monkeypatch):
     fake_client.add_runs_to_annotation_queue.side_effect = RuntimeError("LangSmith API down")
 
     tracing.enqueue_for_review(Mock(id="run-1"), reason="insufficient_knowledge")  # must not raise
+
+
+# --- Phoenix review-annotation: _phoenix_enqueue_for_review() ---
+#
+# LIVE-REPORTED bug this whole section covers: confirmed directly against production that this
+# function was silently a no-op on every real call, ever -- see its own docstring's "round 2" note.
+# A single immediate spans-query after force_flush() found nothing (Phoenix hadn't finished
+# ingesting the span yet, even though the flush itself succeeded), so span_graphql_id came back
+# None and the function returned before ever reaching the annotation mutation. These tests drive
+# that exact code path with a fake httpx.Client double, since the real bug was entirely in the
+# retry/timing behavior around the GraphQL calls, not in any of the LangSmith-side code above.
+
+
+class _FakePhoenixResponse:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return self._payload
+
+
+class _FakePhoenixClient:
+    """Stands in for `httpx.Client(...)` -- `responses` is consumed one-per-`post()` call, in the
+    exact order `_phoenix_enqueue_for_review()` makes them (project lookup, then one spans query
+    per retry attempt, then the annotation mutation)."""
+
+    def __init__(self, responses):
+        self._responses = list(responses)
+        self.calls: list[dict] = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+    def post(self, url, json):
+        self.calls.append(json)
+        return _FakePhoenixResponse(self._responses.pop(0))
+
+
+_PROJECT_RESP = {"data": {"getProjectByName": {"id": "project-1"}}}
+
+
+def _spans_resp(edges):
+    return {"data": {"node": {"spans": {"edges": edges}}}}
+
+
+_MATCHING_EDGE = {"node": {"id": "span-gql-1", "context": {"traceId": "trace-1", "spanId": "span-1"}}}
+_OTHER_EDGE = {"node": {"id": "span-gql-999", "context": {"traceId": "trace-999", "spanId": "span-999"}}}
+
+
+def _enable_phoenix_review(monkeypatch, responses):
+    """Turns Phoenix on, points a run's trace/span ids at the fixed ids the fake responses above
+    use, no-ops force_flush and time.sleep (retry delays would otherwise slow every test down for
+    no reason), and installs the fake httpx.Client returning `responses` in order."""
+    monkeypatch.setattr(settings, "PHOENIX_TRACING", True)
+    monkeypatch.setattr(tracing, "_phoenix_register", Mock())
+    monkeypatch.setattr(settings, "PHOENIX_COLLECTOR_ENDPOINT", "http://phoenix:6006/v1/traces")
+    monkeypatch.setattr(settings, "PHOENIX_PROJECT_NAME", "jansarthi-ai")
+    monkeypatch.setattr(tracing, "_phoenix_provider", None)  # skip force_flush entirely
+    monkeypatch.setattr(tracing.time, "sleep", lambda seconds: None)
+    fake_client = _FakePhoenixClient(responses)
+    monkeypatch.setattr(tracing.httpx, "Client", Mock(return_value=fake_client))
+
+    run_id = uuid.uuid4()
+    tracing._phoenix_trace_ids[run_id] = "trace-1"
+    tracing._phoenix_span_ids[run_id] = "span-1"
+    return run_id, fake_client
+
+
+def test_phoenix_enqueue_for_review_finds_span_immediately(monkeypatch):
+    run_id, fake_client = _enable_phoenix_review(
+        monkeypatch,
+        responses=[
+            _PROJECT_RESP,
+            _spans_resp([_MATCHING_EDGE]),
+            {"data": {"createSpanAnnotations": {"spanAnnotations": [{"id": "ann-1"}]}}},
+        ],
+    )
+
+    tracing._phoenix_enqueue_for_review(run_id, reason="NONE_OUT_OF_SCOPE")
+
+    assert len(fake_client.calls) == 3  # project lookup, one spans query, the mutation
+    mutation_call = fake_client.calls[-1]
+    assert mutation_call["variables"]["input"][0]["spanId"] == "span-gql-1"
+    assert mutation_call["variables"]["input"][0]["label"] == "NONE_OUT_OF_SCOPE"
+
+
+def test_phoenix_enqueue_for_review_retries_until_span_is_queryable(monkeypatch, caplog):
+    """The exact production gap: the span isn't in Phoenix's result set on the first (or second)
+    query, only the third -- must retry and still succeed, not give up after one miss."""
+    run_id, fake_client = _enable_phoenix_review(
+        monkeypatch,
+        responses=[
+            _PROJECT_RESP,
+            _spans_resp([_OTHER_EDGE]),  # attempt 1: not there yet
+            _spans_resp([_OTHER_EDGE]),  # attempt 2: still not there
+            _spans_resp([_OTHER_EDGE, _MATCHING_EDGE]),  # attempt 3: now it is
+            {"data": {"createSpanAnnotations": {"spanAnnotations": [{"id": "ann-1"}]}}},
+        ],
+    )
+
+    tracing._phoenix_enqueue_for_review(run_id, reason="insufficient_knowledge")
+
+    assert len(fake_client.calls) == 5  # project lookup + 3 spans queries + the mutation
+    assert fake_client.calls[-1]["variables"]["input"][0]["spanId"] == "span-gql-1"
+
+
+def test_phoenix_enqueue_for_review_gives_up_after_max_attempts_without_raising(monkeypatch, caplog):
+    """The span is NEVER found (e.g. Phoenix genuinely down, or this trace was somehow pruned) --
+    must stop after `_REVIEW_SPAN_LOOKUP_ATTEMPTS`, never hang or raise, and never call the
+    mutation with a bogus id."""
+    responses = [_PROJECT_RESP] + [_spans_resp([_OTHER_EDGE])] * tracing._REVIEW_SPAN_LOOKUP_ATTEMPTS
+    run_id, fake_client = _enable_phoenix_review(monkeypatch, responses=responses)
+
+    with caplog.at_level("INFO"):
+        tracing._phoenix_enqueue_for_review(run_id, reason="insufficient_knowledge")  # must not raise
+
+    # project lookup + exactly _REVIEW_SPAN_LOOKUP_ATTEMPTS spans queries, no mutation call
+    assert len(fake_client.calls) == 1 + tracing._REVIEW_SPAN_LOOKUP_ATTEMPTS
+    assert "not queryable after" in caplog.text
+
+
+def test_phoenix_enqueue_for_review_logs_graphql_errors_in_mutation_response(monkeypatch, caplog):
+    """GraphQL reports a failed mutation as HTTP 200 with an "errors" array, not an HTTP error --
+    this must be surfaced in the logs (not silently swallowed as success) without raising."""
+    run_id, fake_client = _enable_phoenix_review(
+        monkeypatch,
+        responses=[
+            _PROJECT_RESP,
+            _spans_resp([_MATCHING_EDGE]),
+            {"data": None, "errors": [{"message": "spanId not found"}]},
+        ],
+    )
+
+    with caplog.at_level("WARNING"):
+        tracing._phoenix_enqueue_for_review(run_id, reason="insufficient_knowledge")  # must not raise
+
+    assert "GraphQL errors" in caplog.text
+
+
+def test_phoenix_enqueue_for_review_is_noop_when_run_id_none(monkeypatch):
+    monkeypatch.setattr(settings, "PHOENIX_TRACING", True)
+    monkeypatch.setattr(tracing, "_phoenix_register", Mock())
+    tracing._phoenix_enqueue_for_review(None, reason="insufficient_knowledge")  # must not raise
+
+
+def test_phoenix_enqueue_for_review_is_noop_when_no_span_ids_recorded(monkeypatch):
+    """A run with no Phoenix span at all (e.g. Phoenix was disabled when the request started) --
+    must no-op instead of making any GraphQL calls."""
+    monkeypatch.setattr(settings, "PHOENIX_TRACING", True)
+    monkeypatch.setattr(tracing, "_phoenix_register", Mock())
+    fake_client = _FakePhoenixClient(responses=[])
+    monkeypatch.setattr(tracing.httpx, "Client", Mock(return_value=fake_client))
+
+    tracing._phoenix_enqueue_for_review(uuid.uuid4(), reason="insufficient_knowledge")
+
+    assert fake_client.calls == []
