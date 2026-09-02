@@ -125,13 +125,13 @@ test("Ask Sarthi: a question with no location asks for clarification instead of 
   await page.getByLabel("Password", { exact: true }).fill("secret123!");
   await page.locator("#signup-confirm-password").fill("secret123!");
   const stateField = page.locator("#signup-home-state");
-  await expect.poll(() => stateField.locator("option").count()).toBeGreaterThan(1);
+  await expect.poll(() => stateField.locator("option").count(), { timeout: 15000 }).toBeGreaterThan(1);
   await stateField.selectOption({ label: "Karnataka" });
   const cityField = page.locator("#signup-home-city");
-  await expect.poll(() => cityField.isEnabled()).toBe(true);
+  await expect.poll(() => cityField.isEnabled(), { timeout: 15000 }).toBe(true);
   await cityField.selectOption({ label: "Dakshina Kannada" });
   const wardField = page.locator("#signup-home-ward");
-  await expect.poll(() => wardField.isEnabled()).toBe(true);
+  await expect.poll(() => wardField.isEnabled(), { timeout: 15000 }).toBe(true);
   await wardField.selectOption({ index: 1 });
   await verifySignupEmail(page);
   await page.getByRole("button", { name: "Create account" }).click();

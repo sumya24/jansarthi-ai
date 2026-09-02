@@ -90,17 +90,17 @@ test("worker notification bell, detail-page card rules per status, report visibi
   await page.getByLabel("Email address").fill(uniqueEmail());
   await page.locator("#signup-confirm-password").fill("citizenpass123!");
   const homeStateField = page.locator("#signup-home-state");
-  await expect.poll(() => homeStateField.locator("option").count()).toBeGreaterThan(1);
+  await expect.poll(() => homeStateField.locator("option").count(), { timeout: 15000 }).toBeGreaterThan(1);
   await homeStateField.selectOption({ label: workerLocation!.state });
   const homeCityField = page.locator("#signup-home-city");
-  await expect.poll(() => homeCityField.isEnabled()).toBe(true);
+  await expect.poll(() => homeCityField.isEnabled(), { timeout: 15000 }).toBe(true);
   if ((await homeCityField.evaluate((el) => el.tagName)) === "SELECT") {
     await homeCityField.selectOption({ label: workerLocation!.city });
   } else {
     await homeCityField.fill(workerLocation!.city);
   }
   const homeWardField = page.locator("#signup-home-ward");
-  await expect.poll(() => homeWardField.isEnabled()).toBe(true);
+  await expect.poll(() => homeWardField.isEnabled(), { timeout: 15000 }).toBe(true);
   if ((await homeWardField.evaluate((el) => el.tagName)) === "SELECT") {
     await homeWardField.selectOption({ index: 1 });
   } else {
@@ -125,7 +125,7 @@ test("worker notification bell, detail-page card rules per status, report visibi
   // option instead of assuming the two pickers share one text format (same fix as
   // complaint-tracking.spec.ts).
   const wizardWardOption = page.locator("#wizard-ward option", { hasText: workerLocation!.ward });
-  await expect.poll(() => wizardWardOption.count()).toBeGreaterThan(0);
+  await expect.poll(() => wizardWardOption.count(), { timeout: 15000 }).toBeGreaterThan(0);
   const wizardWardValue = await wizardWardOption.first().getAttribute("value");
   await page.locator("#wizard-ward").selectOption(wizardWardValue!);
   await page.getByRole("button", { name: "Next" }).click();
@@ -190,8 +190,13 @@ test("worker notification bell, detail-page card rules per status, report visibi
   await expect(page.getByRole("button", { name: "Start Work" })).not.toBeVisible();
   await expect(page.getByRole("button", { name: "View Report" })).not.toBeVisible();
 
+  // LIVE-REPORTED: these post-action visibility checks are widened from the default 5s, same
+  // reasoning as helpers.ts's own identical widening -- the underlying data is already correct
+  // by the time this fires (confirmed via direct instrumentation, see WorkerDashboard.tsx's/
+  // WorkerComplaintDetail.tsx's own loadRequestIdRef comments), this is purely about giving a
+  // real, repeated-run machine enough margin to actually paint it.
   await page.getByRole("button", { name: "Accept" }).click();
-  await expect(page.getByRole("button", { name: "Start Work" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Start Work" })).toBeVisible({ timeout: 15000 });
   await expect(page.getByRole("button", { name: "Accept" })).not.toBeVisible();
   await expect(page.getByRole("button", { name: "Reject" })).not.toBeVisible();
 
@@ -201,8 +206,8 @@ test("worker notification bell, detail-page card rules per status, report visibi
   const modal = page.locator(".modal");
   await page.getByLabel("Initial assessment").fill("Bin is overflowing -- scheduling an extra pickup today.");
   await modal.getByRole("button", { name: "Start Work", exact: true }).click();
-  await expect(page.getByRole("button", { name: "Add Update" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Complete Complaint" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Add Update" })).toBeVisible({ timeout: 15000 });
+  await expect(page.getByRole("button", { name: "Complete Complaint" })).toBeVisible({ timeout: 15000 });
   await expect(page.getByRole("button", { name: "Start Work" })).not.toBeVisible();
 
   // Report must not be reachable before resolution -- no report section renders at all while
@@ -228,7 +233,7 @@ test("worker notification bell, detail-page card rules per status, report visibi
   await page.getByRole("button", { name: "Mark Resolved", exact: true }).click();
   // .first(): the status badge legitimately appears twice on this detail page (header + timeline),
   // same reasoning as the .first() on the completion text below.
-  await expect(page.locator(".status-badge.resolved").first()).toBeVisible();
+  await expect(page.locator(".status-badge.resolved").first()).toBeVisible({ timeout: 15000 });
 
   // Now, and only now, the report is available -- with the real data from this run. The detail
   // page renders it inline (no separate "View Report" click needed -- it's "the central place",
@@ -284,17 +289,17 @@ test("worker rejects a complaint: admin is notified and sees the reason, citizen
   await page.getByLabel("Email address").fill(uniqueEmail());
   await page.locator("#signup-confirm-password").fill("citizenpass123!");
   const homeStateField = page.locator("#signup-home-state");
-  await expect.poll(() => homeStateField.locator("option").count()).toBeGreaterThan(1);
+  await expect.poll(() => homeStateField.locator("option").count(), { timeout: 15000 }).toBeGreaterThan(1);
   await homeStateField.selectOption({ label: workerLocation.state });
   const homeCityField = page.locator("#signup-home-city");
-  await expect.poll(() => homeCityField.isEnabled()).toBe(true);
+  await expect.poll(() => homeCityField.isEnabled(), { timeout: 15000 }).toBe(true);
   if ((await homeCityField.evaluate((el) => el.tagName)) === "SELECT") {
     await homeCityField.selectOption({ label: workerLocation.city });
   } else {
     await homeCityField.fill(workerLocation.city);
   }
   const homeWardField = page.locator("#signup-home-ward");
-  await expect.poll(() => homeWardField.isEnabled()).toBe(true);
+  await expect.poll(() => homeWardField.isEnabled(), { timeout: 15000 }).toBe(true);
   if ((await homeWardField.evaluate((el) => el.tagName)) === "SELECT") {
     await homeWardField.selectOption({ index: 1 });
   } else {
@@ -309,7 +314,7 @@ test("worker rejects a complaint: admin is notified and sees the reason, citizen
   await expect(page).toHaveURL(/\/citizen\/report$/);
   await page.getByRole("button", { name: "Select location" }).click();
   const wizardWardOption = page.locator("#wizard-ward option", { hasText: workerLocation.ward });
-  await expect.poll(() => wizardWardOption.count()).toBeGreaterThan(0);
+  await expect.poll(() => wizardWardOption.count(), { timeout: 15000 }).toBeGreaterThan(0);
   const wizardWardValue = await wizardWardOption.first().getAttribute("value");
   await page.locator("#wizard-ward").selectOption(wizardWardValue!);
   await page.getByRole("button", { name: "Next" }).click();

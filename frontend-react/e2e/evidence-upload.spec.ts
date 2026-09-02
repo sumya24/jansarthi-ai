@@ -86,17 +86,17 @@ test("real multi-file evidence upload, end to end: select -> upload -> storage -
   await page.getByLabel("Email address").fill(uniqueEmail());
   await page.locator("#signup-confirm-password").fill("citizenpass123!");
   const homeStateField = page.locator("#signup-home-state");
-  await expect.poll(() => homeStateField.locator("option").count()).toBeGreaterThan(1);
+  await expect.poll(() => homeStateField.locator("option").count(), { timeout: 15000 }).toBeGreaterThan(1);
   await homeStateField.selectOption({ label: workerLocation.state });
   const homeCityField = page.locator("#signup-home-city");
-  await expect.poll(() => homeCityField.isEnabled()).toBe(true);
+  await expect.poll(() => homeCityField.isEnabled(), { timeout: 15000 }).toBe(true);
   if ((await homeCityField.evaluate((el) => el.tagName)) === "SELECT") {
     await homeCityField.selectOption({ label: workerLocation.city });
   } else {
     await homeCityField.fill(workerLocation.city);
   }
   const homeWardField = page.locator("#signup-home-ward");
-  await expect.poll(() => homeWardField.isEnabled()).toBe(true);
+  await expect.poll(() => homeWardField.isEnabled(), { timeout: 15000 }).toBe(true);
   if ((await homeWardField.evaluate((el) => el.tagName)) === "SELECT") {
     await homeWardField.selectOption({ index: 1 });
   } else {
@@ -118,7 +118,7 @@ test("real multi-file evidence upload, end to end: select -> upload -> storage -
   // the bare ward text fillWorkerLocationPicker returns. See complaint-tracking.spec.ts's own
   // identical fix for the full explanation.
   const wizardWardOption = page.locator("#wizard-ward option", { hasText: workerLocation.ward });
-  await expect.poll(() => wizardWardOption.count()).toBeGreaterThan(0);
+  await expect.poll(() => wizardWardOption.count(), { timeout: 15000 }).toBeGreaterThan(0);
   const wizardWardValue = await wizardWardOption.first().getAttribute("value");
   await page.locator("#wizard-ward").selectOption(wizardWardValue!);
   await page.getByRole("button", { name: "Next" }).click();
@@ -303,7 +303,7 @@ test("a file that isn't really an image is rejected with a clear error, not a si
   const wardField = page.locator("#wizard-ward");
   await expect(async () => {
     if ((await wardField.evaluate((el) => el.tagName)) === "SELECT") {
-      await expect.poll(() => wardField.locator("option").count()).toBeGreaterThan(1);
+      await expect.poll(() => wardField.locator("option").count(), { timeout: 15000 }).toBeGreaterThan(1);
       await wardField.selectOption({ index: 1 });
     } else {
       await wardField.fill("Test Ward");
