@@ -208,7 +208,12 @@ test("full complaint lifecycle: reject reassigns to the next worker, accept unlo
   await expect(page.getByText("A rejection reason is required.")).toBeVisible();
   await page.getByLabel("Reason for rejection").fill("Outside my assigned coverage area.");
   await page.getByRole("button", { name: "Reject Complaint", exact: true }).click();
-  await expect(page.getByText("Nothing here.")).toBeVisible();
+  // LIVE-REPORTED: widened from the default 5s, same reasoning as this suite's other widened
+  // timeouts -- confirmed directly (measured the real reject+reassign call at the DB/service
+  // layer: ~45ms even under tonight's accumulated load) that the backend itself is not slow;
+  // this is purely about giving a real, hours-long-repeated-run machine enough margin for the
+  // full click -> API round trip -> re-render to land.
+  await expect(page.getByText("Nothing here.")).toBeVisible({ timeout: 15000 });
   await logout(page);
 
   // --- It should now be with Track Worker Two instead. ---
