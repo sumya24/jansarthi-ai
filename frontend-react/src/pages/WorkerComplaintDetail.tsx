@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import TopBar from "../components/TopBar";
 import StatusBadge from "../components/StatusBadge";
@@ -51,16 +51,34 @@ export default function WorkerComplaintDetail() {
   const [reportError, setReportError] = useState<string | null>(null);
   const [reportLoading, setReportLoading] = useState(false);
 
+  // LIVE-REPORTED, same real race as WorkerDashboard.tsx's own identical fix (see that file's
+  // comment for the full story): this page calls load() from FIVE separate places -- the initial
+  // mount effect, accept(), and every one of the four action modals' own onClose/onDone callbacks
+  // (Reject/StartWork/ProgressUpdate/CompleteComplaint) -- with nothing stopping an earlier-issued
+  // call (e.g. the initial mount's own load(), still reflecting the complaint's PRE-action status)
+  // from resolving AFTER a later one (reflecting the just-actioned status), silently overwriting
+  // fresh data with stale data purely by network/scheduling luck. Confirmed live: after "Start
+  // Work", the "Add Update" button (which only renders once complaint.status === "in_progress")
+  // sometimes never appeared, and after "Mark Resolved" the resolved status badge sometimes never
+  // appeared either -- exactly this stale-overwrite pattern. loadRequestIdRef tags each load()
+  // call with a strictly-increasing id and only ever commits state from the most recently issued
+  // call, so a late-arriving stale response is silently discarded instead of winning the race.
+  const loadRequestIdRef = useRef(0);
+
   async function load() {
     if (!token || !Number.isFinite(complaintId)) return;
+    const requestId = ++loadRequestIdRef.current;
     setLoading(true);
     setLoadError(null);
     try {
-      setComplaint(await api.getComplaint(token, complaintId, lang));
+      const data = await api.getComplaint(token, complaintId, lang);
+      if (requestId !== loadRequestIdRef.current) return; // superseded by a newer load() -- discard
+      setComplaint(data);
     } catch (err) {
+      if (requestId !== loadRequestIdRef.current) return; // superseded -- discard this error too
       setLoadError(err instanceof ApiError ? err.message : t(lang, "worker.detail.loadFailed"));
     } finally {
-      setLoading(false);
+      if (requestId === loadRequestIdRef.current) setLoading(false);
     }
   }
 
