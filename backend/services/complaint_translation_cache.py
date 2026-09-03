@@ -8,6 +8,7 @@ pair only ever costs the translation calls once, not on every view.
 
 import logging
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from backend.models import Complaint, ComplaintTranslation
@@ -70,7 +71,38 @@ def get_display_text_and_summary(
                 translated_summary=summary,
             )
         )
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        # LIVE-REPORTED (production): two near-simultaneous requests for the SAME
+        # (complaint_id, language_code) both saw a cache miss (this function has no locking
+        # between the read above and this write), both paid for a real translation call, and
+        # both tried to insert a row -- the second one violates ComplaintTranslation's own
+        # uq_complaint_translation_lang unique constraint and previously crashed the request with
+        # an unhandled IntegrityError. Recover instead: the OTHER request's commit already won and
+        # is sitting in the table, so roll back this one's failed write and just return that.
+        # Doesn't eliminate the rare double translation-call itself (the race window is the time
+        # between the read and this commit, not something closeable without a per-key lock) -- only
+        # the crash, which is the actual user-facing failure.
+        db.rollback()
+        winner = (
+            db.query(ComplaintTranslation)
+            .filter(
+                ComplaintTranslation.complaint_id == complaint.id,
+                ComplaintTranslation.language_code == language_code,
+            )
+            .first()
+        )
+        if winner is not None and winner.translated_summary is not None:
+            logger.info(
+                "Lost a concurrent-translation race (complaint_id=%s, language=%s); using the "
+                "other request's cached result instead of the one just translated here.",
+                complaint.id, language_code,
+            )
+            return winner.translated_text, winner.translated_summary
+        # Unreachable in practice (the constraint only fires when a row already exists with
+        # translated_summary set -- see the cache-miss check above), but fall back to this
+        # request's own freshly-translated result rather than raising if it ever is.
     logger.info(
         "Cached translation (complaint_id=%s, language=%s)", complaint.id, language_code
     )
