@@ -182,6 +182,7 @@ export default function AdminDashboard() {
       const [workersResult, complaintsResult] = await Promise.all([
         api.listWorkers(token),
         api.listComplaints(token, {
+          lang,
           status: complaintFilter === "all" ? undefined : complaintFilter,
           search: debouncedComplaintSearch || undefined,
           dateFrom: dateFrom || undefined,
@@ -248,7 +249,7 @@ export default function AdminDashboard() {
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token, complaintFilter, debouncedComplaintSearch, dateFrom, dateTo, complaintPage]);
+  }, [token, lang, complaintFilter, debouncedComplaintSearch, dateFrom, dateTo, complaintPage]);
 
   useEffect(() => {
     loadStats();

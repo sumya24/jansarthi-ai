@@ -93,6 +93,7 @@ export default function AdminWorkerDetail() {
       const [workers, workerComplaints] = await Promise.all([
         api.listWorkers(token),
         api.listComplaints(token, {
+          lang,
           workerId,
           status: filter === "all" ? undefined : filter,
           search: debouncedSearch || undefined,
@@ -139,7 +140,7 @@ export default function AdminWorkerDetail() {
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token, workerId, filter, debouncedSearch, dateFrom, dateTo, page]);
+  }, [token, lang, workerId, filter, debouncedSearch, dateFrom, dateTo, page]);
 
   useEffect(() => {
     loadStats();
