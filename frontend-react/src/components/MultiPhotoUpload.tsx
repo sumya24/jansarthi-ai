@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useUiLang } from "../lib/uiLang";
 import { t } from "../lib/i18n";
 
@@ -31,6 +31,63 @@ export default function MultiPhotoUpload({
   const [dragOver, setDragOver] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // LIVE-REPORTED: attaching a photo, then reopening/closing the native file picker (or any
+  // other re-render this component sees) could make an already-attached photo's preview flash
+  // to a blank or seemingly wrong image. Root cause was two compounding bugs:
+  //
+  // 1. `URL.createObjectURL(photo)` was called directly inside JSX -- on EVERY render, not just
+  //    when a photo was actually added, so the same File got a brand-new, different blob: URL
+  //    each time, and none of the old ones were ever released (a real memory leak, worse the
+  //    more a citizen interacts with the page before submitting).
+  // 2. Each thumbnail's React key was `${photo.name}-${i}` -- real photos from a phone camera
+  //    very commonly share the exact same filename (IMG_2026...jpg), so removing one photo could
+  //    shift a later same-named photo into a key React had already used for a DIFFERENT File at
+  //    that index; React then reused the old <img> DOM node instead of remounting it, so it kept
+  //    showing the previous (now wrong, or since-revoked/blank) image.
+  //
+  // Fixed by giving each File a stable identity (assigned once, on first sight, via a WeakMap --
+  // File objects are unique instances even when two happen to share a filename) and deriving one
+  // object URL per File exactly once, releasing it only when that File actually leaves `photos`.
+  const fileIds = useRef(new WeakMap<File, string>()).current;
+  function idFor(file: File): string {
+    let id = fileIds.get(file);
+    if (!id) {
+      id = typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${file.name}-${file.size}-${file.lastModified}-${Math.random()}`;
+      fileIds.set(file, id);
+    }
+    return id;
+  }
+
+  const urlCache = useRef(new Map<string, string>()).current;
+  const previews = useMemo(() => {
+    const currentIds = new Set(photos.map(idFor));
+    for (const [id, url] of urlCache) {
+      if (!currentIds.has(id)) {
+        URL.revokeObjectURL(url);
+        urlCache.delete(id);
+      }
+    }
+    return photos.map((photo) => {
+      const id = idFor(photo);
+      let url = urlCache.get(id);
+      if (!url) {
+        url = URL.createObjectURL(photo);
+        urlCache.set(id, url);
+      }
+      return { id, url, photo };
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [photos]);
+
+  // Release every remaining cached URL when the whole component unmounts (e.g. navigating away
+  // mid-draft) -- the per-photo revocation above only covers photos removed while still mounted.
+  useEffect(() => {
+    return () => {
+      for (const url of urlCache.values()) URL.revokeObjectURL(url);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   function addFiles(incoming: FileList | File[]) {
     setError(null);
     const candidates = Array.from(incoming);
@@ -61,11 +118,11 @@ export default function MultiPhotoUpload({
     <div>
       {error && <div className="field-error" style={{ marginBottom: 8 }}>{error}</div>}
 
-      {photos.length > 0 && (
+      {previews.length > 0 && (
         <div className="multi-photo-grid">
-          {photos.map((photo, i) => (
-            <div key={`${photo.name}-${i}`} className="multi-photo-thumb">
-              <img src={URL.createObjectURL(photo)} alt={t(lang, "photo.previewAlt")} />
+          {previews.map(({ id, url }, i) => (
+            <div key={id} className="multi-photo-thumb">
+              <img src={url} alt={t(lang, "photo.previewAlt")} />
               <button
                 type="button"
                 className="multi-photo-remove"
