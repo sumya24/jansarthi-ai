@@ -32,8 +32,9 @@ async function login(page: import("@playwright/test").Page, phone: string, passw
 
 test("full complaint lifecycle: reject reassigns to the next worker, accept unlocks phone, resolve, feedback", async ({ page }) => {
   // Well over the 30s default: 2 worker creations, a real AI complaint submission (~20s),
-  // and several logins/navigations all in one flow.
-  test.setTimeout(90000);
+  // several logins/navigations, and (at the very end) a real on-read translation call for the
+  // language-switch regression check below, all in one flow.
+  test.setTimeout(120000);
 
   const workerAPhone = uniquePhone();
   const workerBPhone = uniquePhone();
@@ -298,4 +299,33 @@ test("full complaint lifecycle: reject reassigns to the next worker, accept unlo
   // "Thanks for your feedback!" now renders twice at once: the toast (exact) and the on-page
   // feedback card, which appends the star rating and comment after the same phrase.
   await expect(page.getByText("Thanks for your feedback!", { exact: true })).toBeVisible();
+
+  // --- LIVE-REPORTED BUG: switching the UI's own display language while looking at a resolved
+  // complaint's dedicated detail page left the on-page Resolution Report showing whatever
+  // language was active when the page first loaded. CitizenComplaintDetail.tsx's report-fetch
+  // effect never passed the live UI language to getComplaintReport() (unlike that same page's
+  // own complaint-detail fetch, which already did) and didn't list it as an effect dependency
+  // either -- so a language switch never even issued a new report request, let alone a
+  // translated one. Reproduced directly against the exact complaint just resolved above, on the
+  // real dedicated detail page (not the list view's own Summary modal, which already passed lang
+  // correctly and isn't affected). Asserted at the network level -- a real report re-fetch
+  // carrying the new language -- rather than on translated text, since real Sarvam translation
+  // timing/output isn't itself the thing this regression is about. ---
+  const card = page.locator(".surface-card", { hasText: "Track Worker Two" });
+  await card.locator(".mono").first().click();
+  await expect(page).toHaveURL(/\/citizen\/complaints\/\d+$/);
+  await expect(page.locator(".report-view")).toBeVisible({ timeout: 15000 });
+
+  const reportRefetchWithNewLang = page.waitForRequest(
+    (req) => /\/complaints\/\d+\/report(\?|$)/.test(req.url()) && req.url().includes("lang=hi"),
+    { timeout: 15000 }
+  );
+  await page.getByLabel("Settings").click();
+  await page.getByRole("button", { name: "हिन्दी" }).click();
+  await page.getByRole("button", { name: "Save changes" }).click();
+  await expect(page.locator(".modal")).toHaveCount(0, { timeout: 8000 });
+
+  // Must fire a brand-new GET .../report?lang=hi request -- with the bug, no request happens at
+  // all here (the effect never re-runs), so this would time out instead.
+  await reportRefetchWithNewLang;
 });

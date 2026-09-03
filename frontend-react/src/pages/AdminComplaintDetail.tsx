@@ -68,12 +68,12 @@ export default function AdminComplaintDetail() {
     setReportLoading(true);
     setReportError(null);
     api
-      .getComplaintReport(token, complaintId)
+      .getComplaintReport(token, complaintId, lang)
       .then(setReport)
       .catch((err) => setReportError(err instanceof ApiError ? err.message : t(lang, "worker.detail.reportLoadFailed")))
       .finally(() => setReportLoading(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [complaint?.status, token, complaintId]);
+  }, [complaint?.status, token, complaintId, lang]);
 
   if (loading) {
     return (
