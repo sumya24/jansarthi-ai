@@ -43,7 +43,7 @@ from backend.services.evidence_service import (
     save_photo as _save_photo,
     validate_and_write as _validate_and_write,
 )
-from backend.services.email_service import EmailServiceError, send_complaint_status_email
+from backend.services.email_service import EmailServiceError, _email_strings, send_complaint_status_email
 from backend.services.location_resolver import LocationResolver
 from backend.services.sarvam_client import AIServiceError
 from backend.services.translation_service import TranslationService
@@ -159,13 +159,46 @@ def _paginate(query, page: int | None, page_size: int | None):
     return query.offset((safe_page - 1) * safe_size).limit(safe_size), total
 
 
-def _citizen_notification_message(complaint: Complaint) -> str:
+def _citizen_preferred_language(db: Session, complaint: Complaint) -> str:
+    """Same lookup _send_lifecycle_email_best_effort already does for the lifecycle email of the
+    same event -- kept as its own small query here rather than threading the User row through
+    every call site, matching this file's existing style of small, self-contained lookups.
+    Defaults to "en" if the citizen row is somehow missing (should not happen in practice) or has
+    no preferred_language set, same fallback _email_strings itself uses."""
+    citizen = db.query(User).filter(User.id == int(complaint.citizen_id)).first()
+    return (citizen.preferred_language if citizen else None) or "en"
+
+
+def _citizen_notification_title(event: Literal["accepted", "started", "resolved"], lang: str) -> str:
+    """LIVE-REPORTED: a citizen who picked Marathi (or any non-English UI language) still saw
+    every in-app notification title in plain English ("Your complaint was accepted", etc.) --
+    confirmed directly against the real dashboard. These titles were hardcoded English literals at
+    each create_notification() call site below, never routed through this citizen's own
+    preferred_language at all, unlike the lifecycle EMAIL for the exact same event (see
+    _send_lifecycle_email_best_effort below), which already renders correctly in all 6 languages.
+
+    Reuses email_service.py's own per-language heading table (_email_strings/_EMAIL_STRINGS)
+    rather than a second, independently-invented translation set -- so the in-app notification and
+    the email a citizen gets for the same event say the exact same thing in the exact same
+    language, matching this codebase's existing "one wording, not a second one that could drift"
+    principle (see that module's own docstring on _EMAIL_STRINGS). Falls back to English for any
+    language code without copy, same as _email_strings itself."""
+    return _email_strings(lang)[f"heading.{event}"]
+
+
+def _citizen_notification_message(complaint: Complaint, lang: str) -> str:
     """Same snippet+ward format as assignment_service.py's worker notifications, built from the
-    complaint's own summary/translated text -- real data already on hand, nothing inferred."""
+    complaint's own summary/translated text -- real data already on hand, nothing inferred.
+
+    `lang`: same LIVE-REPORTED gap as _citizen_notification_title above -- the "Ward:" label was
+    hardcoded English regardless of the citizen's own preferred_language. Reuses
+    email_service.py's own "label.location" string for the same reason: one wording, shared with
+    the email this same event also sends, not a second translation."""
+    location_label = _email_strings(lang)["label.location"]
     snippet = (complaint.summary or complaint.translated_text or "").strip()
     if len(snippet) > _CITIZEN_NOTIFICATION_SNIPPET_LENGTH:
         snippet = snippet[:_CITIZEN_NOTIFICATION_SNIPPET_LENGTH].rstrip() + "…"
-    ward_label = f"Ward: {complaint.ward}" if complaint.ward else "Ward: unknown"
+    ward_label = f"{location_label}: {complaint.ward}" if complaint.ward else f"{location_label}: —"
     return f"{snippet} — {ward_label}" if snippet else ward_label
 
 
@@ -1143,12 +1176,13 @@ def accept_complaint(
         db, complaint, from_status=previous_status, to_status="accepted",
         actor_role="worker", actor_user_id=worker.id,
     )
+    citizen_lang = _citizen_preferred_language(db, complaint)
     notification_repository.create_notification(
         db,
         recipient_id=int(complaint.citizen_id),
         type="COMPLAINT_ACCEPTED",
-        title="Your complaint was accepted",
-        message=_citizen_notification_message(complaint),
+        title=_citizen_notification_title("accepted", citizen_lang),
+        message=_citizen_notification_message(complaint, citizen_lang),
         complaint_id=complaint.id,
     )
     _send_lifecycle_email_best_effort(db, complaint, "accepted")
@@ -1188,13 +1222,17 @@ def reject_complaint(
 
     # Broadcast to every admin -- same per-admin loop pattern as ai_request_log_repository.py's
     # _try_fire (AI_ALERT), except this one DOES carry a complaint_id (AI_ALERT never does, since
-    # it isn't about any single complaint).
+    # it isn't about any single complaint). Same LIVE-REPORTED gap as the citizen/worker
+    # notifications above -- the title was hardcoded English; each admin may have their own
+    # preferred_language, so this is localized PER admin inside the loop, not once outside it.
+    # The message body's worker name is a proper noun (never translated); the ward-number string
+    # itself also isn't prose -- left as-is, unlike the citizen-facing "Ward:"/"स्थान:" label.
     for admin in db.query(User).filter(User.role == "admin").all():
         notification_repository.create_notification(
             db,
             recipient_id=admin.id,
             type="COMPLAINT_REJECTED",
-            title="A worker rejected a complaint",
+            title=_email_strings(admin.preferred_language or "en")["heading.workerRejected"],
             message=f"{worker.full_name} rejected a complaint in {complaint.ward}.",
             complaint_id=complaint.id,
         )
@@ -1250,12 +1288,13 @@ def start_work(
         db, complaint, from_status=previous_status, to_status=_STATUS_IN_PROGRESS,
         actor_role="worker", actor_user_id=worker.id, note="Work started.",
     )
+    citizen_lang = _citizen_preferred_language(db, complaint)
     notification_repository.create_notification(
         db,
         recipient_id=int(complaint.citizen_id),
         type="COMPLAINT_STARTED",
-        title="Work has started on your complaint",
-        message=_citizen_notification_message(complaint),
+        title=_citizen_notification_title("started", citizen_lang),
+        message=_citizen_notification_message(complaint, citizen_lang),
         complaint_id=complaint.id,
     )
     _send_lifecycle_email_best_effort(db, complaint, "started", worker_note=assessment)
@@ -1339,12 +1378,13 @@ def resolve_complaint(
         db, complaint, from_status=previous_status, to_status=_STATUS_RESOLVED,
         actor_role="worker", actor_user_id=worker.id, note="Marked resolved.",
     )
+    citizen_lang = _citizen_preferred_language(db, complaint)
     notification_repository.create_notification(
         db,
         recipient_id=int(complaint.citizen_id),
         type="COMPLAINT_RESOLVED",
-        title="Your complaint has been resolved",
-        message=_citizen_notification_message(complaint),
+        title=_citizen_notification_title("resolved", citizen_lang),
+        message=_citizen_notification_message(complaint, citizen_lang),
         complaint_id=complaint.id,
     )
     _send_lifecycle_email_best_effort(db, complaint, "resolved", worker_note=cleaned_status)

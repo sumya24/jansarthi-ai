@@ -32,9 +32,9 @@ def _seed_requests(db_session, rows: list[dict]) -> None:
     db.close()
 
 
-def _make_admin(db_session, phone: str, full_name: str = "Test Admin") -> User:
+def _make_admin(db_session, phone: str, full_name: str = "Test Admin", preferred_language: str = "en") -> User:
     db = db_session()
-    admin = User(full_name=full_name, phone=phone, password_hash=hash_password("adminpass"), role="admin", preferred_language="en")
+    admin = User(full_name=full_name, phone=phone, password_hash=hash_password("adminpass"), role="admin", preferred_language=preferred_language)
     db.add(admin)
     db.commit()
     db.refresh(admin)
@@ -67,8 +67,12 @@ def test_no_alert_when_traffic_is_healthy(db_session):
 
 
 def test_high_error_rate_fires_and_notifies_every_admin(db_session):
-    admin1 = _make_admin(db_session, "9999999991", "Admin One")
-    admin2 = _make_admin(db_session, "9999999992", "Admin Two")
+    """Also covers a LIVE-REPORTED gap: this title was hardcoded English regardless of each
+    admin's own preferred_language -- admin1 (English) and admin2 (Marathi) must each get the
+    title in their OWN language, confirming this is localized per-recipient inside the broadcast
+    loop (see ai_request_log_repository.py's _try_fire())."""
+    admin1 = _make_admin(db_session, "9999999991", "Admin One", preferred_language="en")
+    admin2 = _make_admin(db_session, "9999999992", "Admin Two", preferred_language="mr")
     # 20 requests, 5 failing = 25% error rate, above the 20% threshold.
     rows = [{**_BASE_ROW, "success": (i >= 5)} for i in range(20)]
     _seed_requests(db_session, rows)
@@ -84,6 +88,9 @@ def test_high_error_rate_fires_and_notifies_every_admin(db_session):
     assert all(n.type == "AI_ALERT" for n in notifications)
     assert all(n.complaint_id is None for n in notifications)
     assert "25%" in notifications[0].message
+    titles_by_recipient = {n.recipient_id: n.title for n in notifications}
+    assert titles_by_recipient[admin1.id] == "High AI error rate"
+    assert titles_by_recipient[admin2.id] == "एआयचा उच्च त्रुटी दर"
 
 
 def test_high_latency_fires(db_session):

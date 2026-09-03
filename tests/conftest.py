@@ -213,14 +213,14 @@ def make_admin(db_session):
     from backend.models import User
     from backend.services.auth_service import hash_password
 
-    def _make(phone: str = "9999999999", password: str = "adminpass", full_name: str = "Test Admin", super_admin: bool = False):
+    def _make(phone: str = "9999999999", password: str = "adminpass", full_name: str = "Test Admin", super_admin: bool = False, preferred_language: str = "en"):
         db = db_session()
         user = User(
             full_name=full_name,
             phone=phone,
             password_hash=hash_password(password),
             role="admin",
-            preferred_language="en",
+            preferred_language=preferred_language,
             super_admin=super_admin,
         )
         db.add(user)

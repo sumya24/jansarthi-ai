@@ -17,11 +17,11 @@ from tests.image_fixtures import VALID_JPEG_BYTES
 from backend.services.auth_service import hash_password
 
 
-def _make_worker_row(db_session, phone: str, ward: str, full_name: str = "Worker") -> int:
+def _make_worker_row(db_session, phone: str, ward: str, full_name: str = "Worker", preferred_language: str = "en") -> int:
     db = db_session()
     worker = User(
         full_name=full_name, phone=phone, password_hash=hash_password("secret123!"),
-        role="worker", preferred_language="en", ward=ward,
+        role="worker", preferred_language=preferred_language, ward=ward,
     )
     db.add(worker)
     db.commit()
@@ -404,11 +404,18 @@ def test_notification_created_on_new_assignment(client, make_citizen, make_worke
     assert body["notifications"][0]["type"] == "NEW_ASSIGNMENT"
     assert body["notifications"][0]["complaint_id"] == response.json()["id"]
     assert body["notifications"][0]["read_at"] is None
+    # LIVE-REPORTED: this title was hardcoded English regardless of the worker's own
+    # preferred_language -- confirmed directly against a real Marathi citizen dashboard. This
+    # worker (make_worker()'s own default) has preferred_language="hi" -- the title must render
+    # in Hindi, not the bare English literal that used to ship unconditionally.
+    assert body["notifications"][0]["title"] == "आपको एक नई शिकायत सौंपी गई है"
 
 
 def test_notification_created_on_reassignment(client, make_worker, db_session):
     token1, worker1 = make_worker(phone="9000000002", ward="Ward 14")
-    worker2_id = _make_worker_row(db_session, phone="9000000098", ward="Ward 14", full_name="Second Worker")
+    # Marathi specifically -- the exact language the LIVE-REPORTED gap this covers was found in
+    # (a real citizen's dashboard) -- see this test's own title assertion below.
+    worker2_id = _make_worker_row(db_session, phone="9000000098", ward="Ward 14", full_name="Second Worker", preferred_language="mr")
     complaint_id = _make_complaint(db_session, worker_id=worker1["id"], status="assigned")
 
     client.post(
@@ -422,7 +429,10 @@ def test_notification_created_on_reassignment(client, make_worker, db_session):
     notifs = client.get("/notifications", headers={"Authorization": f"Bearer {token2}"})
     assert notifs.status_code == 200
     body = notifs.json()
-    assert any(n["type"] == "REASSIGNED" and n["complaint_id"] == complaint_id for n in body["notifications"])
+    reassignment = next(n for n in body["notifications"] if n["type"] == "REASSIGNED" and n["complaint_id"] == complaint_id)
+    # LIVE-REPORTED gap this covers -- see test_notification_created_on_new_assignment's own
+    # comment. worker2 has preferred_language="mr" (Marathi) above; must render in Marathi.
+    assert reassignment["title"] == "एक तक्रार तुम्हाला पुन्हा नियुक्त करण्यात आली आहे"
 
 
 def test_notification_mark_read_is_idempotent(client, make_worker, db_session):
