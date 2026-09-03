@@ -187,16 +187,28 @@ def _citizen_notification_title(event: Literal["accepted", "started", "resolved"
     return _email_strings(lang)[f"heading.{event}"]
 
 
-def _citizen_notification_message(complaint: Complaint, lang: str) -> str:
+def _citizen_notification_message(db: Session, complaint: Complaint, lang: str) -> str:
     """Same snippet+ward format as assignment_service.py's worker notifications, built from the
     complaint's own summary/translated text -- real data already on hand, nothing inferred.
 
-    `lang`: same LIVE-REPORTED gap as _citizen_notification_title above -- the "Ward:" label was
-    hardcoded English regardless of the citizen's own preferred_language. Reuses
-    email_service.py's own "label.location" string for the same reason: one wording, shared with
-    the email this same event also sends, not a second translation."""
+    `lang`: same LIVE-REPORTED gap as _citizen_notification_title above for the "Ward:" label,
+    fixed the same way -- but the label was only half of it. The snippet itself was `complaint.
+    summary`/`complaint.translated_text` verbatim, both of which are always canonical English
+    (see ComplaintAgent) -- so a citizen using any non-English UI still saw a correctly-translated
+    "Location:" label glued onto a raw English complaint snippet in the exact same notification.
+    Confirmed directly: the notification TITLE was already fixed and rendered in Marathi, but the
+    home-screen notification's own message text stayed English regardless. Reuses the same
+    get_display_text_and_summary cache every other view of this complaint's text already reads
+    through (GET /complaints, the report, etc.) -- falls back to the raw English snippet on a
+    translation failure, same as every other caller of that function."""
     location_label = _email_strings(lang)["label.location"]
     snippet = (complaint.summary or complaint.translated_text or "").strip()
+    if lang and lang != "en" and snippet:
+        try:
+            display_text, display_summary = get_display_text_and_summary(db, complaint, lang, _translation_service)
+            snippet = (display_summary or display_text or snippet).strip()
+        except AIServiceError as exc:
+            logger.error("On-read translation failed for complaint %s notification: %s", complaint.id, exc)
     if len(snippet) > _CITIZEN_NOTIFICATION_SNIPPET_LENGTH:
         snippet = snippet[:_CITIZEN_NOTIFICATION_SNIPPET_LENGTH].rstrip() + "…"
     ward_label = f"{location_label}: {complaint.ward}" if complaint.ward else f"{location_label}: —"
@@ -1204,7 +1216,7 @@ def accept_complaint(
         recipient_id=int(complaint.citizen_id),
         type="COMPLAINT_ACCEPTED",
         title=_citizen_notification_title("accepted", citizen_lang),
-        message=_citizen_notification_message(complaint, citizen_lang),
+        message=_citizen_notification_message(db, complaint, citizen_lang),
         complaint_id=complaint.id,
     )
     _send_lifecycle_email_best_effort(db, complaint, "accepted")
@@ -1316,7 +1328,7 @@ def start_work(
         recipient_id=int(complaint.citizen_id),
         type="COMPLAINT_STARTED",
         title=_citizen_notification_title("started", citizen_lang),
-        message=_citizen_notification_message(complaint, citizen_lang),
+        message=_citizen_notification_message(db, complaint, citizen_lang),
         complaint_id=complaint.id,
     )
     _send_lifecycle_email_best_effort(db, complaint, "started", worker_note=assessment)
@@ -1406,7 +1418,7 @@ def resolve_complaint(
         recipient_id=int(complaint.citizen_id),
         type="COMPLAINT_RESOLVED",
         title=_citizen_notification_title("resolved", citizen_lang),
-        message=_citizen_notification_message(complaint, citizen_lang),
+        message=_citizen_notification_message(db, complaint, citizen_lang),
         complaint_id=complaint.id,
     )
     _send_lifecycle_email_best_effort(db, complaint, "resolved", worker_note=cleaned_status)
