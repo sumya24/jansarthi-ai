@@ -39,6 +39,7 @@ from sqlalchemy.orm import Session
 
 from backend.models import Complaint, ComplaintRejection, User
 from backend.repositories import complaint_workflow_repository, notification_repository
+from backend.services.email_service import _email_strings
 
 logger = logging.getLogger(__name__)
 
@@ -129,15 +130,22 @@ def assign_next_worker(db: Session, complaint: Complaint) -> None:
         note="Reassigned after rejection." if is_reassignment else "Assigned to worker.",
     )
 
+    # LIVE-REPORTED: this title/ward-label was hardcoded English regardless of the worker's own
+    # preferred_language -- the exact same gap found and fixed for citizen notifications (see
+    # routes/complaints.py's _citizen_notification_title/_citizen_notification_message). Reuses
+    # the same shared, centralized per-language table (email_service.py's _email_strings) rather
+    # than a second, independently-invented one.
+    strings = _email_strings(next_worker.preferred_language or "en")
     snippet = (complaint.summary or complaint.translated_text or "").strip()
     if len(snippet) > _SUMMARY_SNIPPET_LENGTH:
         snippet = snippet[:_SUMMARY_SNIPPET_LENGTH].rstrip() + "…"
-    ward_label = f"Ward: {complaint.ward}" if complaint.ward else "Ward: unknown"
+    location_label = strings["label.location"]
+    ward_label = f"{location_label}: {complaint.ward}" if complaint.ward else f"{location_label}: —"
     notification_repository.create_notification(
         db,
         recipient_id=next_worker.id,
         type="REASSIGNED" if is_reassignment else "NEW_ASSIGNMENT",
-        title="Complaint reassigned to you" if is_reassignment else "New complaint assigned",
+        title=strings["heading.reassigned"] if is_reassignment else strings["heading.assigned"],
         message=f"{snippet} — {ward_label}" if snippet else ward_label,
         complaint_id=complaint.id,
     )

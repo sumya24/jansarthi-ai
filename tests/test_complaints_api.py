@@ -729,10 +729,10 @@ def test_list_complaints_falls_back_to_english_on_translation_failure(client, mo
     assert body["display_summary"] == "Garbage not collected."
 
 
-def _make_assigned_complaint(db_session, worker_id: int, ward: str = "Ward 14", status: str = "assigned") -> int:
+def _make_assigned_complaint(db_session, worker_id: int, ward: str = "Ward 14", status: str = "assigned", citizen_id: str = "1") -> int:
     db = db_session()
     complaint = Complaint(
-        citizen_id="1", original_text="a", original_language="en",
+        citizen_id=citizen_id, original_text="a", original_language="en",
         translated_text="Garbage issue", summary="Garbage not collected.",
         ward=ward, status=status, assigned_worker_id=worker_id,
     )
@@ -754,6 +754,41 @@ def test_accept_complaint_unlocks_phone_number(client, make_worker, db_session):
     body = response.json()
     assert body["status"] == "accepted"
     assert body["assigned_worker_phone"] == worker["phone"]
+
+
+def test_accept_start_resolve_notifications_render_in_citizens_own_language(client, make_citizen, make_worker, db_session):
+    """LIVE-REPORTED, confirmed directly against a real Marathi citizen dashboard: every in-app
+    notification title for accept/start/resolve was hardcoded English regardless of the citizen's
+    own preferred_language, even though the lifecycle EMAIL for the exact same event already
+    rendered correctly in all 6 languages -- these titles now reuse that same per-language table
+    (see routes/complaints.py's _citizen_notification_title)."""
+    citizen_token, citizen = make_citizen(phone="9000000001", preferred_language="mr")
+    worker_token, worker = make_worker(phone="9000000002", ward="Ward 14")
+    complaint_id = _make_assigned_complaint(db_session, worker["id"], citizen_id=str(citizen["id"]))
+
+    client.post(f"/complaints/{complaint_id}/accept", headers={"Authorization": f"Bearer {worker_token}"})
+    notifs = client.get("/notifications", headers={"Authorization": f"Bearer {citizen_token}"}).json()
+    accepted = next(n for n in notifs["notifications"] if n["type"] == "COMPLAINT_ACCEPTED")
+    assert accepted["title"] == "एका कर्मचाऱ्याने तुमची तक्रार स्वीकारली आहे"
+
+    client.post(
+        f"/complaints/{complaint_id}/start", headers={"Authorization": f"Bearer {worker_token}"},
+        data={"assessment": "Checked the site."},
+    )
+    notifs = client.get("/notifications", headers={"Authorization": f"Bearer {citizen_token}"}).json()
+    started = next(n for n in notifs["notifications"] if n["type"] == "COMPLAINT_STARTED")
+    assert started["title"] == "तुमच्या तक्रारीवर काम सुरू झाले आहे"
+
+    client.post(
+        f"/complaints/{complaint_id}/resolve", headers={"Authorization": f"Bearer {worker_token}"},
+        data={"completion_status": "Fixed."},
+    )
+    notifs = client.get("/notifications", headers={"Authorization": f"Bearer {citizen_token}"}).json()
+    resolved = next(n for n in notifs["notifications"] if n["type"] == "COMPLAINT_RESOLVED")
+    assert resolved["title"] == "तुमची तक्रार सोडवण्यात आली आहे"
+    # The "Ward: ..." label inside the message body had the exact same gap -- see
+    # _citizen_notification_message's own docstring.
+    assert "स्थान: Ward 14" in resolved["message"]
 
 
 def test_accept_complaint_not_assigned_to_you_returns_403(client, make_worker, db_session):
@@ -866,9 +901,14 @@ def test_reject_complaint_reason_is_stored(client, make_worker, db_session):
 def test_reject_complaint_notifies_every_admin(client, make_worker, make_admin, db_session):
     """Every admin gets a COMPLAINT_REJECTED notification naming the complaint -- citizens are
     deliberately never notified (see reject_complaint()'s own docstring); this only checks the
-    admin side."""
-    admin1 = make_admin(phone="9999999991", full_name="Admin One")
-    admin2 = make_admin(phone="9999999992", full_name="Admin Two")
+    admin side.
+
+    Also covers a LIVE-REPORTED gap: this title was hardcoded English regardless of EACH admin's
+    own preferred_language -- admin1 (English) and admin2 (Marathi) here must each get the title
+    in their OWN language, confirming this is localized per-recipient inside the broadcast loop,
+    not once for the whole broadcast (see routes/complaints.py's reject_complaint())."""
+    admin1 = make_admin(phone="9999999991", full_name="Admin One", preferred_language="en")
+    admin2 = make_admin(phone="9999999992", full_name="Admin Two", preferred_language="mr")
     token, worker = make_worker(phone="9000000002", ward="Ward 14")
     complaint_id = _make_assigned_complaint(db_session, worker["id"])
 
@@ -880,6 +920,7 @@ def test_reject_complaint_notifies_every_admin(client, make_worker, make_admin, 
 
     db = db_session()
     from backend.models import Notification
+    expected_titles = {admin1.id: "A worker rejected a complaint", admin2.id: "एका कर्मचाऱ्याने तक्रार नाकारली"}
     for admin in (admin1, admin2):
         notif = (
             db.query(Notification)
@@ -888,6 +929,7 @@ def test_reject_complaint_notifies_every_admin(client, make_worker, make_admin, 
         )
         assert notif is not None, f"admin {admin.id} got no COMPLAINT_REJECTED notification"
         assert notif.complaint_id == complaint_id
+        assert notif.title == expected_titles[admin.id]
     db.close()
 
 

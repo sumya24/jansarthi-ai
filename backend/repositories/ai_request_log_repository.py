@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from backend.models import AiAlertState, AiRequestLog, User
 from backend.repositories import notification_repository
+from backend.services.email_service import _email_strings
 
 logger = logging.getLogger(__name__)
 
@@ -27,9 +28,12 @@ _ERROR_RATE_ALERT_THRESHOLD = 0.2  # 20% of the window failing
 _LATENCY_ALERT_THRESHOLD_MS = 10_000.0  # 10s average over the window
 _ALERT_COOLDOWN_MINUTES = 30  # don't re-notify for the same alert type more often than this
 
-_ALERT_TITLES = {
-    "HIGH_ERROR_RATE": "High AI error rate",
-    "HIGH_LATENCY": "High AI latency",
+# Maps each alert type to its heading key in email_service.py's shared per-language table (see
+# that module's own _EMAIL_STRINGS) -- LIVE-REPORTED: this was a fixed English dict, ignoring
+# each admin's own preferred_language, until this fix (see _try_fire()'s own per-admin lookup).
+_ALERT_TITLE_KEYS = {
+    "HIGH_ERROR_RATE": "heading.highErrorRate",
+    "HIGH_LATENCY": "heading.highLatency",
 }
 
 
@@ -336,11 +340,16 @@ def _try_fire(db: Session, alert_type: str, message: str) -> bool:
 
     admins = db.query(User).filter(User.role == "admin").all()
     for admin in admins:
+        # Localized per admin (not once for the whole broadcast) -- each admin may have their
+        # own preferred_language. `message` itself (the real error-rate/latency figure) stays
+        # English -- see this function's own module docstring section on why that dynamic,
+        # number-bearing sentence is out of scope for this pass, same call already made for
+        # routes/complaints.py's COMPLAINT_REJECTED admin broadcast.
         notification_repository.create_notification(
             db,
             recipient_id=admin.id,
             type="AI_ALERT",
-            title=_ALERT_TITLES[alert_type],
+            title=_email_strings(admin.preferred_language or "en")[_ALERT_TITLE_KEYS[alert_type]],
             message=message,
             complaint_id=None,
         )
