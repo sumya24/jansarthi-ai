@@ -11,6 +11,7 @@ import FeedbackForm from "../components/FeedbackForm";
 import { useAuth } from "../lib/auth";
 import { useUiLang } from "../lib/uiLang";
 import { t } from "../lib/i18n";
+import { statusLabel } from "../lib/statusLabel";
 import { api, ApiError, type ComplaintDetail, type ComplaintReport } from "../lib/api";
 
 const STATUS_LABEL_KEY = {
@@ -191,7 +192,7 @@ export default function CitizenComplaintDetail() {
           {c.status_history.length === 0 && <p style={{ color: "var(--ink-2)", fontSize: 13 }}>{t(lang, "updates.none")}</p>}
           {c.status_history.map((h, i) => (
             <div key={i} className="status-history-entry">
-              <span>{h.from_status ? `${h.from_status} → ${h.to_status}` : h.to_status}</span>
+              <span>{h.from_status ? `${statusLabel(lang, h.from_status)} → ${statusLabel(lang, h.to_status)}` : statusLabel(lang, h.to_status)}</span>
               <span className="mono" style={{ color: "var(--ink-3)" }}>{new Date(h.created_at).toLocaleString()}</span>
             </div>
           ))}

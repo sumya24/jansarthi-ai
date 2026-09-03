@@ -1,30 +1,12 @@
 import { useUiLang } from "../lib/uiLang";
-import { t, type LangCode } from "../lib/i18n";
+import { t } from "../lib/i18n";
+import { statusLabel } from "../lib/statusLabel";
 import type { ComplaintReport, ComplaintStatus } from "../lib/api";
 import EvidenceGallery, { type GalleryItem } from "./EvidenceGallery";
 import StatusBadge from "./StatusBadge";
 
 function toItems(filePaths: string[]): GalleryItem[] {
   return filePaths.map((filePath) => ({ filePath }));
-}
-
-// The timeline's from_status/to_status only ever take these 6 fixed backend status codes (see
-// record_status_change()'s call sites, plus complaint_agent.py which sets the brand-new-complaint
-// status "open" before the assignment system's first pass ever runs) -- a closed set that's
-// already fully translated for every supported language in i18n.ts (the same labels
-// ComplaintTracker's progress bar uses), so this is a plain lookup, not a translation-service call.
-const _STATUS_LABEL_KEYS: Record<string, string> = {
-  open: "citizen.trackSubmitted",
-  pending: "citizen.statusPending",
-  assigned: "citizen.statusAssigned",
-  accepted: "citizen.statusAccepted",
-  in_progress: "citizen.trackInProgress",
-  resolved: "citizen.statusResolved",
-};
-
-function statusLabel(lang: LangCode, status: string): string {
-  const key = _STATUS_LABEL_KEYS[status];
-  return key ? t(lang, key) : status;
 }
 
 /** Renders the same real, deterministically-assembled report data the PDF download contains
