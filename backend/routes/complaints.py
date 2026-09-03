@@ -33,6 +33,7 @@ from backend.services.assignment_service import assign_next_worker
 from backend.services.complaint_agent import ComplaintAgent
 from backend.services.complaint_category_service import ComplaintCategoryService
 from backend.services.complaint_translation_cache import get_display_text_and_summary
+from backend.services.complaint_update_translation_cache import get_display_text as get_display_update_text
 # Relocated to backend/services/evidence_service.py (pure move, no behavior change) so the Ask
 # Sarthi image-to-complaint flow (orchestration/nodes.py) can reuse this exact validate/write/
 # DB-row logic without a service module importing a route module. Aliased back to their original
@@ -513,13 +514,31 @@ def _get_visible_complaint(db: Session, complaint_id: int, user: User) -> Compla
     return complaint
 
 
-def _to_update_response(db: Session, update) -> ComplaintUpdateResponse:
+def _to_update_response(db: Session, update, display_language: str | None = None) -> ComplaintUpdateResponse:
+    """LIVE PRODUCT FINDING: this update's `text` used to always be the raw, as-typed worker
+    text, even when the surrounding complaint (via _to_response's own get_display_text_and_summary
+    call) and the resolution report (via complaint_report_service.py's own
+    get_display_update_text call) both already translate their own text into the viewer's own
+    language on read. A Marathi-speaking citizen saw the on-page Updates timeline render a
+    worker's note in raw English while the exact same note, on the same complaint's Resolution
+    Report, rendered correctly in Marathi -- the cache/translation mechanism
+    (ComplaintUpdateTranslation, complaint_update_translation_cache.py) already existed and
+    already worked; this response just never called it. Same optional-translation-with-fallback
+    shape as _to_response/get_display_text_and_summary: a None/"en" display_language (or a
+    translation failure) returns the stored text exactly as before."""
     worker = db.query(User).filter(User.id == update.worker_id).first()
     evidence = [_to_evidence_response(e) for e in evidence_repository.get_evidence_for_update(db, update.id)]
+    display_text = update.text
+    if display_language and display_language != "en":
+        try:
+            display_text = get_display_update_text(db, update, display_language, _translation_service)
+        except AIServiceError as exc:
+            logger.error("On-read translation failed for complaint update %s: %s", update.id, exc)
+            display_text = update.text
     return ComplaintUpdateResponse(
         id=update.id,
         update_type=update.update_type,
-        text=update.text,
+        text=display_text,
         photo_path=update.photo_path,
         worker_name=worker.full_name if worker else None,
         created_at=update.created_at.isoformat(),
@@ -565,7 +584,10 @@ def _to_detail_response(
     db: Session, complaint: Complaint, display_language: str | None, viewer_role: str
 ) -> ComplaintDetailResponse:
     base = _to_response(db, complaint, display_language)
-    updates = [_to_update_response(db, u) for u in complaint_workflow_repository.get_complaint_updates(db, complaint.id)]
+    updates = [
+        _to_update_response(db, u, display_language=display_language)
+        for u in complaint_workflow_repository.get_complaint_updates(db, complaint.id)
+    ]
     history = [_to_history_response(h) for h in complaint_workflow_repository.get_status_history(db, complaint.id)]
     evidence = [_to_evidence_response(e) for e in evidence_repository.get_evidence_for_complaint(db, complaint.id)]
     # Admin-only, enforced here (not just hidden in the frontend) -- see RejectionResponse's own

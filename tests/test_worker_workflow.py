@@ -12,9 +12,13 @@ Complements tests/test_complaints_api.py (accept/reject/basic resolve-gating alr
 there) -- this file is the rest of this phase's spec §33 test list.
 """
 
+from unittest.mock import Mock
+
+import backend.routes.complaints as complaints_module
 from backend.models import Complaint, ComplaintStatusHistory, ComplaintUpdate, Notification, User
 from tests.image_fixtures import VALID_JPEG_BYTES
 from backend.services.auth_service import hash_password
+from backend.services.sarvam_client import AIServiceError
 
 
 def _make_worker_row(db_session, phone: str, ward: str, full_name: str = "Worker", preferred_language: str = "en") -> int:
@@ -201,6 +205,68 @@ def test_citizen_sees_progress_update_in_complaint_detail(client, make_citizen, 
     detail = client.get(f"/complaints/{complaint_id}", headers={"Authorization": f"Bearer {citizen_token}"})
     updates = detail.json()["updates"]
     assert any(u["update_type"] == "PROGRESS_UPDATE" and u["text"] == "Progress update visible to citizen." for u in updates)
+
+
+def test_citizen_sees_progress_update_translated_on_read(client, make_citizen, make_worker, db_session, monkeypatch):
+    """LIVE BUG: the on-page Updates timeline used to always return a worker update's raw,
+    as-typed text, even for a citizen viewing in a non-English language -- while the exact same
+    complaint's Resolution Report already translated that same update's text correctly (via
+    complaint_report_service.py's own get_display_update_text call). GET /complaints/{id}?lang=mr
+    must now translate the update text the same way, on read, exactly like it already does for
+    the complaint's own summary/description."""
+    citizen_token, citizen = make_citizen(phone="9000000001")
+    worker_token, worker = make_worker(phone="9000000002", ward="Ward 14")
+    complaint_id = _make_complaint(db_session, citizen_id=str(citizen["id"]), worker_id=worker["id"], status="in_progress")
+
+    update = client.post(
+        f"/complaints/{complaint_id}/updates", headers={"Authorization": f"Bearer {worker_token}"},
+        data={"text": "i checked and i solved"},
+    )
+    assert update.status_code == 200
+
+    fake_translation_service = Mock()
+    # `to_language` is also hit by this same GET call for the complaint's OWN text (via
+    # get_display_text_and_summary) -- given a real return value so that cache write doesn't
+    # choke on an un-storable Mock; the assertion below only cares about the update's text.
+    fake_translation_service.to_language.return_value = "स्ट्रीटलाइट तुटला."
+    fake_translation_service.translate_auto_detecting_source.return_value = "मी तपासले आणि मी ते सोडवले."
+    monkeypatch.setattr(complaints_module, "_translation_service", fake_translation_service)
+
+    detail = client.get(
+        f"/complaints/{complaint_id}", params={"lang": "mr"}, headers={"Authorization": f"Bearer {citizen_token}"},
+    )
+    assert detail.status_code == 200
+    updates = detail.json()["updates"]
+    progress = next(u for u in updates if u["update_type"] == "PROGRESS_UPDATE")
+    assert progress["text"] == "मी तपासले आणि मी ते सोडवले."
+    fake_translation_service.translate_auto_detecting_source.assert_called_once_with("i checked and i solved", "mr")
+
+
+def test_citizen_sees_progress_update_in_english_when_translation_fails(client, make_citizen, make_worker, db_session, monkeypatch):
+    """If on-read translation of a worker update fails, the API must still return the raw,
+    as-typed text rather than a broken/empty update -- same fallback contract as
+    get_display_text_and_summary already guarantees for the complaint's own text."""
+    citizen_token, citizen = make_citizen(phone="9000000001")
+    worker_token, worker = make_worker(phone="9000000002", ward="Ward 14")
+    complaint_id = _make_complaint(db_session, citizen_id=str(citizen["id"]), worker_id=worker["id"], status="in_progress")
+
+    update = client.post(
+        f"/complaints/{complaint_id}/updates", headers={"Authorization": f"Bearer {worker_token}"},
+        data={"text": "Parts ordered."},
+    )
+    assert update.status_code == 200
+
+    fake_translation_service = Mock()
+    fake_translation_service.to_language.return_value = "स्ट्रीटलाइट तुटला."
+    fake_translation_service.translate_auto_detecting_source.side_effect = AIServiceError("translation down")
+    monkeypatch.setattr(complaints_module, "_translation_service", fake_translation_service)
+
+    detail = client.get(
+        f"/complaints/{complaint_id}", params={"lang": "mr"}, headers={"Authorization": f"Bearer {citizen_token}"},
+    )
+    assert detail.status_code == 200
+    progress = next(u for u in detail.json()["updates"] if u["update_type"] == "PROGRESS_UPDATE")
+    assert progress["text"] == "Parts ordered."
 
 
 def test_worker_cannot_add_update_to_another_workers_complaint(client, make_worker, db_session):
