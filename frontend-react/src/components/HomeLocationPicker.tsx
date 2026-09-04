@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api, type LocationOption } from "../lib/api";
 import { t, type LangCode } from "../lib/i18n";
-import { localizeStateName } from "../lib/locationNames";
+import { localizeCityName, localizeStateName } from "../lib/locationNames";
 
 export interface HomeLocationValue {
   ward: string;
@@ -271,7 +271,7 @@ export default function HomeLocationPicker({
           <select id="signup-home-city" value={cityId} onChange={(e) => handleCityChange(e.target.value)}>
             <option value="">{t(lang, "signup.homeLocation.cityPlaceholder")}</option>
             {cities.map((c) => (
-              <option key={c.id} value={c.id}>{c.name}</option>
+              <option key={c.id} value={c.id}>{localizeCityName(c.name, lang)}</option>
             ))}
           </select>
         ) : (
