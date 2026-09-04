@@ -8,7 +8,7 @@ import ComplaintReportView from "../components/ComplaintReportView";
 import DownloadReportButton from "../components/DownloadReportButton";
 import { useAuth } from "../lib/auth";
 import { useUiLang } from "../lib/uiLang";
-import { t } from "../lib/i18n";
+import { formatDateTime, t } from "../lib/i18n";
 import { statusLabel } from "../lib/statusLabel";
 import { api, ApiError, type ComplaintDetail, type ComplaintReport } from "../lib/api";
 
@@ -160,7 +160,7 @@ export default function AdminComplaintDetail() {
           {c.status_history.map((h, i) => (
             <div key={i} className="status-history-entry">
               <span>{h.from_status ? `${statusLabel(lang, h.from_status)} → ${statusLabel(lang, h.to_status)}` : statusLabel(lang, h.to_status)}</span>
-              <span className="mono" style={{ color: "var(--ink-3)" }}>{new Date(h.created_at).toLocaleString()}</span>
+              <span className="mono" style={{ color: "var(--ink-3)" }}>{formatDateTime(h.created_at, lang)}</span>
             </div>
           ))}
         </div>
@@ -173,7 +173,7 @@ export default function AdminComplaintDetail() {
                 <div>
                   <strong>{t(lang, "admin.rejectedBy")}:</strong> {r.worker_name}
                   <span className="mono" style={{ color: "var(--ink-3)", marginLeft: 10 }}>
-                    {new Date(r.created_at).toLocaleString()}
+                    {formatDateTime(r.created_at, lang)}
                   </span>
                 </div>
                 {r.reason && (

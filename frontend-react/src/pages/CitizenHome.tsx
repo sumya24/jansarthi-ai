@@ -5,16 +5,17 @@ import { useAuth } from "../lib/auth";
 import { useUiLang } from "../lib/uiLang";
 import { t } from "../lib/i18n";
 import { api, type AppNotification } from "../lib/api";
+import { formatDate, formatDateTime, type LangCode } from "../lib/i18n";
 import "../styles/dashboard.css";
 
 type MonthBucket = { label: string; count: number; year: number; month: number };
 
-function lastSixMonthBuckets(): MonthBucket[] {
+function lastSixMonthBuckets(lang: LangCode): MonthBucket[] {
   const now = new Date();
   const buckets: MonthBucket[] = [];
   for (let i = 5; i >= 0; i--) {
     const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-    buckets.push({ label: d.toLocaleDateString(undefined, { month: "short" }), count: 0, year: d.getFullYear(), month: d.getMonth() });
+    buckets.push({ label: formatDate(d, lang, { month: "short" }), count: 0, year: d.getFullYear(), month: d.getMonth() });
   }
   return buckets;
 }
@@ -38,7 +39,7 @@ export default function CitizenHome() {
   const [totalCount, setTotalCount] = useState(0);
   const [resolvedCount, setResolvedCount] = useState(0);
   const [wardTotal, setWardTotal] = useState<number | null>(null);
-  const [monthly, setMonthly] = useState<MonthBucket[]>(lastSixMonthBuckets());
+  const [monthly, setMonthly] = useState<MonthBucket[]>(() => lastSixMonthBuckets(lang));
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
 
   const ward = user?.ward ?? null;
@@ -73,7 +74,7 @@ export default function CitizenHome() {
     api
       .listComplaints(token, { page: 1, pageSize: 100 })
       .then((data) => {
-        const buckets = lastSixMonthBuckets();
+        const buckets = lastSixMonthBuckets(lang);
         for (const c of data.items) {
           const d = new Date(c.created_at);
           const bucket = buckets.find((b) => b.year === d.getFullYear() && b.month === d.getMonth());
@@ -82,7 +83,7 @@ export default function CitizenHome() {
         setMonthly(buckets);
       })
       .catch(() => {});
-  }, [token]);
+  }, [token, lang]);
 
   useEffect(() => {
     if (!token) return;
@@ -107,7 +108,7 @@ export default function CitizenHome() {
   const unread = notifications.filter((n) => !n.read_at).slice(0, 4);
   const recent = notifications.slice(0, 5);
   const maxMonthly = Math.max(1, ...monthly.map((b) => b.count));
-  const todayLabel = new Date().toLocaleDateString(undefined, { weekday: "long", year: "numeric", month: "long", day: "numeric" });
+  const todayLabel = formatDate(new Date(), lang, { weekday: "long", year: "numeric", month: "long", day: "numeric" });
   const firstName = user?.full_name?.split(" ")[0] ?? "";
 
   return (
@@ -185,7 +186,7 @@ export default function CitizenHome() {
               <div>
                 <div className="home-feed-text">{n.title}</div>
                 <div className="home-attn-msg">{n.message}</div>
-                <div className="home-feed-time">{new Date(n.created_at).toLocaleString()}</div>
+                <div className="home-feed-time">{formatDateTime(n.created_at, lang)}</div>
               </div>
             </button>
           ))}

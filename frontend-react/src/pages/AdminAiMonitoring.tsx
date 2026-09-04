@@ -6,7 +6,7 @@ import SearchWithDateFilter from "../components/SearchWithDateFilter";
 import { useAuth } from "../lib/auth";
 import { useUiLang } from "../lib/uiLang";
 import { useDebouncedValue } from "../lib/useDebouncedValue";
-import { t } from "../lib/i18n";
+import { formatDateTime, t } from "../lib/i18n";
 import { api, ApiError, type AiMonitoringSummary, type AiRequestLogEntry, type ModelCostEntry } from "../lib/api";
 import { useToast } from "../lib/toast";
 import "../styles/dashboard.css";
@@ -582,7 +582,7 @@ export default function AdminAiMonitoring() {
                       <input type="checkbox" checked={selectedIds.has(r.id)} onChange={() => toggleOne(r.id)} />
                     </td>
                     <td style={{ padding: "12px 16px", borderBottom: "1px solid var(--line)", color: "var(--ink-2)" }}>
-                      {new Date(r.created_at).toLocaleString()}
+                      {formatDateTime(r.created_at, lang)}
                     </td>
                     <td className="mono" style={{ padding: "12px 16px", borderBottom: "1px solid var(--line)", color: "var(--ink-2)" }} title={r.request_id}>
                       {r.request_id}
