@@ -5,7 +5,7 @@ import StatusBadge from "../components/StatusBadge";
 import CategoryBadge from "../components/CategoryBadge";
 import { useAuth } from "../lib/auth";
 import { useUiLang } from "../lib/uiLang";
-import { t } from "../lib/i18n";
+import { formatDate, t } from "../lib/i18n";
 import { api, ApiError, type AreaSummary } from "../lib/api";
 import type { ServiceCategory } from "../lib/ragTypes";
 import { useDebouncedValue } from "../lib/useDebouncedValue";
@@ -259,7 +259,7 @@ export default function MyArea() {
                         <div className="mono" style={{ fontSize: 11, color: "var(--ink-3)" }}>JM-{String(c.id).padStart(5, "0")}</div>
                         <div style={{ fontSize: 13, fontWeight: 600 }}>{c.display_text}</div>
                         <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 2, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                          <span>{statusDateLabel(c.status)} {new Date(c.status_updated_at).toLocaleDateString()}</span>
+                          <span>{statusDateLabel(c.status)} {formatDate(c.status_updated_at, lang)}</span>
                           <CategoryBadge category={c.service_category} lang={lang} />
                         </div>
                       </div>

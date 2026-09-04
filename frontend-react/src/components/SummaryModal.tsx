@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useAuth } from "../lib/auth";
 import { useUiLang } from "../lib/uiLang";
-import { t } from "../lib/i18n";
+import { formatDateTime, t } from "../lib/i18n";
 import { api, type Complaint, type ComplaintReport } from "../lib/api";
 import StatusBadge from "./StatusBadge";
 import ComplaintReportView from "./ComplaintReportView";
@@ -104,7 +104,7 @@ export default function SummaryModal({
                 </dd>
 
                 <dt>{t(lang, "worker.report.filedOn")}</dt>
-                <dd>{new Date(complaint.created_at).toLocaleString()}</dd>
+                <dd>{formatDateTime(complaint.created_at, lang)}</dd>
 
                 <dt>{t(lang, "worker.report.description")}</dt>
                 <dd>{complaint.display_summary || complaint.summary}</dd>

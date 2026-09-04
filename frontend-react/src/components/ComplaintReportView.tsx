@@ -1,5 +1,5 @@
 import { useUiLang } from "../lib/uiLang";
-import { t } from "../lib/i18n";
+import { formatDateTime, t } from "../lib/i18n";
 import { statusLabel } from "../lib/statusLabel";
 import type { ComplaintReport, ComplaintStatus } from "../lib/api";
 import EvidenceGallery, { type GalleryItem } from "./EvidenceGallery";
@@ -43,7 +43,7 @@ export default function ComplaintReportView({ report }: { report: ComplaintRepor
         <dd className="mono">{report.display_id}</dd>
 
         <dt>{t(lang, "worker.report.filedOn")}</dt>
-        <dd>{new Date(report.created_at).toLocaleString()}</dd>
+        <dd>{formatDateTime(report.created_at, lang)}</dd>
 
         <dt>{t(lang, "worker.report.description")}</dt>
         <dd>{report.service_summary}{report.original_description && report.original_description !== report.service_summary ? ` — ${report.original_description}` : ""}</dd>
@@ -77,7 +77,7 @@ export default function ComplaintReportView({ report }: { report: ComplaintRepor
           <div className="section-label">{t(lang, "worker.detail.initialAssessment")}</div>
           <p>{report.initial_assessment}</p>
           {report.initial_assessment_at && (
-            <div style={{ fontSize: 11, color: "var(--ink-3)" }}>{new Date(report.initial_assessment_at).toLocaleString()}</div>
+            <div style={{ fontSize: 11, color: "var(--ink-3)" }}>{formatDateTime(report.initial_assessment_at, lang)}</div>
           )}
           {report.initial_assessment_evidence.length > 0 && (
             <div style={{ marginTop: 8 }}>
@@ -93,7 +93,7 @@ export default function ComplaintReportView({ report }: { report: ComplaintRepor
           {report.progress_updates.map((u, i) => (
             <div key={i} style={{ marginBottom: 8 }}>
               <p style={{ margin: 0 }}>{u.text}</p>
-              <div style={{ fontSize: 11, color: "var(--ink-3)" }}>{new Date(u.created_at).toLocaleString()}</div>
+              <div style={{ fontSize: 11, color: "var(--ink-3)" }}>{formatDateTime(u.created_at, lang)}</div>
               {u.evidence.length > 0 && (
                 <div style={{ marginTop: 6 }}>
                   <EvidenceGallery items={toItems(u.evidence)} />
@@ -108,7 +108,7 @@ export default function ComplaintReportView({ report }: { report: ComplaintRepor
         <div className="report-section">
           <div className="section-label">{t(lang, "worker.detail.completion")}</div>
           <p>{report.completion_status}</p>
-          {report.resolved_at && <div style={{ fontSize: 11, color: "var(--ink-3)" }}>{new Date(report.resolved_at).toLocaleString()}</div>}
+          {report.resolved_at && <div style={{ fontSize: 11, color: "var(--ink-3)" }}>{formatDateTime(report.resolved_at, lang)}</div>}
           {(() => {
             // completion_evidence (evidence-upload phase, multi-file) plus the legacy single
             // completion_evidence_photo for complaints resolved before that system existed.
@@ -156,7 +156,7 @@ export default function ComplaintReportView({ report }: { report: ComplaintRepor
               <span className="report-timeline-to">
                 <StatusBadge status={entry.to_status as ComplaintStatus} label={statusLabel(lang, entry.to_status)} />
               </span>
-              <span className="mono report-timeline-time">{new Date(entry.created_at).toLocaleString()}</span>
+              <span className="mono report-timeline-time">{formatDateTime(entry.created_at, lang)}</span>
             </div>
           ))}
         </div>

@@ -9,7 +9,7 @@ import DownloadReportButton from "../components/DownloadReportButton";
 import { useAuth } from "../lib/auth";
 import { useUiLang } from "../lib/uiLang";
 import { useDebouncedValue } from "../lib/useDebouncedValue";
-import { t } from "../lib/i18n";
+import { formatDate, t } from "../lib/i18n";
 import { api, ApiError, type Complaint, type ComplaintStatus, type WorkerSummary } from "../lib/api";
 import SearchWithDateFilter from "../components/SearchWithDateFilter";
 import "../styles/dashboard.css";
@@ -278,7 +278,7 @@ export default function AdminWorkerDetail() {
                           <StatusBadge status={c.status} label={t(lang, COMPLAINT_STATUS_LABEL_KEY[c.status])} />
                         </td>
                         <td style={{ padding: "12px 16px", borderBottom: "1px solid var(--line)", color: "var(--ink-2)" }}>
-                          {new Date(c.created_at).toLocaleDateString()}
+                          {formatDate(c.created_at, lang)}
                         </td>
                         <td style={{ padding: "8px 16px", borderBottom: "1px solid var(--line)", whiteSpace: "nowrap" }}>
                           {c.status === "resolved" && (

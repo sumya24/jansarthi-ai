@@ -1,5 +1,5 @@
 import { useUiLang } from "../lib/uiLang";
-import { t } from "../lib/i18n";
+import { formatDateTime, t } from "../lib/i18n";
 import { type ComplaintUpdateEntry, type ComplaintUpdateType } from "../lib/api";
 import EvidenceGallery, { evidenceToGalleryItems, type GalleryItem } from "./EvidenceGallery";
 
@@ -37,7 +37,7 @@ export default function ComplaintUpdatesTimeline({ updates }: { updates: Complai
               <div className="update-entry-text">{u.text}</div>
               <div className="update-entry-meta">
                 {u.worker_name && `${u.worker_name} · `}
-                {new Date(u.created_at).toLocaleString()}
+                {formatDateTime(u.created_at, lang)}
               </div>
               {items.length > 0 && (
                 <div style={{ marginTop: 8 }}>

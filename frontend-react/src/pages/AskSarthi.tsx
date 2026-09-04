@@ -17,7 +17,7 @@ import VoiceAssistantOverlay from "../components/VoiceAssistantOverlay";
 import LocationPicker, { type LocationValue } from "../components/LocationPicker";
 import { useUiLang } from "../lib/uiLang";
 import { useAuth } from "../lib/auth";
-import { t, toLangCode } from "../lib/i18n";
+import { formatTime, t, toLangCode, type LangCode } from "../lib/i18n";
 import { api, ApiError } from "../lib/api";
 import { useSpeechToText } from "../lib/useSpeechToText";
 import type { AskSarthiResponse, AskSarthiConversationTurn, PhotoEvidenceRef } from "../lib/ragTypes";
@@ -251,10 +251,12 @@ function formatDuration(ms: number): string {
   return `${minutes}m ${seconds}s`;
 }
 
-/** Local clock time, e.g. "9:00 AM" -- the browser's own locale/24-hour preference, not a fixed
- * format, same as how a phone's own clock would show it. */
-function formatClockTime(ms: number): string {
-  return new Date(ms).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+/** Local clock time, e.g. "9:00 AM" -- the citizen's own in-app language, not just whatever the
+ * browser/device happens to be set to (was `undefined`, i.e. the browser's own locale --
+ * LIVE-REPORTED: every date/time in the app had this exact gap, see lib/i18n.ts's own comment on
+ * formatDate/formatDateTime/formatTime). */
+function formatClockTime(ms: number, lang: LangCode): string {
+  return formatTime(ms, lang, { hour: "numeric", minute: "2-digit" });
 }
 
 /** Imperative surface for the one action a parent legitimately needs to trigger from outside --
@@ -751,7 +753,7 @@ export const AskSarthiContent = forwardRef<AskSarthiHandle, AskSarthiContentProp
                   is exactly what's useful to notice at a glance. */}
               {msg.timestamp != null && (
                 <div className="ask-chat-timestamp">
-                  {formatClockTime(msg.timestamp)}
+                  {formatClockTime(msg.timestamp, lang)}
                   {msg.role === "assistant" && msg.durationMs != null && ` · ${formatDuration(msg.durationMs)}`}
                 </div>
               )}

@@ -13,7 +13,7 @@ import AiHealthChart from "../components/AiHealthChart";
 import { useAuth } from "../lib/auth";
 import { useUiLang } from "../lib/uiLang";
 import { useDebouncedValue } from "../lib/useDebouncedValue";
-import { t } from "../lib/i18n";
+import { formatDate, t } from "../lib/i18n";
 import {
   api,
   ApiError,
@@ -548,7 +548,7 @@ export default function AdminDashboard() {
                         </td>
                         <td style={{ padding: "12px 16px", borderBottom: "1px solid var(--line)", color: "var(--ink-2)" }}>{c.assigned_worker_name ?? "—"}</td>
                         <td style={{ padding: "12px 16px", borderBottom: "1px solid var(--line)", color: "var(--ink-2)" }}>
-                          {new Date(c.created_at).toLocaleDateString()}
+                          {formatDate(c.created_at, lang)}
                         </td>
                         <td style={{ padding: "8px 16px", borderBottom: "1px solid var(--line)", whiteSpace: "nowrap" }}>
                           <div style={{ display: "flex", gap: 4, justifyContent: "flex-end" }}>

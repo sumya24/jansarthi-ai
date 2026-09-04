@@ -12,7 +12,7 @@ import FeedbackForm from "../components/FeedbackForm";
 import { useAuth } from "../lib/auth";
 import { useUiLang } from "../lib/uiLang";
 import { useDebouncedValue } from "../lib/useDebouncedValue";
-import { t } from "../lib/i18n";
+import { formatDateTime, t } from "../lib/i18n";
 import { api, ApiError, type Complaint, type ComplaintUpdateEntry } from "../lib/api";
 import type { ServiceCategory } from "../lib/ragTypes";
 import { SERVICE_CATEGORY_DEFS } from "../lib/serviceCategories";
@@ -349,7 +349,7 @@ export default function CitizenDashboard() {
                 </div>
                 <div style={{ textAlign: "right" }}>
                   <StatusBadge status={c.status} label={t(lang, STATUS_LABEL_KEY[c.status])} />
-                  <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 6 }}>{new Date(c.created_at).toLocaleString()}</div>
+                  <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 6 }}>{formatDateTime(c.created_at, lang)}</div>
                 </div>
               </div>
 
