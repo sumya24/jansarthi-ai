@@ -136,6 +136,40 @@ def test_describe_image_falls_back_to_local_model_when_gemini_fails(monkeypatch)
     assert service.model_name == "fake/model"
 
 
+def test_describe_image_local_model_timeout_raises_vision_service_error_promptly(monkeypatch):
+    """LIVE-REPORTED: confirmed directly against production -- a real citizen photo left a
+    request stuck on "Thinking..." for over 15 minutes with no way out, because the local
+    model's own inference call had nothing capping how long it could run (unlike Gemini's own
+    httpx `timeout=`). describe_image() must now give up and raise VisionServiceError once
+    settings.VISION_LOCAL_MODEL_TIMEOUT_SECONDS elapses, not hang indefinitely -- verified here
+    with a real, measured wall-clock bound (a slow fake model that would otherwise sleep for far
+    longer than the configured timeout), not just that the call eventually returns."""
+    import time
+
+    monkeypatch.setattr("backend.config.settings.VISION_LOCAL_MODEL_TIMEOUT_SECONDS", 0.2)
+    service = VisionService(model_name="fake/model")
+    fake_model = Mock()
+    fake_model.encode_image.return_value = "encoded"
+
+    def _slow_answer_question(*_args, **_kwargs):
+        time.sleep(5)  # far longer than the 0.2s timeout above
+        return "too slow to matter"
+
+    fake_model.answer_question.side_effect = _slow_answer_question
+    service._model = fake_model
+    service._tokenizer = Mock()
+
+    started = time.monotonic()
+    with pytest.raises(VisionServiceError):
+        service.describe_image(JPEG_1PX)
+    elapsed = time.monotonic() - started
+
+    # The real point of this fix: elapsed must be close to the configured timeout (0.2s), not the
+    # fake model's full 5s sleep -- a generous margin (2s) for CI/scheduling jitter, still nowhere
+    # near the 5s it would take if the timeout weren't actually enforced.
+    assert elapsed < 2, f"describe_image() waited {elapsed:.2f}s -- the local-model timeout was not enforced"
+
+
 def test_describe_image_skips_gemini_entirely_when_unconfigured():
     # `_no_gemini` (autouse) already clears the key -- this just makes that assumption explicit
     # and confirms httpx is never even touched, not just that the local caption comes back right.

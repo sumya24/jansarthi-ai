@@ -163,6 +163,17 @@ class Settings:
     GEMINI_VISION_MODEL: str = os.getenv("GEMINI_VISION_MODEL", "gemini-3.5-flash-lite")
     GEMINI_TIMEOUT_SECONDS: float = float(os.getenv("GEMINI_TIMEOUT_SECONDS", "15"))
     VISION_MODEL_NAME: str = os.getenv("VISION_MODEL_NAME", "vikhyatk/moondream2")
+    # LIVE-REPORTED: unlike GEMINI_TIMEOUT_SECONDS above (an httpx `timeout=`, easy to bound), the
+    # local model's own inference call is a plain synchronous Python call with nothing capping it
+    # -- confirmed directly against production: a real citizen photo left a request "Thinking..."
+    # for over 15 minutes (this VM has no GPU; a Gemini timeout that falls back to this path, on
+    # a large/detailed image, can genuinely take that long). 45s is real headroom over every
+    # normal-sized civic-complaint photo this app has actually measured completing in (seconds,
+    # not minutes) -- generous enough to never cut off a legitimate answer, while making sure a
+    # citizen is never left staring at a spinner for a quarter of an hour. See vision_service.py's
+    # own describe_image() for how this is enforced (a worker thread + future.result(timeout=...),
+    # since a synchronous CPU call can't be cancelled any other way).
+    VISION_LOCAL_MODEL_TIMEOUT_SECONDS: float = float(os.getenv("VISION_LOCAL_MODEL_TIMEOUT_SECONDS", "45"))
     CHROMA_PERSIST_DIR: Path = Path(os.getenv("CHROMA_PERSIST_DIR", str(BASE_DIR / "data" / "rag_knowledge_base" / "chroma")))
     CHROMA_COLLECTION_NAME: str = os.getenv("CHROMA_COLLECTION_NAME", "janmitra_knowledge")
     # Chosen from two rounds of actual measurement, not a round-number guess -- see
