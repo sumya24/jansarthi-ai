@@ -7,6 +7,10 @@ const ENGLISH_DISTRICT_NAMES = [
   "Mumbai", "Mysuru", "Nagpur", "Paschim Bardhaman", "Pune", "Surat", "Vadodara", "Varanasi",
 ];
 
+// The word "Ward" itself (not a real ward's full name) -- a translated ward option should never
+// contain this bare English word, even if it also carries the translated municipal name/number.
+const ENGLISH_MUNICIPAL_WORDS = ["Ward", "M Corp", "Prabhag", "Municipal"];
+
 /** LIVE-REPORTED BUG: `uiLang` is scoped to the browser (localStorage), not the account -- once a
  * citizen has ever switched the app to their own language (via Settings), that choice sticks
  * across logout, so the very next Signup page they see (creating a second account, e.g. for a
@@ -68,5 +72,35 @@ test("the Signup page's State/City picker follows the app's own language, not ju
       expect(text, `city option still shows the raw English district name "${englishName}": ${text}`).not.toBe(englishName);
     }
     expect(text, `city option has no Devanagari text at all: ${text}`).toMatch(/[ऀ-ॿ]/);
+  }
+
+  // Cascade into Ward: pick the first real city, then check the Ward dropdown the exact same way.
+  await cityField.selectOption({ index: 1 });
+  const wardField = page.locator("#signup-home-ward");
+  await expect.poll(() => wardField.isEnabled(), { timeout: 15000 }).toBe(true);
+  if ((await wardField.evaluate((el) => el.tagName)) === "SELECT") {
+    const wardOptionTexts = await wardField.locator("option").allInnerTexts();
+    const realWardOptions = wardOptionTexts.filter((txt) => txt.trim() !== "" && txt !== "वॉर्ड निवडा");
+    for (const text of realWardOptions) {
+      for (const englishWord of ENGLISH_MUNICIPAL_WORDS) {
+        expect(text, `ward option still shows the raw English word "${englishWord}": ${text}`).not.toContain(englishWord);
+      }
+      expect(text, `ward option has no Devanagari text at all: ${text}`).toMatch(/[ऀ-ॿ]/);
+    }
+
+    // Cascade into Area: pick the first real ward, then check the Area dropdown too, if this
+    // particular ward has any seeded localities under it (most don't -- only 6 real localities
+    // exist at all -- so this degrades to the free-text fallback for most real wards, which is
+    // correct behavior, not a gap).
+    await wardField.selectOption({ index: 1 });
+    const areaField = page.locator("#signup-home-area");
+    await expect.poll(() => areaField.isEnabled(), { timeout: 15000 }).toBe(true);
+    if ((await areaField.evaluate((el) => el.tagName)) === "SELECT") {
+      const areaOptionTexts = await areaField.locator("option").allInnerTexts();
+      const realAreaOptions = areaOptionTexts.filter((txt) => txt.trim() !== "" && !txt.toLowerCase().includes("select"));
+      for (const text of realAreaOptions) {
+        expect(text, `area option has no Devanagari text at all: ${text}`).toMatch(/[ऀ-ॿ]/);
+      }
+    }
   }
 });
