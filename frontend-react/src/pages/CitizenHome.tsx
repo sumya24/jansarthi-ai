@@ -6,6 +6,7 @@ import { useUiLang } from "../lib/uiLang";
 import { t } from "../lib/i18n";
 import { api, type AppNotification } from "../lib/api";
 import { formatDate, formatDateTime, type LangCode } from "../lib/i18n";
+import { localizeWardText } from "../lib/locationNames";
 import "../styles/dashboard.css";
 
 type MonthBucket = { label: string; count: number; year: number; month: number };
@@ -117,7 +118,7 @@ export default function CitizenHome() {
       <div className="page" id="main-content">
         <div style={{ marginBottom: 24 }}>
           <h1 className="page-title display">{t(lang, greetingKey())}, {firstName}</h1>
-          <p className="page-sub">{todayLabel}{ward ? ` · ${ward}` : ""}</p>
+          <p className="page-sub">{todayLabel}{ward ? ` · ${localizeWardText(ward, lang)}` : ""}</p>
         </div>
 
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12, marginBottom: 20 }}>

@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import Mock
 
 import backend.routes.complaints as complaints_module
+import backend.services.notification_render as notification_render_module
 from backend.models import Complaint, ComplaintRejection, ComplaintStatusHistory, User
 from backend.services.auth_service import hash_password
 from backend.services.sarvam_client import AIServiceError
@@ -780,6 +781,11 @@ def test_accept_start_resolve_notifications_render_in_citizens_own_language(clie
     # this same mock -- left unconfigured, it returns an unusable Mock object instead of a string.
     fake_translation_service.translate_auto_detecting_source.return_value = "मी साइटची तपासणी केली."
     monkeypatch.setattr(complaints_module, "_translation_service", fake_translation_service)
+    # Notification text is now rendered fresh (see notification_render.py's own docstring) rather
+    # than composed once at creation time -- both the create-time call (accept/start/resolve) AND
+    # the later GET /notifications read use notification_render's OWN _translation_service, a
+    # separate module-level instance from complaints_module's.
+    monkeypatch.setattr(notification_render_module, "_translation_service", fake_translation_service)
 
     client.post(f"/complaints/{complaint_id}/accept", headers={"Authorization": f"Bearer {worker_token}"})
     notifs = client.get("/notifications", headers={"Authorization": f"Bearer {citizen_token}"}).json()
@@ -824,7 +830,10 @@ def test_worker_assignment_notification_snippet_translated_into_workers_language
 
     fake_translation_service = Mock()
     fake_translation_service.to_language.return_value = "कचरा साफ नहीं हुआ।"
-    monkeypatch.setattr("backend.services.assignment_service._translation_service", fake_translation_service)
+    # Both worker-notification building (assignment_service.py) and its later read (GET
+    # /notifications) go through notification_render.render_worker_notification now, which uses
+    # notification_render's OWN _translation_service -- see notification_render.py's docstring.
+    monkeypatch.setattr(notification_render_module, "_translation_service", fake_translation_service)
 
     complaint_id = _make_assigned_complaint(db_session, worker["id"], citizen_id=str(citizen["id"]))
     other_worker_id = _make_worker_row(db_session, phone="9000000099", ward="Ward 14", preferred_language="hi")
@@ -839,6 +848,119 @@ def test_worker_assignment_notification_snippet_translated_into_workers_language
     reassigned = next(n for n in notifs["notifications"] if n["type"] == "REASSIGNED")
     assert "कचरा साफ नहीं हुआ।" in reassigned["message"]
     assert "Garbage not collected." not in reassigned["message"]
+
+
+def test_resolved_notification_ward_text_translated_into_citizens_own_language(client, make_citizen, make_worker, db_session, monkeypatch):
+    """LIVE-REPORTED, one level deeper than the two tests above: even after the snippet and the
+    "Location:" LABEL were both correctly translated, `complaint.ward` itself was still passed
+    through raw -- confirmed directly against a real citizen's Home screen (Surat, Marathi UI):
+    "स्थान: Surat (M Corp.) - Ward No.1, Surat" glued a fully-English composed ward string onto an
+    otherwise fully-translated notification. Unlike test_accept_start_resolve_notifications_
+    render_in_citizens_own_language above (which uses the placeholder ward "Ward 14", not a real
+    seeded one, so it can never exercise this path), this uses a REAL composed ward string from
+    locationNames.ts's translation table to prove the actual fix."""
+    citizen_token, citizen = make_citizen(phone="9000000001", preferred_language="mr")
+    worker_token, worker = make_worker(phone="9000000002", ward="Surat (M Corp.) - Ward No.1, Surat")
+    complaint_id = _make_assigned_complaint(
+        db_session, worker["id"], ward="Surat (M Corp.) - Ward No.1, Surat", citizen_id=str(citizen["id"])
+    )
+
+    fake_translation_service = Mock()
+    fake_translation_service.to_language.return_value = "कचरा उचलला नाही."
+    fake_translation_service.translate_auto_detecting_source.return_value = "मी साइटची तपासणी केली."
+    monkeypatch.setattr(complaints_module, "_translation_service", fake_translation_service)
+    monkeypatch.setattr(notification_render_module, "_translation_service", fake_translation_service)
+
+    client.post(f"/complaints/{complaint_id}/accept", headers={"Authorization": f"Bearer {worker_token}"})
+    client.post(
+        f"/complaints/{complaint_id}/start", headers={"Authorization": f"Bearer {worker_token}"},
+        data={"assessment": "Checked the site."},
+    )
+    client.post(
+        f"/complaints/{complaint_id}/resolve", headers={"Authorization": f"Bearer {worker_token}"},
+        data={"completion_status": "Fixed."},
+    )
+    notifs = client.get("/notifications", headers={"Authorization": f"Bearer {citizen_token}"}).json()
+    resolved = next(n for n in notifs["notifications"] if n["type"] == "COMPLAINT_RESOLVED")
+    assert "स्थान: सूरत (महानगरपालिका) - वॉर्ड क्र. 1, सूरत" in resolved["message"]
+    assert "Surat (M Corp.) - Ward No.1, Surat" not in resolved["message"]
+
+
+def test_old_notification_re_renders_in_a_newly_switched_language(client, make_citizen, make_worker, db_session, monkeypatch):
+    """LIVE-REPORTED: switching your language does nothing for notifications already in your list
+    -- a citizen who used the app in Marathi, then switched to Odia, still saw old notifications'
+    text exactly as first written, weeks earlier (see notification_render.py's own docstring for
+    the fix). This is the fix itself, not just the ward-text sub-bug the tests above cover: an
+    EXISTING notification (created while the citizen was in Marathi) must show up in Hindi the
+    moment the citizen switches to Hindi and re-opens the notification list -- with NO new
+    notification created in between, proving this is a live re-render on every read, not something
+    that only ever applied going forward."""
+    citizen_token, citizen = make_citizen(phone="9000000001", preferred_language="mr")
+    worker_token, worker = make_worker(phone="9000000002", ward="Ward 14")
+    complaint_id = _make_assigned_complaint(db_session, worker["id"], citizen_id=str(citizen["id"]))
+
+    fake_translation_service = Mock()
+    fake_translation_service.to_language.side_effect = lambda text, lang: {
+        "mr": "कचरा उचलला नाही.", "hi": "कचरा नहीं उठाया गया.",
+    }[lang]
+    monkeypatch.setattr(notification_render_module, "_translation_service", fake_translation_service)
+
+    client.post(f"/complaints/{complaint_id}/accept", headers={"Authorization": f"Bearer {worker_token}"})
+    notifs = client.get("/notifications", headers={"Authorization": f"Bearer {citizen_token}"}).json()
+    accepted = next(n for n in notifs["notifications"] if n["type"] == "COMPLAINT_ACCEPTED")
+    assert accepted["title"] == "एका कर्मचाऱ्याने तुमची तक्रार स्वीकारली आहे"  # Marathi
+    assert "कचरा उचलला नाही." in accepted["message"]
+
+    # No new notification -- just the citizen switching their own language, then re-opening the
+    # SAME existing notification list.
+    switch = client.patch(
+        "/auth/me", json={"preferred_language": "hi"}, headers={"Authorization": f"Bearer {citizen_token}"},
+    )
+    assert switch.status_code == 200
+
+    notifs_after = client.get("/notifications", headers={"Authorization": f"Bearer {citizen_token}"}).json()
+    accepted_after = next(n for n in notifs_after["notifications"] if n["type"] == "COMPLAINT_ACCEPTED")
+    assert accepted_after["title"] == "एक कर्मचारी ने आपकी शिकायत स्वीकार कर ली है"  # Hindi now
+    assert "कचरा नहीं उठाया गया." in accepted_after["message"]
+    assert "कचरा उचलला नाही." not in accepted_after["message"]  # the old Marathi text is gone
+
+
+def test_old_worker_notification_re_renders_in_a_newly_switched_language(client, make_citizen, make_worker, db_session, monkeypatch):
+    """Same fix, checked on the worker side specifically -- a NEW_ASSIGNMENT notification a worker
+    already has must also re-render in whatever language the worker later switches to, not just
+    the language they were in when first assigned."""
+    citizen_token, citizen = make_citizen(phone="9000000001")
+    worker_token, worker = make_worker(phone="9000000002", ward="Ward 14", preferred_language="en")
+    complaint_id = _make_assigned_complaint(db_session, worker["id"], citizen_id=str(citizen["id"]))
+
+    fake_translation_service = Mock()
+    fake_translation_service.to_language.side_effect = lambda text, lang: {
+        "hi": "कचरा साफ नहीं हुआ।", "mr": "कचरा साफ झाला नाही.",
+    }[lang]
+    monkeypatch.setattr(notification_render_module, "_translation_service", fake_translation_service)
+
+    other_worker_id = _make_worker_row(db_session, phone="9000000099", ward="Ward 14", preferred_language="hi")
+    reject_response = client.post(
+        f"/complaints/{complaint_id}/reject", headers={"Authorization": f"Bearer {worker_token}"},
+        json={"reason": "Wrong ward."},
+    )
+    assert reject_response.status_code == 200
+    other_token = client.post("/auth/login", json={"identifier": "9000000099", "password": "secret123!"}).json()["access_token"]
+
+    notifs = client.get("/notifications", headers={"Authorization": f"Bearer {other_token}"}).json()
+    reassigned = next(n for n in notifs["notifications"] if n["type"] == "REASSIGNED")
+    assert "कचरा साफ नहीं हुआ।" in reassigned["message"]  # Hindi, at creation time
+
+    # Same worker, no new notification -- just switches their own language to Marathi afterward.
+    switch = client.patch(
+        "/auth/me", json={"preferred_language": "mr"}, headers={"Authorization": f"Bearer {other_token}"},
+    )
+    assert switch.status_code == 200
+
+    notifs_after = client.get("/notifications", headers={"Authorization": f"Bearer {other_token}"}).json()
+    reassigned_after = next(n for n in notifs_after["notifications"] if n["type"] == "REASSIGNED")
+    assert "कचरा साफ झाला नाही." in reassigned_after["message"]  # Marathi now
+    assert "कचरा साफ नहीं हुआ।" not in reassigned_after["message"]  # the old Hindi text is gone
 
 
 def test_accept_complaint_not_assigned_to_you_returns_403(client, make_worker, db_session):
@@ -989,6 +1111,40 @@ def test_reject_complaint_notifies_every_admin(client, make_worker, make_admin, 
         assert notif.title == expected_titles[admin.id]
         assert notif.message == expected_messages[admin.id]
     db.close()
+
+
+def test_old_admin_rejection_notification_re_renders_in_a_newly_switched_language(client, make_worker, make_admin, db_session):
+    """Same fix, checked on the admin side specifically -- the one type
+    (COMPLAINT_REJECTED) that needed a schema change (`related_rejection_id`) to do safely, since
+    a complaint can be rejected more than once and `complaint_id` alone can't say which rejection
+    (and therefore which worker's name) a given notification is about. Proves the fix works exactly
+    like the citizen/worker cases: NO new notification, just a later language switch, and the
+    SAME existing notification updates."""
+    admin = make_admin(phone="9999999991", full_name="Admin One", preferred_language="en")
+    worker_token, worker = make_worker(phone="9000000002", ward="Ward 14")
+    complaint_id = _make_assigned_complaint(db_session, worker["id"])
+
+    reject_response = client.post(
+        f"/complaints/{complaint_id}/reject", headers={"Authorization": f"Bearer {worker_token}"},
+        json={"reason": "Outside my assigned area."},
+    )
+    assert reject_response.status_code == 200
+
+    admin_token = client.post("/auth/login", json={"identifier": "9999999991", "password": "adminpass"}).json()["access_token"]
+    notifs = client.get("/notifications", headers={"Authorization": f"Bearer {admin_token}"}).json()
+    rejected = next(n for n in notifs["notifications"] if n["type"] == "COMPLAINT_REJECTED")
+    assert rejected["message"] == f"{worker['full_name']} rejected a complaint in Ward 14."  # English, at creation time
+
+    # Same admin, no new notification -- just switches their own language to Marathi afterward.
+    switch = client.patch(
+        "/auth/me", json={"preferred_language": "mr"}, headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert switch.status_code == 200
+
+    notifs_after = client.get("/notifications", headers={"Authorization": f"Bearer {admin_token}"}).json()
+    rejected_after = next(n for n in notifs_after["notifications"] if n["type"] == "COMPLAINT_REJECTED")
+    assert rejected_after["message"] == f"{worker['full_name']} यांनी Ward 14 मधील एक तक्रार नाकारली."  # Marathi now
+    assert rejected_after["message"] != rejected["message"]  # the old English text is gone
 
 
 def test_complaint_detail_shows_rejections_to_admin_only(client, make_worker, make_citizen, make_admin, db_session):

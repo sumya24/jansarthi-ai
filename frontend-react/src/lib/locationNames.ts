@@ -42,6 +42,12 @@ const CITY_NAME_TRANSLATIONS: Record<string, Partial<Record<LangCode, string>>> 
     hi: "बेंगलुरु शहरी", mr: "बेंगळुरू शहरी", or: "ବେଙ୍ଗାଲୁରୁ ସହରାଞ୍ଚଳ",
     gu: "બેંગલુરુ શહેરી", bn: "বেঙ্গালুরু শহুরে",
   },
+  // Real complaint/user location text stored before the district's official name settled on
+  // "Bengaluru Urban" still says bare "Bengaluru" (confirmed directly in production) -- same
+  // place, so it gets the same translation rather than an inconsistent English leftover.
+  Bengaluru: {
+    hi: "बेंगलुरु", mr: "बेंगळुरू", or: "ବେଙ୍ଗାଲୁରୁ", gu: "બેંગલુરુ", bn: "বেঙ্গালুরু",
+  },
   Chennai: { hi: "चेन्नई", mr: "चेन्नई", or: "ଚେନ୍ନାଇ", gu: "ચેન્નાઈ", bn: "চেন্নাই" },
   Coimbatore: { hi: "कोयंबटूर", mr: "कोइंबतूर", or: "କୋଏମ୍ବାଟୁର", gu: "કોઈમ્બતુર", bn: "কোয়েম্বাটুর" },
   "Dakshina Kannada": {
@@ -71,13 +77,31 @@ export function localizeCityName(name: string, lang: LangCode): string {
   return CITY_NAME_TRANSLATIONS[name]?.[lang] ?? name;
 }
 
-/** The "Area" step (Locality.name) -- only 6 real locality rows exist today (confirmed directly
- * against production), all real, well-known neighborhood names, so translating them is a
- * transliteration exercise, not a guess -- unlike Ward below, there's no risk here worth leaving
- * untranslated. Extend as more localities get seeded. */
+/** Real neighborhood/locality names -- covers two different real sources: the Area picker's own
+ * Locality rows (only 6 exist today) AND the locality names embedded in a composed ward/location
+ * string (see localizeWardText below -- HomeLocationPicker's composeWard() bakes a locality
+ * straight into the "{ward} — {locality}, {city}" text, e.g. "Ward 3 — Indiranagar, Bengaluru").
+ * All real, well-known neighborhood names (confirmed against production data), so translating
+ * them is a transliteration exercise, not a guess -- unlike Ward below, there's no risk here worth
+ * leaving untranslated. Extend as more localities get seeded/used. */
 const LOCALITY_NAME_TRANSLATIONS: Record<string, Partial<Record<LangCode, string>>> = {
   "Civil Lines": { hi: "सिविल लाइन्स", mr: "सिव्हिल लाइन्स", or: "ସିଭିଲ ଲାଇନ୍ସ", gu: "સિવિલ લાઇન્સ", bn: "সিভিল লাইনস" },
   Indiranagar: { hi: "इंदिरानगर", mr: "इंदिरानगर", or: "ଇନ୍ଦିରାନଗର", gu: "ઈન્દિરાનગર", bn: "ইন্দিরানগর" },
+  Chowk: { hi: "चौक", mr: "चौक", or: "ଚୌକ", gu: "ચોક", bn: "চক" },
+  "White Field": { hi: "व्हाइटफील्ड", mr: "व्हाइटफिल्ड", or: "ହ୍ୱାଇଟଫିଲ୍ଡ", gu: "વ્હાઇટફિલ્ડ", bn: "হোয়াইটফিল্ড" },
+  Mylapore: { hi: "मायलापुर", mr: "मायलापूर", or: "ମାଇଲାପୁର", gu: "માયલાપુર", bn: "মাইলাপুর" },
+  Hazratganj: { hi: "हजरतगंज", mr: "हजरतगंज", or: "ହଜରତଗଞ୍ଜ", gu: "હઝરતગંજ", bn: "হজরতগঞ্জ" },
+  Adyar: { hi: "अडयार", mr: "अड्यार", or: "ଆଡ଼ିଆର", gu: "અડયાર", bn: "আড্যার" },
+  Koramangala: { hi: "कोरमंगला", mr: "कोरमंगला", or: "କୋରାମାଙ୍ଗାଲା", gu: "કોરમંગલા", bn: "কোরামঙ্গলা" },
+  Egmore: { hi: "एग्मोर", mr: "एग्मोर", or: "ଏଗମୋର", gu: "એગ્મોર", bn: "এগমোর" },
+  Paldi: { hi: "पालडी", mr: "पालडी", or: "ପାଲଡ଼ୀ", gu: "પાલડી", bn: "পালডি" },
+  Maninagar: { hi: "मणिनगर", mr: "मणिनगर", or: "ମଣିନଗର", gu: "મણિનગર", bn: "মণিনগর" },
+  Malad: { hi: "मलाड", mr: "मलाड", or: "ମାଲାଡ", gu: "મલાડ", bn: "মালাড" },
+  "BBD Bagh": { hi: "बीबीडी बाग", mr: "बीबीडी बाग", or: "ବିବିଡି ବାଗ", gu: "બીબીડી બાગ", bn: "বিবিডি বাগ" },
+  "Andheri West": { hi: "अंधेरी पश्चिम", mr: "अंधेरी पश्चिम", or: "ଅନ୍ଧେରୀ ପଶ୍ଚିମ", gu: "અંધેરી પશ્ચિમ", bn: "আন্ধেরি পশ্চিম" },
+  Kidderpore: { hi: "खिदिरपुर", mr: "खिदिरपूर", or: "ଖିଦିରପୁର", gu: "ખિદિરપુર", bn: "খিদিরপুর" },
+  "Andheri East": { hi: "अंधेरी पूर्व", mr: "अंधेरी पूर्व", or: "ଅନ୍ଧେରୀ ପୂର୍ବ", gu: "અંધેરી પૂર્વ", bn: "আন্ধেরি পূর্ব" },
+  Aliganj: { hi: "अलीगंज", mr: "अलीगंज", or: "ଅଲିଗଞ୍ଜ", gu: "અલીગંજ", bn: "আলিগঞ্জ" },
   Kothrud: { hi: "कोथरुड", mr: "कोथरूड", or: "କୋଥ୍ରୁଡ଼", gu: "કોથરુડ", bn: "কোথরুড" },
   Navrangpura: { hi: "नवरंगपुरा", mr: "नवरंगपुरा", or: "ନବରଙ୍ଗପୁରା", gu: "નવરંગપુરા", bn: "নবরংগপুরা" },
   "Saheed Nagar": { hi: "शहीद नगर", mr: "शहीद नगर", or: "ଶହୀଦ ନଗର", gu: "શહીદ નગર", bn: "শহীদ নগর" },
@@ -118,6 +142,11 @@ const WARD_NAME_TRANSLATIONS: Record<string, Partial<Record<LangCode, string>>> 
     or: "ପାଲଡ଼ୀ, ଅହମ୍ମଦାବାଦ (ପୌର ନିଗମ) ୱାର୍ଡ ନଂ. 30",
     gu: "પાલડી, અમદાવાદ (મ્યુનિસિપલ કોર્પોરેશન) વોર્ડ નં. 30",
     bn: "পালডি, আহমেদাবাদ (পৌরনিগম) ওয়ার্ড নং ৩০",
+  },
+  "Alandi (M Cl) Ward No.1": {
+    hi: "आलंदी (नगर परिषद) वार्ड नं. 1", mr: "आळंदी (नगर परिषद) वॉर्ड क्र. 1",
+    or: "ଆଳନ୍ଦୀ (ପୌର ପରିଷଦ) ୱାର୍ଡ ନଂ. 1", gu: "આલંદી (નગર પરિષદ) વોર્ડ નં. 1",
+    bn: "আলান্দি (পৌর পরিষদ) ওয়ার্ড নং ১",
   },
   "Ward 11": { hi: "वार्ड 11", mr: "वॉर्ड 11", or: "ୱାର୍ଡ 11", gu: "વોર્ડ 11", bn: "ওয়ার্ড ১১" },
   "Ward 3": { hi: "वार्ड 3", mr: "वॉर्ड 3", or: "ୱାର୍ଡ 3", gu: "વોર્ડ 3", bn: "ওয়ার্ড ৩" },
@@ -326,4 +355,45 @@ const WARD_NAME_TRANSLATIONS: Record<string, Partial<Record<LangCode, string>>> 
  * not yet in the table above -- same reasoning as localizeStateName. */
 export function localizeWardName(name: string, lang: LangCode): string {
   return WARD_NAME_TRANSLATIONS[name]?.[lang] ?? name;
+}
+
+/** LIVE-REPORTED: `User.ward`/`Complaint.ward` is never just a bare Ward.name -- Home
+ * LocationPicker's own composeWard() always bakes in at least a city, and often a locality too:
+ * "{ward}[ — {locality}], {city}" (see that function's own docstring). This is the ONE string the
+ * whole rest of the app displays as "the ward" (Home's location line, My Area, every complaint's
+ * "Location:" field, notification/lifecycle-email location suffixes, ...) -- translating just the
+ * bare Ward.name (localizeWardName above) left this composed text just as English as before,
+ * confirmed directly: a citizen's Home screen showed "Surat (M Corp.) - Ward No.1, Surat" in
+ * plain English right next to an otherwise fully-Marathi/Odia page.
+ *
+ * Splits on the exact same separators composeWard() itself uses (an em dash for a locality, a
+ * trailing ", city" for the city), translates each real, known piece via the tables above, and
+ * reassembles -- never guesses at a piece it doesn't recognize (a QA "Test Ward", a locality/city
+ * not yet in these tables, or a free-text "Other" state citizens haven't actually used yet),
+ * letting that one piece fall back to English rather than mis-parsing it. */
+export function localizeWardText(text: string, lang: LangCode): string {
+  if (lang === "en" || !text) return text;
+
+  const emDashIndex = text.indexOf(" — ");
+  if (emDashIndex !== -1) {
+    const wardPart = text.slice(0, emDashIndex);
+    const afterWard = text.slice(emDashIndex + 3); // "locality, city" (or just "locality")
+    const lastComma = afterWard.lastIndexOf(", ");
+    if (lastComma === -1) {
+      return `${localizeWardName(wardPart, lang)} — ${localizeLocalityName(afterWard, lang)}`;
+    }
+    const localityPart = afterWard.slice(0, lastComma);
+    const cityPart = afterWard.slice(lastComma + 2);
+    return `${localizeWardName(wardPart, lang)} — ${localizeLocalityName(localityPart, lang)}, ${localizeCityName(cityPart, lang)}`;
+  }
+
+  // No locality segment -- composeWard still appends ", city" directly onto the ward name. The
+  // LAST ", " is what separates them (never the first): several real ward names already contain
+  // their own comma (e.g. "Maninagar, Ahmedabad (M.Corp.) Ward No. 37"), so splitting on the
+  // first comma would wrongly cut a real ward name in half.
+  const lastComma = text.lastIndexOf(", ");
+  if (lastComma === -1) return localizeWardName(text, lang);
+  const wardPart = text.slice(0, lastComma);
+  const cityPart = text.slice(lastComma + 2);
+  return `${localizeWardName(wardPart, lang)}, ${localizeCityName(cityPart, lang)}`;
 }

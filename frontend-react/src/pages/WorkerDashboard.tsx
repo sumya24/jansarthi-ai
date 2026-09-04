@@ -20,6 +20,7 @@ import SearchWithDateFilter from "../components/SearchWithDateFilter";
 import ServiceDonutPanel from "../components/ServiceDonutPanel";
 import ComplaintsTrendChart from "../components/ComplaintsTrendChart";
 import ResolutionRateGauge from "../components/ResolutionRateGauge";
+import { localizeWardText } from "../lib/locationNames";
 import "../styles/dashboard.css";
 
 // LIVE-REPORTED GAP: this queue used to fetch and render EVERY complaint assigned to this worker
@@ -239,7 +240,7 @@ export default function WorkerDashboard() {
         <div className="page-head">
           <div>
             <h1 className="page-title display">{t(lang, "worker.title")}</h1>
-            <p className="page-sub">{user?.ward ? `${t(lang, "worker.wardPrefix")}: ${user.ward}` : t(lang, "worker.noWard")}</p>
+            <p className="page-sub">{user?.ward ? `${t(lang, "worker.wardPrefix")}: ${localizeWardText(user.ward, lang)}` : t(lang, "worker.noWard")}</p>
           </div>
         </div>
 

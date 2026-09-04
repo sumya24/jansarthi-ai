@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useUiLang } from "../lib/uiLang";
 import { t } from "../lib/i18n";
 import { api } from "../lib/api";
+import { localizeWardText } from "../lib/locationNames";
 
 export interface LocationValue {
   ward: string;
@@ -215,7 +216,7 @@ export default function LocationPicker({
             </option>
             {wards.map((w) => (
               <option key={w} value={w}>
-                {w}
+                {localizeWardText(w, lang)}
               </option>
             ))}
           </select>

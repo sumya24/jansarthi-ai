@@ -7,6 +7,7 @@ import StatusBadge from "./StatusBadge";
 import ComplaintReportView from "./ComplaintReportView";
 import "../styles/dashboard.css";
 import { useModalA11y } from "../lib/useModalA11y";
+import { localizeWardText } from "../lib/locationNames";
 
 /** "Summary" -- a quick glance at a complaint (id, status, filed date, location, description,
  * assigned worker) built entirely from the row's own `Complaint` object, so it always paints
@@ -39,7 +40,10 @@ export default function SummaryModal({
 }) {
   const { token } = useAuth();
   const { lang } = useUiLang();
-  const location = [complaint.ward, complaint.location_ulb, complaint.location_district, complaint.location_state]
+  const location = [
+    complaint.ward ? localizeWardText(complaint.ward, lang) : null,
+    complaint.location_ulb, complaint.location_district, complaint.location_state,
+  ]
     .filter(Boolean)
     .join(", ");
 

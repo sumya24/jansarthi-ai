@@ -300,10 +300,27 @@ class Notification(Base):
             update, which is noisy; ComplaintUpdatesTimeline already surfaces those on request
             instead of pushing a notification for each one. Similarly deliberate: citizens are
             never notified of a rejection at all -- see reject_complaint()'s own docstring.
-        title: Short headline, already-formatted (e.g. "New complaint assigned").
-        message: One-line detail (e.g. "Streetlight complaint — Ward 14").
+        title: Short headline, already-formatted (e.g. "New complaint assigned") -- written at
+            creation time in whatever language was active then, but for every type
+            notification_render.py covers (citizen accept/start/resolve, worker new/reassigned,
+            admin COMPLAINT_REJECTED), GET /notifications ignores this column and rebuilds the
+            text fresh in the CURRENT viewer's language instead (see that module's own docstring
+            for why: a column can't follow a later language switch). Still the real, only source
+            of truth for AI_ALERT (not covered -- no complaint_id at all) and for any
+            COMPLAINT_REJECTED row from before `related_rejection_id` existed (nothing to
+            recompute from).
+        message: One-line detail (e.g. "Streetlight complaint — Ward 14") -- same caveat as
+            `title` above.
         complaint_id: The complaint this notification is about, or None -- AI_ALERT is the one
             type that never has one (it isn't about any single complaint).
+        related_rejection_id: For a COMPLAINT_REJECTED notification, which specific
+            ComplaintRejection it's about -- needed because a complaint can be rejected more than
+            once over its life (reassigned each time), so `complaint_id` alone can't say which
+            rejection (and therefore which worker's name) a given notification is about. None for
+            every other type, and None for a COMPLAINT_REJECTED row created before this column
+            existed (that row keeps showing its original frozen text -- see `title` above -- since
+            guessing which of possibly several rejections it was about risks naming the wrong
+            worker).
         created_at: UTC timestamp.
         read_at: UTC timestamp the recipient's client marked it read, or None while unread.
     """
@@ -316,6 +333,7 @@ class Notification(Base):
     title: Mapped[str] = mapped_column(String(160), nullable=False)
     message: Mapped[str] = mapped_column(String(255), nullable=False)
     complaint_id: Mapped[int | None] = mapped_column(ForeignKey("complaints.id"), nullable=True)
+    related_rejection_id: Mapped[int | None] = mapped_column(ForeignKey("complaint_rejections.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
     read_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 

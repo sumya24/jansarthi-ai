@@ -11,6 +11,7 @@ import FeedbackForm from "../components/FeedbackForm";
 import { useAuth } from "../lib/auth";
 import { useUiLang } from "../lib/uiLang";
 import { formatDateTime, t } from "../lib/i18n";
+import { localizeWardText } from "../lib/locationNames";
 import { statusLabel } from "../lib/statusLabel";
 import { api, ApiError, type ComplaintDetail, type ComplaintReport } from "../lib/api";
 
@@ -161,7 +162,7 @@ export default function CitizenComplaintDetail() {
 
           <div className="section-label">{t(lang, "worker.detail.location")}</div>
           <p style={{ margin: 0 }}>
-            {[c.ward, c.location_ulb, c.location_district, c.location_state].filter(Boolean).join(", ") || t(lang, "citizen.noWard")}
+            {[c.ward ? localizeWardText(c.ward, lang) : null, c.location_ulb, c.location_district, c.location_state].filter(Boolean).join(", ") || t(lang, "citizen.noWard")}
             {c.address ? ` — ${c.address}` : ""}
           </p>
 

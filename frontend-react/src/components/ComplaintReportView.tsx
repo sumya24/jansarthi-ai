@@ -4,6 +4,7 @@ import { statusLabel } from "../lib/statusLabel";
 import type { ComplaintReport, ComplaintStatus } from "../lib/api";
 import EvidenceGallery, { type GalleryItem } from "./EvidenceGallery";
 import StatusBadge from "./StatusBadge";
+import { localizeWardText } from "../lib/locationNames";
 
 function toItems(filePaths: string[]): GalleryItem[] {
   return filePaths.map((filePath) => ({ filePath }));
@@ -15,7 +16,10 @@ function toItems(filePaths: string[]): GalleryItem[] {
  * (ReportModal / WorkerComplaintDetail) owns fetching. */
 export default function ComplaintReportView({ report }: { report: ComplaintReport }) {
   const { lang } = useUiLang();
-  const location = [report.location_ward, report.location_ulb, report.location_district, report.location_state]
+  const location = [
+    report.location_ward ? localizeWardText(report.location_ward, lang) : null,
+    report.location_ulb, report.location_district, report.location_state,
+  ]
     .filter(Boolean)
     .join(", ");
 

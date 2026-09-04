@@ -9,6 +9,7 @@ import { useAuth } from "../lib/auth";
 import { useUiLang } from "../lib/uiLang";
 import { useDebouncedValue } from "../lib/useDebouncedValue";
 import { t } from "../lib/i18n";
+import { localizeWardText } from "../lib/locationNames";
 import { api, ApiError, type WorkerSummary } from "../lib/api";
 import { useToast } from "../lib/toast";
 import "../styles/dashboard.css";
@@ -327,7 +328,7 @@ export default function AdminWorkers() {
                           </Link>
                         </td>
                         <td className="mono" style={{ padding: "12px 16px", borderBottom: "1px solid var(--line)", color: "var(--ink-2)" }}>{w.phone}</td>
-                        <td style={{ padding: "12px 16px", borderBottom: "1px solid var(--line)", color: "var(--ink-2)" }}>{w.ward}</td>
+                        <td style={{ padding: "12px 16px", borderBottom: "1px solid var(--line)", color: "var(--ink-2)" }}>{w.ward ? localizeWardText(w.ward, lang) : w.ward}</td>
                         <td className="mono" style={{ padding: "12px 16px", borderBottom: "1px solid var(--line)" }}>{w.open_complaints}</td>
                         <td className="mono" style={{ padding: "12px 16px", borderBottom: "1px solid var(--line)" }}>{w.resolved_complaints}</td>
                         <td style={{ padding: "12px 16px", borderBottom: "1px solid var(--line)", color: "var(--ink-2)" }}>{w.preferred_language}</td>
