@@ -10,6 +10,7 @@ import { useAuth } from "../lib/auth";
 import { useUiLang } from "../lib/uiLang";
 import { useDebouncedValue } from "../lib/useDebouncedValue";
 import { formatDate, t } from "../lib/i18n";
+import { localizeWardText } from "../lib/locationNames";
 import { api, ApiError, type Complaint, type ComplaintStatus, type WorkerSummary } from "../lib/api";
 import SearchWithDateFilter from "../components/SearchWithDateFilter";
 import "../styles/dashboard.css";
@@ -162,7 +163,7 @@ export default function AdminWorkerDetail() {
             <h1 className="page-title display">{worker ? worker.full_name : t(lang, "admin.workerDetailTitle")}</h1>
             {worker && (
               <p className="page-sub">
-                {worker.phone} · {worker.ward ?? "—"} · {worker.preferred_language}
+                {worker.phone} · {worker.ward ? localizeWardText(worker.ward, lang) : "—"} · {worker.preferred_language}
               </p>
             )}
           </div>

@@ -14,6 +14,7 @@ import { useAuth } from "../lib/auth";
 import { useUiLang } from "../lib/uiLang";
 import { useDebouncedValue } from "../lib/useDebouncedValue";
 import { formatDate, t } from "../lib/i18n";
+import { localizeWardText } from "../lib/locationNames";
 import {
   api,
   ApiError,
@@ -542,7 +543,7 @@ export default function AdminDashboard() {
                         <td style={{ padding: "12px 16px", borderBottom: "1px solid var(--line)" }}>
                           <CategoryBadge category={c.service_category} lang={lang} />
                         </td>
-                        <td style={{ padding: "12px 16px", borderBottom: "1px solid var(--line)", color: "var(--ink-2)" }}>{c.ward ?? "—"}</td>
+                        <td style={{ padding: "12px 16px", borderBottom: "1px solid var(--line)", color: "var(--ink-2)" }}>{c.ward ? localizeWardText(c.ward, lang) : "—"}</td>
                         <td style={{ padding: "12px 16px", borderBottom: "1px solid var(--line)" }}>
                           <StatusBadge status={c.status} label={t(lang, COMPLAINT_STATUS_LABEL_KEY[c.status])} />
                         </td>

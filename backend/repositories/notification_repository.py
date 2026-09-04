@@ -22,9 +22,11 @@ def create_notification(
     title: str,
     message: str,
     complaint_id: int | None,
+    related_rejection_id: int | None = None,
 ) -> Notification:
     notification = Notification(
         recipient_id=recipient_id, type=type, title=title, message=message, complaint_id=complaint_id,
+        related_rejection_id=related_rejection_id,
     )
     db.add(notification)
     db.commit()

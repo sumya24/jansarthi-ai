@@ -10,6 +10,7 @@ import { api, ApiError, type AreaSummary } from "../lib/api";
 import type { ServiceCategory } from "../lib/ragTypes";
 import { useDebouncedValue } from "../lib/useDebouncedValue";
 import { SERVICE_CATEGORY_DEFS } from "../lib/serviceCategories";
+import { localizeWardText } from "../lib/locationNames";
 import "../styles/dashboard.css";
 
 const STATUS_LABEL_KEY = {
@@ -129,7 +130,7 @@ export default function MyArea() {
         <div className="page-head">
           <div>
             <h1 className="page-title display">{t(lang, "area.title")}</h1>
-            <p className="page-sub">{ward ? ward : t(lang, "area.noWardSet")}</p>
+            <p className="page-sub">{ward ? localizeWardText(ward, lang) : t(lang, "area.noWardSet")}</p>
           </div>
         </div>
 

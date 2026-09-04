@@ -43,6 +43,10 @@ def init_db() -> None:
 _COLUMN_MIGRATIONS: list[tuple[str, str, str]] = [
     # (table, column, full ALTER TABLE ADD COLUMN clause)
     ("ai_request_logs", "needs_review", "ALTER TABLE ai_request_logs ADD COLUMN needs_review BOOLEAN NOT NULL DEFAULT 0"),
+    (
+        "notifications", "related_rejection_id",
+        "ALTER TABLE notifications ADD COLUMN related_rejection_id INTEGER REFERENCES complaint_rejections(id)",
+    ),
 ]
 
 
