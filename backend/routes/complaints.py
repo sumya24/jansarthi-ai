@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session
 from backend.config import settings
 from backend.database import get_db
 from backend.deps import get_current_user, require_ai_rate_limit, require_role
-from backend.models import ULB, Complaint, ComplaintRejection, ComplaintStatusHistory, District, State, User
+from backend.models import ULB, Complaint, ComplaintRejection, ComplaintStatusHistory, ComplaintUpdate, District, State, User
 from backend.repositories import complaint_workflow_repository, evidence_repository, notification_repository
 from backend.schemas.rag_knowledge import ServiceCategory
 from backend.services import complaint_report_service
@@ -219,7 +219,7 @@ def _send_lifecycle_email_best_effort(
     db: Session,
     complaint: Complaint,
     event: Literal["created", "accepted", "started", "resolved"],
-    worker_note: str | None = None,
+    worker_update: ComplaintUpdate | None = None,
 ) -> None:
     """Fire-and-forget: sends the citizen a real email for one of their complaint's lifecycle
     moments, if (and only if) they have a verified email -- silently skipped otherwise, exactly
@@ -234,10 +234,15 @@ def _send_lifecycle_email_best_effort(
     and falling back to the stored English summary on an AIServiceError exactly like _to_response
     does, so a translation hiccup degrades to an English email rather than losing the send.
 
-    worker_note: passed straight through to send_complaint_status_email -- start_work()/
-    resolve_complaint() pass their own assessment/completion_status text here so the citizen sees
-    it in the email too, not only on the app's own complaint page (see that function's own
-    docstring for why this text is NOT translated, unlike the summary above).
+    LIVE-REPORTED, same bug as the on-page Updates timeline and the notification message snippet
+    (see _citizen_notification_message's own docstring): `worker_note` used to be passed straight
+    through untranslated -- "exactly as the worker wrote it" was really just this call site never
+    having been fixed, not a real design choice, since every OTHER citizen-facing view of this
+    exact same worker-authored text (the Updates timeline, the Resolution Report, the in-app
+    notification) already translates it. `worker_update` is now the actual ComplaintUpdate row
+    (start_work()/resolve_complaint() already have it on hand right after creating it) so this
+    reuses the SAME per-update translation cache those other views already read through, instead
+    of a second, uncached translation call for the same row.
     """
     citizen = db.query(User).filter(User.id == int(complaint.citizen_id)).first()
     if citizen is None or not citizen.email or not citizen.email_verified:
@@ -250,6 +255,13 @@ def _send_lifecycle_email_best_effort(
         except AIServiceError as exc:
             logger.error("Complaint %s: failed to translate lifecycle email into %s: %s", complaint.id, lang, exc)
             summary = complaint.summary
+    worker_note = worker_update.text if worker_update is not None else None
+    if worker_update is not None and lang != "en":
+        try:
+            worker_note = get_display_update_text(db, worker_update, lang, _translation_service)
+        except AIServiceError as exc:
+            logger.error("Complaint %s: failed to translate lifecycle email's worker note into %s: %s", complaint.id, lang, exc)
+            worker_note = worker_update.text
     cta_url = f"{settings.FRONTEND_BASE_URL}/citizen/complaints/{complaint.id}" if settings.FRONTEND_BASE_URL else None
     try:
         send_complaint_status_email(
@@ -1259,15 +1271,20 @@ def reject_complaint(
     # it isn't about any single complaint). Same LIVE-REPORTED gap as the citizen/worker
     # notifications above -- the title was hardcoded English; each admin may have their own
     # preferred_language, so this is localized PER admin inside the loop, not once outside it.
-    # The message body's worker name is a proper noun (never translated); the ward-number string
-    # itself also isn't prose -- left as-is, unlike the citizen-facing "Ward:"/"स्थान:" label.
+    #
+    # LIVE-REPORTED, part two: fixing the title wasn't the whole gap here either -- the message's
+    # own sentence ("{worker} rejected a complaint in {ward}.") was a hardcoded English f-string
+    # regardless of the admin's preferred_language, the same class of bug as the citizen/worker
+    # notification messages above. The worker's name and the ward name themselves are still never
+    # translated (real proper nouns/data, not prose) -- only the surrounding sentence template.
     for admin in db.query(User).filter(User.role == "admin").all():
+        admin_strings = _email_strings(admin.preferred_language or "en")
         notification_repository.create_notification(
             db,
             recipient_id=admin.id,
             type="COMPLAINT_REJECTED",
-            title=_email_strings(admin.preferred_language or "en")["heading.workerRejected"],
-            message=f"{worker.full_name} rejected a complaint in {complaint.ward}.",
+            title=admin_strings["heading.workerRejected"],
+            message=admin_strings["message.workerRejected"].format(worker=worker.full_name, ward=complaint.ward),
             complaint_id=complaint.id,
         )
 
@@ -1331,7 +1348,7 @@ def start_work(
         message=_citizen_notification_message(db, complaint, citizen_lang),
         complaint_id=complaint.id,
     )
-    _send_lifecycle_email_best_effort(db, complaint, "started", worker_note=assessment)
+    _send_lifecycle_email_best_effort(db, complaint, "started", worker_update=update)
     logger.info("Complaint %s work started by worker %s", complaint_id, worker.id)
     return _to_response(db, complaint, display_language=None)
 
@@ -1421,7 +1438,7 @@ def resolve_complaint(
         message=_citizen_notification_message(db, complaint, citizen_lang),
         complaint_id=complaint.id,
     )
-    _send_lifecycle_email_best_effort(db, complaint, "resolved", worker_note=cleaned_status)
+    _send_lifecycle_email_best_effort(db, complaint, "resolved", worker_update=completion_update)
     logger.info("Complaint %s resolved by worker %s", complaint_id, worker.id)
     return _to_response(db, complaint, display_language=None)
 

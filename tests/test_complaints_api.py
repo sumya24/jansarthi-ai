@@ -774,6 +774,11 @@ def test_accept_start_resolve_notifications_render_in_citizens_own_language(clie
 
     fake_translation_service = Mock()
     fake_translation_service.to_language.return_value = "कचरा उचलला नाही."
+    # Also needed here (not just to_language): "started"/"resolved" now pass their own
+    # ComplaintUpdate into _send_lifecycle_email_best_effort's worker_note translation, which
+    # calls get_display_update_text -> translate_auto_detecting_source, a different method on
+    # this same mock -- left unconfigured, it returns an unusable Mock object instead of a string.
+    fake_translation_service.translate_auto_detecting_source.return_value = "मी साइटची तपासणी केली."
     monkeypatch.setattr(complaints_module, "_translation_service", fake_translation_service)
 
     client.post(f"/complaints/{complaint_id}/accept", headers={"Authorization": f"Bearer {worker_token}"})
@@ -966,6 +971,13 @@ def test_reject_complaint_notifies_every_admin(client, make_worker, make_admin, 
     db = db_session()
     from backend.models import Notification
     expected_titles = {admin1.id: "A worker rejected a complaint", admin2.id: "एका कर्मचाऱ्याने तक्रार नाकारली"}
+    # LIVE-REPORTED, part two: the title above was fixed first, but the message's own sentence
+    # ("{worker} rejected a complaint in {ward}.") was still a hardcoded English f-string
+    # regardless of the admin's own preferred_language -- same bug, same per-recipient fix.
+    expected_messages = {
+        admin1.id: f"{worker['full_name']} rejected a complaint in Ward 14.",
+        admin2.id: f"{worker['full_name']} यांनी Ward 14 मधील एक तक्रार नाकारली.",
+    }
     for admin in (admin1, admin2):
         notif = (
             db.query(Notification)
@@ -975,6 +987,7 @@ def test_reject_complaint_notifies_every_admin(client, make_worker, make_admin, 
         assert notif is not None, f"admin {admin.id} got no COMPLAINT_REJECTED notification"
         assert notif.complaint_id == complaint_id
         assert notif.title == expected_titles[admin.id]
+        assert notif.message == expected_messages[admin.id]
     db.close()
 
 
