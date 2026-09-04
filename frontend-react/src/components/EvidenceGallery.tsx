@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useUiLang } from "../lib/uiLang";
-import { t } from "../lib/i18n";
+import { formatDateTime, t } from "../lib/i18n";
 import { api, type EvidenceFile } from "../lib/api";
 
 /**
@@ -74,7 +74,7 @@ export default function EvidenceGallery({ items }: { items: GalleryItem[] }) {
             <div className="evidence-lightbox-meta">
               {open.uploaderRole && t(lang, open.uploaderRole === "citizen" ? "evidence.fromCitizen" : "evidence.fromWorker")}
               {open.uploaderRole && open.createdAt && " · "}
-              {open.createdAt && new Date(open.createdAt).toLocaleString()}
+              {open.createdAt && formatDateTime(open.createdAt, lang)}
             </div>
           )}
         </div>

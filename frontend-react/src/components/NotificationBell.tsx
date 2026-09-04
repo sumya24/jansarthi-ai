@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../lib/auth";
 import { useUiLang } from "../lib/uiLang";
-import { t } from "../lib/i18n";
+import { formatDateTime, t } from "../lib/i18n";
 import { api, ApiError, type AppNotification } from "../lib/api";
 
 // Polling interval for the unread badge -- this app has no websockets/SSE (see
@@ -133,7 +133,7 @@ export default function NotificationBell() {
                 <span>{n.title}</span>
               </div>
               <div className="notif-item-message">{n.message}</div>
-              <div className="notif-item-meta">{new Date(n.created_at).toLocaleString()}</div>
+              <div className="notif-item-meta">{formatDateTime(n.created_at, lang)}</div>
             </button>
           ))}
         </div>

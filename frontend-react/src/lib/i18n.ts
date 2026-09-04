@@ -9,6 +9,79 @@ export const SUPPORTED_LANGUAGES: Record<LangCode, { name: string; gloss: string
   bn: { name: "বাংলা", gloss: "Bengali" },
 };
 
+// LIVE-REPORTED BUG: every date/time shown anywhere in the app (Date#toLocaleString/
+// toLocaleDateString/toLocaleTimeString, ~20+ call sites) was called with no locale argument --
+// `undefined`, which formats using the BROWSER's own locale, completely independent of the
+// citizen's own in-app language choice. A citizen using the app in Marathi still saw "Friday,
+// September 4, 2026" and "Apr/May/Jun..." in English, confirmed directly against the real
+// citizen Home screen. These map each of this app's own LangCode values to a real BCP-47 locale
+// tag Intl understands, so every timestamp actually follows the SAME language the rest of the
+// page is already rendered in, not whatever the visiting device happens to be set to.
+const LOCALE_TAGS: Record<LangCode, string> = {
+  en: "en-IN",
+  hi: "hi-IN",
+  mr: "mr-IN",
+  or: "or-IN",
+  gu: "gu-IN",
+  bn: "bn-IN",
+};
+
+export function localeTag(lang: LangCode): string {
+  return LOCALE_TAGS[lang] ?? "en-IN";
+}
+
+// CONFIRMED (checked directly against real Chromium): unlike the other 5 languages, no "or"
+// locale tag -- "or", "or-IN", "or-Orya", "ory", any variant -- is present in Chromium's bundled
+// ICU data (Intl.DateTimeFormat.supportedLocalesOf returns empty for all of them), so
+// toLocaleDateString('or-IN', ...) silently falls back to the runtime's default locale instead of
+// throwing -- a citizen using Odia would still see an English (or whatever the device defaults
+// to) date. This app already carries full Odia copy everywhere else via a static lookup table
+// (this file's own I18N dict below), never relying on the browser for translation -- the same
+// approach applied here: format via a GUARANTEED "en-IN" base (not whatever "or-IN" happens to
+// fall back to, which isn't reliably English either) and substitute each English weekday/month
+// name for its real Odia equivalent.
+const ODIA_WEEKDAYS: Record<string, string> = {
+  Sunday: "ରବିବାର", Monday: "ସୋମବାର", Tuesday: "ମଙ୍ଗଳବାର", Wednesday: "ବୁଧବାର",
+  Thursday: "ଗୁରୁବାର", Friday: "ଶୁକ୍ରବାର", Saturday: "ଶନିବାର",
+  Sun: "ରବି", Mon: "ସୋମ", Tue: "ମଙ୍ଗଳ", Wed: "ବୁଧ", Thu: "ଗୁରୁ", Fri: "ଶୁକ୍ର", Sat: "ଶନି",
+};
+const ODIA_MONTHS: Record<string, string> = {
+  January: "ଜାନୁଆରୀ", February: "ଫେବ୍ରୁଆରୀ", March: "ମାର୍ଚ୍ଚ", April: "ଏପ୍ରିଲ", May: "ମଇ", June: "ଜୁନ",
+  July: "ଜୁଲାଇ", August: "ଅଗଷ୍ଟ", September: "ସେପ୍ଟେମ୍ବର", October: "ଅକ୍ଟୋବର", November: "ନଭେମ୍ବର", December: "ଡିସେମ୍ବର",
+  Jan: "ଜାନୁ", Feb: "ଫେବୃ", Mar: "ମାର୍ଚ୍ଚ", Apr: "ଏପ୍ରି", Jun: "ଜୁନ", Jul: "ଜୁଲା", Aug: "ଅଗ",
+  Sep: "ସେପ୍ଟ", Oct: "ଅକ୍ଟୋ", Nov: "ନଭେ", Dec: "ଡିସେ",
+};
+// Longest keys first -- "September" must win over a shorter, unrelated substring match before it.
+const ODIA_NAME_KEYS = Object.keys({ ...ODIA_WEEKDAYS, ...ODIA_MONTHS }).sort((a, b) => b.length - a.length);
+const ODIA_NAME_MAP: Record<string, string> = { ...ODIA_WEEKDAYS, ...ODIA_MONTHS };
+
+function toOdiaDateString(englishFormatted: string): string {
+  let result = englishFormatted;
+  for (const key of ODIA_NAME_KEYS) {
+    result = result.replaceAll(key, ODIA_NAME_MAP[key]);
+  }
+  return result;
+}
+
+function asDate(value: Date | string | number): Date {
+  return value instanceof Date ? value : new Date(value);
+}
+
+export function formatDate(value: Date | string | number, lang: LangCode, options?: Intl.DateTimeFormatOptions): string {
+  if (lang === "or") return toOdiaDateString(asDate(value).toLocaleDateString("en-IN", options));
+  return asDate(value).toLocaleDateString(localeTag(lang), options);
+}
+
+export function formatDateTime(value: Date | string | number, lang: LangCode, options?: Intl.DateTimeFormatOptions): string {
+  if (lang === "or") return toOdiaDateString(asDate(value).toLocaleString("en-IN", options));
+  return asDate(value).toLocaleString(localeTag(lang), options);
+}
+
+export function formatTime(value: Date | string | number, lang: LangCode, options?: Intl.DateTimeFormatOptions): string {
+  if (lang === "or") return toOdiaDateString(asDate(value).toLocaleTimeString("en-IN", options));
+  return asDate(value).toLocaleTimeString(localeTag(lang), options);
+}
+
 type Dict = Record<string, string>;
 
 export const I18N: Record<LangCode, Dict> = {
