@@ -176,3 +176,35 @@ def test_lifecycle_email_defaults_to_english_for_a_citizen_without_a_language_pr
     mock.assert_called_once()
     _args, kwargs = mock.call_args
     assert kwargs["lang"] == "en"
+
+
+def test_lifecycle_email_worker_note_translated_into_citizens_own_language(
+    client, monkeypatch, make_citizen, make_worker, db_session
+):
+    """LIVE-REPORTED: the worker's own assessment/completion note shown in the lifecycle email
+    used to always be passed through exactly as the worker wrote it (always English) -- the same
+    bug as the on-page Updates timeline and the in-app notification message, just one more call
+    site that had never been fixed. Reuses the same per-update translation cache those other views
+    already read through (see _send_lifecycle_email_best_effort's own docstring)."""
+    mock = Mock()
+    monkeypatch.setattr(complaints_module, "send_complaint_status_email", mock)
+    fake_translation_service = Mock()
+    fake_translation_service.to_language.return_value = "कचरा उचलला नाही."
+    fake_translation_service.translate_auto_detecting_source.return_value = "मी साइटची तपासणी केली, आज दुरुस्त करेन."
+    monkeypatch.setattr(complaints_module, "_translation_service", fake_translation_service)
+
+    citizen_token, citizen = make_citizen(phone="9000000001", preferred_language="mr")
+    worker_token, worker = make_worker(phone="9000000002", ward="Ward 14")
+    complaint_id = _make_assigned_complaint_for_citizen(db_session, citizen["id"], worker["id"])
+    client.post(f"/complaints/{complaint_id}/accept", headers={"Authorization": f"Bearer {worker_token}"})
+
+    response = client.post(
+        f"/complaints/{complaint_id}/start", headers={"Authorization": f"Bearer {worker_token}"},
+        data={"assessment": "Inspected the site, will fix it today."},
+    )
+    assert response.status_code == 200
+
+    assert mock.call_count == 2  # "accepted" (no worker_note), then "started" (with one)
+    _args, kwargs = mock.call_args
+    assert kwargs["worker_note"] == "मी साइटची तपासणी केली, आज दुरुस्त करेन."
+    assert kwargs["worker_note"] != "Inspected the site, will fix it today."

@@ -35,14 +35,14 @@ def _fake_agent_create_complaint(db, citizen_id, language_code, text, audio_chun
     return complaint
 
 
-def _make_worker_row(db_session, phone: str, ward: str, full_name: str = "Worker") -> int:
+def _make_worker_row(db_session, phone: str, ward: str, full_name: str = "Worker", preferred_language: str = "en") -> int:
     """Insert a worker directly into the db (bypassing the /admin/workers API + its bootstrap-
     admin fixture, which can't be called twice with the same hardcoded admin phone) — needed for
     tests that want more than one worker in the same ward."""
     db = db_session()
     worker = User(
         full_name=full_name, phone=phone, password_hash=hash_password("secret123!"),
-        role="worker", preferred_language="en", ward=ward,
+        role="worker", preferred_language=preferred_language, ward=ward,
     )
     db.add(worker)
     db.commit()
@@ -756,20 +756,39 @@ def test_accept_complaint_unlocks_phone_number(client, make_worker, db_session):
     assert body["assigned_worker_phone"] == worker["phone"]
 
 
-def test_accept_start_resolve_notifications_render_in_citizens_own_language(client, make_citizen, make_worker, db_session):
+def test_accept_start_resolve_notifications_render_in_citizens_own_language(client, make_citizen, make_worker, db_session, monkeypatch):
     """LIVE-REPORTED, confirmed directly against a real Marathi citizen dashboard: every in-app
     notification title for accept/start/resolve was hardcoded English regardless of the citizen's
     own preferred_language, even though the lifecycle EMAIL for the exact same event already
     rendered correctly in all 6 languages -- these titles now reuse that same per-language table
-    (see routes/complaints.py's _citizen_notification_title)."""
+    (see routes/complaints.py's _citizen_notification_title).
+
+    LIVE-REPORTED, part two: fixing the title wasn't the whole gap -- confirmed directly against
+    the real citizen Home screen afterward, the notification's own message text still showed the
+    complaint's raw English summary next to an already-correctly-translated "Location:" label,
+    because the message snippet was complaint.summary verbatim, never translated at all (see
+    _citizen_notification_message's own docstring)."""
     citizen_token, citizen = make_citizen(phone="9000000001", preferred_language="mr")
     worker_token, worker = make_worker(phone="9000000002", ward="Ward 14")
     complaint_id = _make_assigned_complaint(db_session, worker["id"], citizen_id=str(citizen["id"]))
+
+    fake_translation_service = Mock()
+    fake_translation_service.to_language.return_value = "कचरा उचलला नाही."
+    # Also needed here (not just to_language): "started"/"resolved" now pass their own
+    # ComplaintUpdate into _send_lifecycle_email_best_effort's worker_note translation, which
+    # calls get_display_update_text -> translate_auto_detecting_source, a different method on
+    # this same mock -- left unconfigured, it returns an unusable Mock object instead of a string.
+    fake_translation_service.translate_auto_detecting_source.return_value = "मी साइटची तपासणी केली."
+    monkeypatch.setattr(complaints_module, "_translation_service", fake_translation_service)
 
     client.post(f"/complaints/{complaint_id}/accept", headers={"Authorization": f"Bearer {worker_token}"})
     notifs = client.get("/notifications", headers={"Authorization": f"Bearer {citizen_token}"}).json()
     accepted = next(n for n in notifs["notifications"] if n["type"] == "COMPLAINT_ACCEPTED")
     assert accepted["title"] == "एका कर्मचाऱ्याने तुमची तक्रार स्वीकारली आहे"
+    # The snippet ("Garbage not collected." on the seeded complaint) must be translated too, not
+    # just the "Location:" label glued onto it.
+    assert "कचरा उचलला नाही." in accepted["message"]
+    assert "Garbage not collected." not in accepted["message"]
 
     client.post(
         f"/complaints/{complaint_id}/start", headers={"Authorization": f"Bearer {worker_token}"},
@@ -789,6 +808,37 @@ def test_accept_start_resolve_notifications_render_in_citizens_own_language(clie
     # The "Ward: ..." label inside the message body had the exact same gap -- see
     # _citizen_notification_message's own docstring.
     assert "स्थान: Ward 14" in resolved["message"]
+    assert "कचरा उचलला नाही." in resolved["message"]
+    assert "Garbage not collected." not in resolved["message"]
+
+
+def test_worker_assignment_notification_snippet_translated_into_workers_language(client, make_citizen, make_worker, db_session, monkeypatch):
+    """Same bug, same fix, on the worker side (assignment_service.py's own copy of this pattern) --
+    a worker assigned a fresh complaint saw the notification's "Location:" label already correctly
+    translated, but the complaint's own summary snippet glued next to it stayed raw English.
+    Exercised via reject-then-reassign (a real assign_next_worker() call, unlike
+    _make_assigned_complaint, which writes a complaint directly as already-assigned and never
+    goes through assignment_service at all)."""
+    citizen_token, citizen = make_citizen(phone="9000000001")
+    worker_token, worker = make_worker(phone="9000000002", ward="Ward 14")
+
+    fake_translation_service = Mock()
+    fake_translation_service.to_language.return_value = "कचरा साफ नहीं हुआ।"
+    monkeypatch.setattr("backend.services.assignment_service._translation_service", fake_translation_service)
+
+    complaint_id = _make_assigned_complaint(db_session, worker["id"], citizen_id=str(citizen["id"]))
+    other_worker_id = _make_worker_row(db_session, phone="9000000099", ward="Ward 14", preferred_language="hi")
+    reject_response = client.post(
+        f"/complaints/{complaint_id}/reject", headers={"Authorization": f"Bearer {worker_token}"},
+        json={"reason": "Wrong ward."},
+    )
+    assert reject_response.status_code == 200
+
+    other_token = client.post("/auth/login", json={"identifier": "9000000099", "password": "secret123!"}).json()["access_token"]
+    notifs = client.get("/notifications", headers={"Authorization": f"Bearer {other_token}"}).json()
+    reassigned = next(n for n in notifs["notifications"] if n["type"] == "REASSIGNED")
+    assert "कचरा साफ नहीं हुआ।" in reassigned["message"]
+    assert "Garbage not collected." not in reassigned["message"]
 
 
 def test_accept_complaint_not_assigned_to_you_returns_403(client, make_worker, db_session):
@@ -921,6 +971,13 @@ def test_reject_complaint_notifies_every_admin(client, make_worker, make_admin, 
     db = db_session()
     from backend.models import Notification
     expected_titles = {admin1.id: "A worker rejected a complaint", admin2.id: "एका कर्मचाऱ्याने तक्रार नाकारली"}
+    # LIVE-REPORTED, part two: the title above was fixed first, but the message's own sentence
+    # ("{worker} rejected a complaint in {ward}.") was still a hardcoded English f-string
+    # regardless of the admin's own preferred_language -- same bug, same per-recipient fix.
+    expected_messages = {
+        admin1.id: f"{worker['full_name']} rejected a complaint in Ward 14.",
+        admin2.id: f"{worker['full_name']} यांनी Ward 14 मधील एक तक्रार नाकारली.",
+    }
     for admin in (admin1, admin2):
         notif = (
             db.query(Notification)
@@ -930,6 +987,7 @@ def test_reject_complaint_notifies_every_admin(client, make_worker, make_admin, 
         assert notif is not None, f"admin {admin.id} got no COMPLAINT_REJECTED notification"
         assert notif.complaint_id == complaint_id
         assert notif.title == expected_titles[admin.id]
+        assert notif.message == expected_messages[admin.id]
     db.close()
 
 

@@ -39,11 +39,15 @@ from sqlalchemy.orm import Session
 
 from backend.models import Complaint, ComplaintRejection, User
 from backend.repositories import complaint_workflow_repository, notification_repository
+from backend.services.complaint_translation_cache import get_display_text_and_summary
 from backend.services.email_service import _email_strings
+from backend.services.sarvam_client import AIServiceError
+from backend.services.translation_service import TranslationService
 
 logger = logging.getLogger(__name__)
 
 _SUMMARY_SNIPPET_LENGTH = 80
+_translation_service = TranslationService()
 
 
 def _candidates(db: Session, complaint: Complaint) -> list[User]:
@@ -135,8 +139,22 @@ def assign_next_worker(db: Session, complaint: Complaint) -> None:
     # routes/complaints.py's _citizen_notification_title/_citizen_notification_message). Reuses
     # the same shared, centralized per-language table (email_service.py's _email_strings) rather
     # than a second, independently-invented one.
-    strings = _email_strings(next_worker.preferred_language or "en")
+    #
+    # LIVE-REPORTED, part two: fixing the title/label above wasn't the whole gap -- the snippet
+    # itself was complaint.summary/translated_text verbatim, both always canonical English (see
+    # ComplaintAgent), so a worker using any non-English UI still got a correctly-translated
+    # "Location:" label glued onto a raw English complaint snippet. Same on-read translation cache
+    # every other view of this complaint's text already reads through; falls back to the raw
+    # English snippet on a translation failure, same as every other caller of that function.
+    worker_lang = next_worker.preferred_language or "en"
+    strings = _email_strings(worker_lang)
     snippet = (complaint.summary or complaint.translated_text or "").strip()
+    if worker_lang != "en" and snippet:
+        try:
+            display_text, display_summary = get_display_text_and_summary(db, complaint, worker_lang, _translation_service)
+            snippet = (display_summary or display_text or snippet).strip()
+        except AIServiceError as exc:
+            logger.error("On-read translation failed for complaint %s worker notification: %s", complaint.id, exc)
     if len(snippet) > _SUMMARY_SNIPPET_LENGTH:
         snippet = snippet[:_SUMMARY_SNIPPET_LENGTH].rstrip() + "…"
     location_label = strings["label.location"]

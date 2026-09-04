@@ -139,6 +139,7 @@ _EMAIL_STRINGS: dict[str, dict[str, str]] = {
         "heading.assigned": "New complaint assigned",
         "heading.reassigned": "Complaint reassigned to you",
         "heading.workerRejected": "A worker rejected a complaint",
+        "message.workerRejected": "{worker} rejected a complaint in {ward}.",
         "heading.highErrorRate": "High AI error rate",
         "heading.highLatency": "High AI latency",
         "status.created": "Submitted",
@@ -162,6 +163,7 @@ _EMAIL_STRINGS: dict[str, dict[str, str]] = {
         "heading.assigned": "आपको एक नई शिकायत सौंपी गई है",
         "heading.reassigned": "एक शिकायत आपको फिर से सौंपी गई है",
         "heading.workerRejected": "एक कर्मचारी ने शिकायत अस्वीकार कर दी",
+        "message.workerRejected": "{worker} ने {ward} में एक शिकायत अस्वीकार कर दी।",
         "heading.highErrorRate": "एआई की उच्च त्रुटि दर",
         "heading.highLatency": "एआई की उच्च विलंबता",
         "status.created": "प्रस्तुत किया गया",
@@ -185,6 +187,7 @@ _EMAIL_STRINGS: dict[str, dict[str, str]] = {
         "heading.assigned": "तुम्हाला नवीन तक्रार नियुक्त करण्यात आली आहे",
         "heading.reassigned": "एक तक्रार तुम्हाला पुन्हा नियुक्त करण्यात आली आहे",
         "heading.workerRejected": "एका कर्मचाऱ्याने तक्रार नाकारली",
+        "message.workerRejected": "{worker} यांनी {ward} मधील एक तक्रार नाकारली.",
         "heading.highErrorRate": "एआयचा उच्च त्रुटी दर",
         "heading.highLatency": "एआयचा उच्च विलंब",
         "status.created": "सादर केले",
@@ -208,6 +211,7 @@ _EMAIL_STRINGS: dict[str, dict[str, str]] = {
         "heading.assigned": "ଆପଣଙ୍କୁ ଏକ ନୂଆ ଅଭିଯୋଗ ନ୍ୟସ୍ତ କରାଯାଇଛି",
         "heading.reassigned": "ଏକ ଅଭିଯୋଗ ପୁଣି ଆପଣଙ୍କୁ ନ୍ୟସ୍ତ କରାଯାଇଛି",
         "heading.workerRejected": "ଜଣେ କର୍ମଚାରୀ ଏକ ଅଭିଯୋଗ ପ୍ରତ୍ୟାଖ୍ୟାନ କରିଛନ୍ତି",
+        "message.workerRejected": "{worker} {ward} ରେ ଏକ ଅଭିଯୋଗ ପ୍ରତ୍ୟାଖ୍ୟାନ କରିଛନ୍ତି।",
         "heading.highErrorRate": "AI ର ଉଚ୍ଚ ତ୍ରୁଟି ହାର",
         "heading.highLatency": "AI ର ଉଚ୍ଚ ବିଳମ୍ବ",
         "status.created": "ଦାଖଲ କରାଗଲା",
@@ -231,6 +235,7 @@ _EMAIL_STRINGS: dict[str, dict[str, str]] = {
         "heading.assigned": "તમને એક નવી ફરિયાદ સોંપવામાં આવી છે",
         "heading.reassigned": "એક ફરિયાદ ફરીથી તમને સોંપવામાં આવી છે",
         "heading.workerRejected": "એક કર્મચારીએ ફરિયાદ નકારી",
+        "message.workerRejected": "{worker} એ {ward} માં એક ફરિયાદ નકારી.",
         "heading.highErrorRate": "AI ની ઊંચી ભૂલ દર",
         "heading.highLatency": "AI ની ઊંચી વિલંબતા",
         "status.created": "સબમિટ કરેલ",
@@ -254,6 +259,7 @@ _EMAIL_STRINGS: dict[str, dict[str, str]] = {
         "heading.assigned": "আপনাকে একটি নতুন অভিযোগ বরাদ্দ করা হয়েছে",
         "heading.reassigned": "একটি অভিযোগ আবার আপনাকে বরাদ্দ করা হয়েছে",
         "heading.workerRejected": "একজন কর্মী একটি অভিযোগ প্রত্যাখ্যান করেছেন",
+        "message.workerRejected": "{worker} {ward}-এ একটি অভিযোগ প্রত্যাখ্যান করেছেন।",
         "heading.highErrorRate": "AI-এর উচ্চ ত্রুটির হার",
         "heading.highLatency": "AI-এর উচ্চ বিলম্ব",
         "status.created": "জমা দেওয়া হয়েছে",
@@ -312,10 +318,12 @@ def _render_status_html(
 
     worker_note/worker_note_label add one more such row -- the worker's own initial-assessment or
     completion note (see send_complaint_status_email's docstring) -- only when both are given.
-    Shown exactly as the worker wrote it, not translated: the app itself doesn't translate
-    worker-authored update text anywhere (routes/complaints.py's _to_update_response returns
-    update.text as-is even to the citizen), so translating it only in this email would make the
-    email say something the app's own complaint page doesn't."""
+    Rendered exactly as passed in, with no translation logic of its own: by the time it reaches
+    this function, the caller (_send_lifecycle_email_best_effort) has already translated it into
+    the citizen's own language via the same per-update cache the on-page Updates timeline and the
+    Resolution Report read through -- translating twice here would be redundant, and translating
+    it only here (while leaving it untranslated) was the actual bug this docstring used to
+    describe before that caller was fixed."""
     cta_html = ""
     if cta_url:
         cta_html = f"""
