@@ -20,6 +20,18 @@ run without a GPU. Loaded lazily (first load downloads/initializes real model we
 time, like `SentenceTransformerEmbeddingProvider` in embedding_provider.py, the precedent this
 class follows), so importing this module never pays that cost, and a request that Gemini
 successfully answers never touches it at all.
+
+LIVE-REPORTED: this fallback used to have no time limit at all -- confirmed directly against
+production, a real citizen photo left a request stuck on "Thinking..." for over 15 minutes (no
+GPU on this VM; a large/detailed image can genuinely take that long on CPU). Unlike Gemini's own
+call (a plain httpx `timeout=`), the local model's inference is a synchronous, CPU-bound Python
+call with nothing to cancel it mid-flight -- `describe_image()` now runs it on a worker thread and
+gives up waiting after `settings.VISION_LOCAL_MODEL_TIMEOUT_SECONDS` (see that setting's own
+comment for why 45s), raising VisionServiceError the same way any other failure on this path
+already does. The worker thread itself isn't killed (Python can't force-stop a running thread) --
+it keeps using CPU in the background until it finishes or the process exits -- but the citizen's
+own request is never blocked on it past the timeout, and every other caller of this service
+already treats a VisionServiceError as best-effort (see that exception's own docstring).
 """
 
 from __future__ import annotations
@@ -28,8 +40,15 @@ import base64
 import io
 import logging
 import threading
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 
 logger = logging.getLogger(__name__)
+
+# One shared pool for every local-model call this process ever makes -- a plain daemon thread per
+# call (rather than a whole ThreadPoolExecutor) would work too, but this keeps the "give up after
+# N seconds, thread keeps running in the background" contract explicit and reusable without
+# hand-rolling it at each call site.
+_local_model_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="vision-local-model")
 
 _CAPTION_PROMPT = (
     "Describe this image in one or two sentences, focusing on any civic issue visible such as a "
@@ -181,11 +200,31 @@ class VisionService:
         if gemini_caption is not None:
             return gemini_caption
 
+        from backend.config import settings
+
         model = self._get_model()
-        try:
+
+        def _run_local_inference() -> str:
             encoded_image = model.encode_image(image)
             caption = model.answer_question(encoded_image, _CAPTION_PROMPT, self._tokenizer)
-            caption = (caption or "").strip()
+            return (caption or "").strip()
+
+        # Run on a worker thread with a hard wait limit -- this is a synchronous, CPU-bound call
+        # with no `timeout=` of its own to pass in (unlike Gemini's httpx call above), so a
+        # timeout can only be enforced by giving up on waiting for it, not by cancelling it (see
+        # this module's own docstring). The worker thread keeps running in the background even
+        # after this raises -- deliberately not joined/cancelled, since Python has no safe way to
+        # force-stop a running thread.
+        future = _local_model_executor.submit(_run_local_inference)
+        try:
+            caption = future.result(timeout=settings.VISION_LOCAL_MODEL_TIMEOUT_SECONDS)
+        except FutureTimeoutError as exc:
+            logger.error(
+                "Vision captioning via the local model exceeded %ss; giving up (the model call keeps "
+                "running in the background, but this request no longer waits on it).",
+                settings.VISION_LOCAL_MODEL_TIMEOUT_SECONDS,
+            )
+            raise VisionServiceError("Image understanding timed out. Please try again.") from exc
         except Exception as exc:
             logger.error("Vision captioning failed: %s", exc, exc_info=True)
             raise VisionServiceError("Image understanding failed. Please try again.") from exc
