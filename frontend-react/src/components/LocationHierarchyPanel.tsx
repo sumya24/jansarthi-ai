@@ -1,6 +1,6 @@
 import { Fragment, useMemo, useState } from "react";
 import { t, type LangCode } from "../lib/i18n";
-import { localizeStateName } from "../lib/locationNames";
+import { localizeCityName, localizeStateName } from "../lib/locationNames";
 import type { LocationStatusCount } from "../lib/api";
 
 type StatusKey = "pending" | "assigned" | "accepted" | "in_progress" | "resolved";
@@ -11,19 +11,6 @@ const STATUS_COLOR: Record<StatusKey, string> = {
   accepted: "var(--status-progress)",
   in_progress: "var(--status-progress)",
   resolved: "var(--status-resolved)",
-};
-
-// Same reasoning as localizeStateName (lib/locationNames.ts) -- only the handful of real districts that
-// actually show up in today's demo data, not an attempt at all ~700+ Indian districts (India has
-// far too many for a hand-built table to stay accurate, and a wrong invented translation in a
-// civic government app is worse than an honest English fallback).
-const DISTRICT_NAME_TRANSLATIONS: Record<string, Partial<Record<LangCode, string>>> = {
-  "Bengaluru Urban": { hi: "बेंगलुरु शहरी", mr: "बेंगळुरू शहरी", or: "ବେଙ୍ଗାଲୁରୁ ସହରାଞ୍ଚଳ", gu: "બેંગલુરુ શહેરી", bn: "বেঙ্গালুরু শহুরে" },
-  Mumbai: { hi: "मुंबई", mr: "मुंबई", or: "ମୁମ୍ବାଇ", gu: "મુંબઈ", bn: "মুম্বই" },
-  Ahmedabad: { hi: "अहमदाबाद", mr: "अहमदाबाद", or: "ଅହମ୍ମଦାବାଦ", gu: "અમદાવાદ", bn: "আহমেদাবাদ" },
-  Chennai: { hi: "चेन्नई", mr: "चेन्नई", or: "ଚେନ୍ନାଇ", gu: "ચેન્નાઈ", bn: "চেন্নাই" },
-  Lucknow: { hi: "लखनऊ", mr: "लखनौ", or: "ଲକ୍ଷ୍ନୌ", gu: "લખનૌ", bn: "লখনউ" },
-  Kolkata: { hi: "कोलकाता", mr: "कोलकाता", or: "କୋଲକାତା", gu: "કોલકાતા", bn: "কলকাতা" },
 };
 
 // Ward names are free text typed per-complaint (Complaint.ward, not a foreign key into the wards
@@ -82,7 +69,9 @@ function localizeName(name: string, lang: LangCode): string {
   if (name === "Unassigned") return t(lang, "admin.locUnassigned");
   const state = localizeStateName(name, lang);
   if (state !== name) return state;
-  return DISTRICT_NAME_TRANSLATIONS[name]?.[lang] ?? WARD_NAME_TRANSLATIONS[name]?.[lang] ?? name;
+  const city = localizeCityName(name, lang);
+  if (city !== name) return city;
+  return WARD_NAME_TRANSLATIONS[name]?.[lang] ?? name;
 }
 
 type Counts = Partial<Record<StatusKey, number>>;

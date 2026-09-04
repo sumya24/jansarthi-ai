@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { useAuth } from "../lib/auth";
 import { useUiLang } from "../lib/uiLang";
 import { t } from "../lib/i18n";
-import { localizeStateName } from "../lib/locationNames";
+import { localizeCityName, localizeStateName, localizeWardName } from "../lib/locationNames";
 import { api, ApiError, type Complaint, type LocationOption, type WorkerSummary } from "../lib/api";
 import { useToast } from "../lib/toast";
 import { useModalA11y } from "../lib/useModalA11y";
@@ -176,7 +176,7 @@ export default function AssignWorkerModal({
               >
                 <option value="">{t(lang, "admin.assignFilterAllCities")}</option>
                 {districtOptions.map((d) => (
-                  <option key={d.id} value={d.id}>{d.name}</option>
+                  <option key={d.id} value={d.id}>{localizeCityName(d.name, lang)}</option>
                 ))}
               </select>
             </div>
@@ -190,7 +190,7 @@ export default function AssignWorkerModal({
               >
                 <option value="">{t(lang, "admin.assignFilterAllWards")}</option>
                 {wardOptions.map((w) => (
-                  <option key={w.id} value={w.id}>{w.name}</option>
+                  <option key={w.id} value={w.id}>{localizeWardName(w.name, lang)}</option>
                 ))}
               </select>
             </div>
