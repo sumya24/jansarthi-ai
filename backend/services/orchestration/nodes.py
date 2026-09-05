@@ -760,10 +760,30 @@ def _resolve_location(state: GraphState, config: RunnableConfig) -> LocationReso
         if resolved.city or resolved.state or resolved.is_ambiguous:
             return resolved
 
+    # LIVE-REPORTED BUG (manual test script Section 8, rows 7-11): the frontend resends the
+    # ORIGINAL question as `question` alongside a location follow-up reply in `ctx.location_text`
+    # (see AskSarthi.tsx's handleSubmit/handleFollowUpOption), so once an ambiguous-location
+    # clarification has already fired once, this text is guaranteed to be the SAME already-
+    # processed question -- re-resolving it here just reproduces the identical ambiguous match
+    # regardless of what the citizen actually typed in `location_text` (gibberish, numbers,
+    # symbols, a long string, a blank space all triggered this). Gated on `ctx.location_text`
+    # alone -- NOT `_should_skip_home_ward_fallback` (a first attempt at this fix used that, and
+    # broke every normal first-turn resolution: its heuristic half,
+    # `looks_like_it_names_an_unrecognized_place`, matches ANY "preposition + capitalized word"
+    # shape with no idea whether the gazetteer actually knows that place, so it fired on real,
+    # recognized places too -- "...in Nagpur?" -- silently skipping the very tier meant to find
+    # them). Only reached when `ctx.location_text` was truthy AND already failed to resolve above
+    # (a resolved one already returned) -- exactly "an explicit signal was given and it didn't
+    # resolve", the same situation `explicit_signal_unresolved` (location_node, below) exists to
+    # recognize -- so skip re-deriving a location from the stale resent text instead of surfacing
+    # that honest reply. GPS (below) is still tried -- a separate, independent signal that can
+    # legitimately accompany a failed location_text, not the stale text this tier is guarding
+    # against.
     text = state.get("normalized_message") or state.get("user_message", "")
-    resolved = extractor.resolve_from_text(text)
-    if resolved.city or resolved.state or resolved.is_ambiguous:
-        return resolved
+    if not ctx.location_text:
+        resolved = extractor.resolve_from_text(text)
+        if resolved.city or resolved.state or resolved.is_ambiguous:
+            return resolved
 
     if ctx.latitude is not None and ctx.longitude is not None:
         resolved = extractor.resolve_from_coordinates(ctx.latitude, ctx.longitude)
