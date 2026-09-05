@@ -766,14 +766,21 @@ def _resolve_location(state: GraphState, config: RunnableConfig) -> LocationReso
     # clarification has already fired once, this text is guaranteed to be the SAME already-
     # processed question -- re-resolving it here just reproduces the identical ambiguous match
     # regardless of what the citizen actually typed in `location_text` (gibberish, numbers,
-    # symbols, a long string, a blank space all triggered this). `_should_skip_home_ward_fallback`
-    # already recognizes exactly this situation ("an explicit signal was given AND it failed to
-    # resolve") for the history/home-ward tiers below -- this tier was simply missing the same
-    # guard, so an unresolved explicit `location_text` fell straight through to a stale re-match
-    # instead of surfacing the honest "couldn't recognize" reply `explicit_signal_unresolved`
-    # (location_node, below) already exists to produce.
+    # symbols, a long string, a blank space all triggered this). Gated on `ctx.location_text`
+    # alone -- NOT `_should_skip_home_ward_fallback` (a first attempt at this fix used that, and
+    # broke every normal first-turn resolution: its heuristic half,
+    # `looks_like_it_names_an_unrecognized_place`, matches ANY "preposition + capitalized word"
+    # shape with no idea whether the gazetteer actually knows that place, so it fired on real,
+    # recognized places too -- "...in Nagpur?" -- silently skipping the very tier meant to find
+    # them). Only reached when `ctx.location_text` was truthy AND already failed to resolve above
+    # (a resolved one already returned) -- exactly "an explicit signal was given and it didn't
+    # resolve", the same situation `explicit_signal_unresolved` (location_node, below) exists to
+    # recognize -- so skip re-deriving a location from the stale resent text instead of surfacing
+    # that honest reply. GPS (below) is still tried -- a separate, independent signal that can
+    # legitimately accompany a failed location_text, not the stale text this tier is guarding
+    # against.
     text = state.get("normalized_message") or state.get("user_message", "")
-    if not _should_skip_home_ward_fallback(ctx, text):
+    if not ctx.location_text:
         resolved = extractor.resolve_from_text(text)
         if resolved.city or resolved.state or resolved.is_ambiguous:
             return resolved
