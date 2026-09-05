@@ -202,3 +202,94 @@ def test_insufficient_complaint_data_never_claims_success(client, monkeypatch, d
     db = db_session()
     assert db.query(Complaint).count() == 0
     db.close()
+
+
+# --- LIVE-REPORTED GAP: a citizen who replies to "What issue would you like to report?" with just
+# the bare category name ("Streetlight") got that exact text stored as the ENTIRE complaint
+# description -- a worker sees the category twice over, with no real detail about what's wrong.
+# Ask Sarthi should ask for a real description before showing the confirmation prompt, and the
+# category established from the bare reply must survive into the eventual filed complaint even
+# when the fuller description mentions an unrelated-looking keyword ("Road" in a streetlight
+# description) that would otherwise mis-classify it. ---
+
+
+def test_bare_category_reply_is_asked_to_describe_then_files_under_the_right_category(client, monkeypatch, db_session, make_citizen, make_worker):
+    _install_real_service(monkeypatch)
+    make_worker(phone="9200099080", ward="Mohali")
+    token, _ = make_citizen(phone="9200000080")
+
+    turn1 = _ask(client, token, "I want to file a complaint about something in Mohali.")
+    assert turn1.status_code == 200
+    body1 = turn1.json()
+    history = [
+        _turn("user", "I want to file a complaint about something in Mohali."),
+        ConversationTurn(role="assistant", content=body1["answer"], complaint_workflow_state=body1.get("complaint_workflow_state")).model_dump(),
+    ]
+
+    turn2 = _ask(client, token, "Streetlight", conversation_history=history)
+    assert turn2.status_code == 200
+    body2 = turn2.json()
+    assert body2["complaint_workflow_state"] == "AWAITING_DESCRIPTION", body2
+    assert "describe" in body2["answer"].lower()
+    history.append(_turn("user", "Streetlight"))
+    history.append(ConversationTurn(role="assistant", content=body2["answer"], complaint_workflow_state=body2.get("complaint_workflow_state")).model_dump())
+
+    description = "The pole near the bus stop on Ring Road has been dark for a week, it flickers and then goes off"
+    turn3 = _ask(client, token, description, conversation_history=history)
+    assert turn3.status_code == 200
+    body3 = turn3.json()
+    assert body3["service_category"] == "STREETLIGHTS", body3
+    assert description in body3["answer"]
+    assert body3["complaint_workflow_state"] == "AWAITING_CONFIRMATION"
+    history.append(_turn("user", description))
+    history.append(ConversationTurn(role="assistant", content=body3["answer"], complaint_workflow_state=body3.get("complaint_workflow_state")).model_dump())
+
+    turn4 = _ask(client, token, "Yes, submit it.", conversation_history=history)
+    assert turn4.status_code == 200
+    body4 = turn4.json()
+    assert "streetlights" in body4["answer"].lower()
+    assert "roads potholes" not in body4["answer"].lower()
+
+    db = db_session()
+    complaint = db.query(Complaint).one()
+    assert complaint.service_category == "STREETLIGHTS"
+    assert complaint.translated_text and "ring road" in complaint.translated_text.lower()
+    db.close()
+
+
+def test_bare_category_reply_only_asked_to_describe_once_not_looped(client, monkeypatch, make_citizen, make_worker):
+    _install_real_service(monkeypatch)
+    make_worker(phone="9200099081", ward="Mohali")
+    token, _ = make_citizen(phone="9200000081")
+
+    turn1 = _ask(client, token, "I want to file a complaint about something in Mohali.")
+    body1 = turn1.json()
+    history = [
+        _turn("user", "I want to file a complaint about something in Mohali."),
+        ConversationTurn(role="assistant", content=body1["answer"], complaint_workflow_state=body1.get("complaint_workflow_state")).model_dump(),
+    ]
+
+    turn2 = _ask(client, token, "Streetlight", conversation_history=history)
+    body2 = turn2.json()
+    assert body2["complaint_workflow_state"] == "AWAITING_DESCRIPTION"
+    history.append(_turn("user", "Streetlight"))
+    history.append(ConversationTurn(role="assistant", content=body2["answer"], complaint_workflow_state=body2.get("complaint_workflow_state")).model_dump())
+
+    # Replies with ANOTHER bare category word -- must not ask a second time (no infinite loop);
+    # proceeds straight to confirmation using whatever text was actually given.
+    turn3 = _ask(client, token, "Streetlight", conversation_history=history)
+    assert turn3.status_code == 200
+    body3 = turn3.json()
+    assert body3["complaint_workflow_state"] == "AWAITING_CONFIRMATION"
+
+
+def test_rich_description_given_directly_skips_the_describe_more_prompt(client, monkeypatch, make_citizen, make_worker):
+    _install_real_service(monkeypatch)
+    make_worker(phone="9200099082", ward="Mohali")
+    token, _ = make_citizen(phone="9200000082")
+
+    resp = _ask(client, token, "Street light not working in Mohali, it has been flickering for days and is now completely dark.")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["complaint_workflow_state"] == "AWAITING_CONFIRMATION"
+    assert body["service_category"] == "STREETLIGHTS"

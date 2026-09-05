@@ -537,12 +537,17 @@ _INTENT_AMBIGUOUS_CLARIFICATION_MARKERS = (
 # has real translations; this is only the same safe fallback the other groups keep for an
 # older/non-compliant caller that predates the state field.
 _LOCATION_CHANGE_PROMPT_MARKERS = ("which ward or area would you like to use instead",)
+# English-only for now (brand new prompt, so there is no older/pre-existing caller that predates
+# the state field to fall back for) -- same safety-net role as the other MARKERS tuples, matched
+# only when an older/unaware caller doesn't echo `complaint_workflow_state` back at all.
+_DESCRIPTION_PROMPT_MARKERS = ("can you describe the issue in a bit more detail",)
 _COMPLAINT_FLOW_PROMPT_MARKERS = (
     _CATEGORY_CLARIFICATION_MARKERS
     + _LOCATION_CLARIFICATION_MARKERS
     + _CONFIRMATION_PROMPT_MARKERS
     + _INTENT_AMBIGUOUS_CLARIFICATION_MARKERS
     + _LOCATION_CHANGE_PROMPT_MARKERS
+    + _DESCRIPTION_PROMPT_MARKERS
 )
 
 
@@ -583,11 +588,12 @@ def _last_turn_invites_complaint_reply(conversation_history: list[dict] | None) 
         # DRAFT: category and/or location still being clarified. AWAITING_CONFIRMATION: the
         # confirmation prompt itself. AWAITING_LOCATION_CHANGE: the citizen picked "Change
         # location" on that confirmation prompt and is now being asked which ward/area to use
-        # instead (see complaint_flow_node's own handling). All three invite a reply that
-        # continues the SAME complaint flow; CONFIRMED/CANCELLED are terminal -- the next message
-        # starts fresh (see GraphState.complaint_workflow_state's own docstring for the full value
-        # list).
-        return explicit_state in ("DRAFT", "AWAITING_CONFIRMATION", "AWAITING_LOCATION_CHANGE")
+        # instead (see complaint_flow_node's own handling). AWAITING_DESCRIPTION: the citizen's
+        # reply named only a bare category with no real description, and is now being asked to
+        # describe the actual issue. All four invite a reply that continues the SAME complaint
+        # flow; CONFIRMED/CANCELLED are terminal -- the next message starts fresh (see
+        # GraphState.complaint_workflow_state's own docstring for the full value list).
+        return explicit_state in ("DRAFT", "AWAITING_CONFIRMATION", "AWAITING_LOCATION_CHANGE", "AWAITING_DESCRIPTION")
     return _last_assistant_turn_matches(conversation_history, _COMPLAINT_FLOW_PROMPT_MARKERS)
 
 
@@ -661,7 +667,23 @@ def intent_node(state: GraphState, config: RunnableConfig) -> dict[str, Any]:
     # current time?" does not (fixing the regression this second pass caught), so it correctly
     # falls through to UNCLEAR exactly as before either fix.
     awaiting_confirmation = _awaiting_confirmation(history)
-    if intent == QuestionIntent.UNCLEAR and (
+    # LIVE-REPORTED GAP: unlike every override below (all deliberately narrowed to SHORT,
+    # non-question replies -- see `is_continuation_reply`'s own construction -- to avoid
+    # misreading a genuinely unrelated question as a continuation), a reply to Sarthi's OWN
+    # "can you describe the issue in a bit more detail?" follow-up is very often a full, long
+    # sentence: "The pole near the bus stop on Ring Road has been dark for a week, it flickers
+    # and then goes off." None of the length/question-shape-gated overrides below would ever
+    # promote that to TYPE_A_COMPLAINT, so without this override the graph routed it on its OWN
+    # keyword content instead -- live-reproduced: that exact sentence mentions "Road" and got
+    # sent to the intent_ambiguous clarification for Roads Potholes, abandoning the already-
+    # established Streetlights complaint entirely. Unconditional on shape/length -- unlike the
+    # general overrides, there is no legitimate ambiguity about what this turn represents:
+    # AWAITING_DESCRIPTION means category+location are already resolved and Sarthi is single-
+    # mindedly waiting for exactly this reply, nothing else.
+    awaiting_description = _awaiting_description(history)
+    if awaiting_description:
+        intent = QuestionIntent.TYPE_A_COMPLAINT
+    elif intent == QuestionIntent.UNCLEAR and (
         (last_turn_invites_reply and is_continuation_reply) or state.get("has_image") or has_gps
         or (awaiting_confirmation and looks_like_an_attempted_yes_or_no(text))
     ):
@@ -1844,6 +1866,42 @@ def _awaiting_location_change(conversation_history: list[dict]) -> bool:
     return _last_assistant_turn_matches(conversation_history, _LOCATION_CHANGE_PROMPT_MARKERS)
 
 
+def _awaiting_description(conversation_history: list[dict]) -> bool:
+    """Same two-tier shape again -- true when the LAST turn is Sarthi's own "can you describe the
+    issue in a bit more detail?" follow-up (see `_looks_like_bare_category_only`), so THIS turn's
+    message is the citizen's real description, not a fresh category/location/confirmation reply."""
+    explicit_state = _last_assistant_turn_state(conversation_history)
+    if explicit_state is not None:
+        return explicit_state == "AWAITING_DESCRIPTION"
+    return _last_assistant_turn_matches(conversation_history, _DESCRIPTION_PROMPT_MARKERS)
+
+
+# LIVE-REPORTED GAP: a citizen who replies to "What issue would you like to report?" with just the
+# bare category name ("Streetlight", "Street Light", "Garbage") gets that exact text stored as the
+# ENTIRE complaint description -- a worker sees only the category name twice over (once as the
+# category field, once as the "description"), with no actual detail about what's wrong or where.
+# Matched against a fixed, known set of bare category phrases (the quick-reply button labels
+# themselves, plus the obvious typed variants/synonyms a citizen would use instead of clicking one)
+# rather than a length/shape heuristic -- a general "is this descriptive enough" guess risks false
+# positives on short-but-real descriptions ("Water leaking badly"), where this fixed set only ever
+# matches text that says, in substance, nothing more than the category itself.
+_BARE_CATEGORY_PHRASES = frozenset({
+    "garbage", "waste", "trash", "garbage collection", "waste collection", "sanitation",
+    "water", "water supply", "drainage", "sewage", "water drainage", "water leak", "water leakage",
+    "road", "roads", "pothole", "potholes", "road repair", "road damage",
+    "streetlight", "streetlights", "street light", "street lights",
+    "other", "issue", "problem", "complaint",
+})
+
+
+def _looks_like_bare_category_only(complaint_text: str) -> bool:
+    """True when `complaint_text` says nothing more than naming a category -- see the module
+    comment above this function for why a fixed phrase set is used instead of a length/shape
+    guess."""
+    normalized = complaint_text.strip().lower().rstrip(".!?")
+    return normalized in _BARE_CATEGORY_PHRASES
+
+
 # Matches `_build_confirmation_prompt`'s own EXACT summary text (see that function) -- DOTALL
 # because `complaint_text` can itself contain a literal newline (the "[Attached photo shows: ...]"
 # suffix `input_processing_node` appends is on its own blank-line-separated line).
@@ -1923,7 +1981,25 @@ def _recover_complaint_draft_from_history(state: GraphState) -> tuple[ServiceCat
     as if it were a real complaint). Same stopping-point fixes as that function too (see
     `_TOPIC_BOUNDARY_INTENTS` and `_turn_closes_a_filed_complaint`) -- this scan must not reach
     past an unrelated, already-closed exchange -- or past an already-successfully-filed complaint
-    -- into an even older, disconnected complaint attempt either."""
+    -- into an even older, disconnected complaint attempt either.
+
+    LIVE-REPORTED BUG (found once real, multi-clause descriptions became common via the
+    AWAITING_DESCRIPTION follow-up): `_recover_from_confirmation_prompt_text` below used to be
+    tried only as a FALLBACK, after this scan -- fine when the scan found nothing, but wrong when
+    it finds something WRONG. A long, genuinely descriptive sentence ("The pole near the bus stop
+    on Ring Road has been dark for a week, it flickers and then goes off") can classify() to a
+    DIFFERENT category than the one already correctly established earlier in the conversation --
+    "Road" outweighs the streetlight-shaped rest of the sentence in the keyword-based classifier --
+    so a citizen replying "yes, submit it" to a correctly-labeled Streetlights confirmation got a
+    complaint filed as Roads Potholes instead. The confirmation prompt about to be replied to is
+    unambiguously more authoritative than re-classifying raw text a second time (same reasoning
+    `_recover_ward_from_confirmation_prompt_text` already applies to the ward, tried first for
+    exactly this reason) -- tried FIRST now, with this scan kept as the fallback for every other
+    case that function doesn't cover (no confirmation prompt yet, an older/unaware caller whose
+    prompt text doesn't match, etc.)."""
+    category, recovered_text = _recover_from_confirmation_prompt_text(state)
+    if category is not None:
+        return category, recovered_text or (state.get("normalized_message") or state.get("user_message", ""))
     for turn in reversed(state.get("conversation_history", [])):
         if turn.get("role") == "assistant":
             if _turn_closes_a_filed_complaint(turn):
@@ -1939,12 +2015,6 @@ def _recover_complaint_draft_from_history(state: GraphState) -> tuple[ServiceCat
             break
         if result.service_category is not None and result.intent in _RECOVERABLE_INTENTS:
             return result.service_category, content
-    # Fallback -- see `_recover_from_confirmation_prompt_text`'s own docstring for the exact gap
-    # this closes (a category recovered via the photo-clarification shortcut has no classify()-able
-    # USER turn for the scan above to find).
-    category, recovered_text = _recover_from_confirmation_prompt_text(state)
-    if category is not None:
-        return category, recovered_text or (state.get("normalized_message") or state.get("user_message", ""))
     return None, state.get("normalized_message") or state.get("user_message", "")
 
 
@@ -2233,6 +2303,11 @@ def complaint_flow_node(state: GraphState, config: RunnableConfig) -> dict[str, 
     # description. Uses the same two-tier check `_awaiting_confirmation` does (see
     # `_awaiting_location_change`'s own docstring).
     awaiting_location_change = _awaiting_location_change(history)
+    # LIVE-REPORTED GAP: true when the LAST turn was this function's own "can you describe the
+    # issue in a bit more detail?" follow-up (see `_looks_like_bare_category_only`) -- this turn's
+    # text is therefore the citizen's real description, never a fresh category/location/
+    # confirmation reply.
+    awaiting_description = _awaiting_description(history)
 
     if awaiting_confirmation and is_explicit_cancellation(text):
         # LIVE-REPORTED REQUEST: a citizen who cancelled a photo-attached complaint, then
@@ -2323,6 +2398,15 @@ def complaint_flow_node(state: GraphState, config: RunnableConfig) -> dict[str, 
         # -- the exact same behavior that already lets a plain "yes, submit it" reply skip past
         # itself to find the real description.
         category, complaint_text = _recover_complaint_draft_from_history(state)
+    elif awaiting_description:
+        # This turn's text is the citizen's answer to Sarthi's own "can you describe the issue in
+        # a bit more detail?" follow-up -- it IS the real complaint description now (unlike the
+        # `awaiting_confirmation`/`awaiting_location_change` branches above, deliberately NOT
+        # recovered from history: recovering there would just find the same bare category text
+        # again, the exact thing this whole feature exists to replace). Only the category is
+        # recovered from history, since this reply won't necessarily repeat it.
+        category = _recover_category_from_history(state)
+        complaint_text = text
     else:
         category_value = state.get("service_category")
         category = ServiceCategory(category_value) if category_value else _recover_category_from_history(state)
@@ -2521,6 +2605,24 @@ def complaint_flow_node(state: GraphState, config: RunnableConfig) -> dict[str, 
         }
 
     if not confirmed:
+        # LIVE-REPORTED GAP: shown once, the first time the confirmation prompt would otherwise
+        # appear (`not awaiting_description` -- never asked twice in a row, so a citizen who
+        # replies with another bare word anyway still reaches confirmation on the second attempt
+        # rather than looping forever) -- asks for a real description instead of filing a
+        # complaint whose entire content is its own category name. See `_looks_like_bare_category_
+        # only`'s own module comment.
+        if not awaiting_description and _looks_like_bare_category_only(complaint_text):
+            question = "Can you describe the issue in a bit more detail?"
+            return {
+                "response_text": _localize(question, state, config),
+                "follow_up_required": True,
+                "follow_up_question": question,
+                "follow_up_options": [],
+                "routed_to": "NONE_CLARIFICATION_NEEDED",
+                "sources": [],
+                "service_category": category.value,
+                "complaint_workflow_state": "AWAITING_DESCRIPTION",
+            }
         # Either this is the first turn where category + a real location have both resolved
         # (never seen a confirmation prompt yet), or a pending confirmation exists but this reply
         # was neither a clear "yes" nor a clear "no" -- Part 3's own rule: never guess, ask again.

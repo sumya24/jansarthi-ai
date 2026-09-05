@@ -127,7 +127,10 @@ class GraphState(TypedDict, total=False):
     # "AWAITING_CONFIRMATION" (category+location resolved, but the citizen has not yet explicitly
     # confirmed -- create_complaint() has NOT run), "AWAITING_LOCATION_CHANGE" (the citizen picked
     # "Change location" on the confirmation prompt and is being asked which ward/area to use
-    # instead -- see complaint_flow_node's own location-change handling), "CONFIRMED" (explicit
+    # instead -- see complaint_flow_node's own location-change handling), "AWAITING_DESCRIPTION"
+    # (the citizen's reply named only a bare category, e.g. "Streetlight", with no real
+    # description -- being asked to describe the actual issue before the confirmation prompt is
+    # shown, so the stored complaint isn't just the category name verbatim), "CONFIRMED" (explicit
     # confirmation received this turn, complaint created), or "CANCELLED" (explicit cancellation
     # received, OR a citizen-picked replacement location was rejected for belonging to a different
     # city than their own saved one -- see the same handling). This state is *derived* fresh each
