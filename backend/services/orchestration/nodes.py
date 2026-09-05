@@ -760,10 +760,23 @@ def _resolve_location(state: GraphState, config: RunnableConfig) -> LocationReso
         if resolved.city or resolved.state or resolved.is_ambiguous:
             return resolved
 
+    # LIVE-REPORTED BUG (manual test script Section 8, rows 7-11): the frontend resends the
+    # ORIGINAL question as `question` alongside a location follow-up reply in `ctx.location_text`
+    # (see AskSarthi.tsx's handleSubmit/handleFollowUpOption), so once an ambiguous-location
+    # clarification has already fired once, this text is guaranteed to be the SAME already-
+    # processed question -- re-resolving it here just reproduces the identical ambiguous match
+    # regardless of what the citizen actually typed in `location_text` (gibberish, numbers,
+    # symbols, a long string, a blank space all triggered this). `_should_skip_home_ward_fallback`
+    # already recognizes exactly this situation ("an explicit signal was given AND it failed to
+    # resolve") for the history/home-ward tiers below -- this tier was simply missing the same
+    # guard, so an unresolved explicit `location_text` fell straight through to a stale re-match
+    # instead of surfacing the honest "couldn't recognize" reply `explicit_signal_unresolved`
+    # (location_node, below) already exists to produce.
     text = state.get("normalized_message") or state.get("user_message", "")
-    resolved = extractor.resolve_from_text(text)
-    if resolved.city or resolved.state or resolved.is_ambiguous:
-        return resolved
+    if not _should_skip_home_ward_fallback(ctx, text):
+        resolved = extractor.resolve_from_text(text)
+        if resolved.city or resolved.state or resolved.is_ambiguous:
+            return resolved
 
     if ctx.latitude is not None and ctx.longitude is not None:
         resolved = extractor.resolve_from_coordinates(ctx.latitude, ctx.longitude)
