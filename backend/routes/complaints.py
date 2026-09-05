@@ -676,7 +676,19 @@ def get_area_summary(
     statuses = _parse_status_filter(status)
     categories = _parse_category_filter(category)
 
-    ward_query = db.query(Complaint).filter(Complaint.ward == citizen.ward)
+    # LIVE-REPORTED: a real district got renamed in the districts table (e.g. "Bengaluru" ->
+    # "Bengaluru Urban") after real complaints/workers already had the OLD name baked into their
+    # composed `ward` text -- a citizen signing up fresh afterward gets the NEW name, so this
+    # exact-text match found zero of the 22 real complaints genuinely in the same ward (confirmed
+    # directly against production, then fixed as a one-time data backfill). Text-only matching is
+    # fragile to exactly this kind of drift recurring for a different city later; matching on
+    # `ward_id` too (when the citizen has one -- see MeUpdateRequest's own docstring on how/when
+    # that gets set) closes that gap the same way assignment_service.py's own worker-matching
+    # already prefers structured ids over free text.
+    ward_filter = Complaint.ward == citizen.ward
+    if citizen.ward_id is not None:
+        ward_filter = or_(ward_filter, Complaint.ward_id == citizen.ward_id)
+    ward_query = db.query(Complaint).filter(ward_filter)
     stats_query = ward_query
     if categories:
         stats_query = stats_query.filter(Complaint.service_category.in_(categories))

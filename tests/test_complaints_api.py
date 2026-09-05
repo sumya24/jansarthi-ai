@@ -455,6 +455,41 @@ def test_list_complaints_rejects_unknown_category_filter(client, make_admin):
     assert response.status_code == 400
 
 
+def test_area_summary_matches_by_ward_id_even_when_ward_text_differs(client, make_citizen, db_session):
+    """LIVE-REPORTED, confirmed directly against production: a real district got renamed in the
+    districts table ("Bengaluru" -> "Bengaluru Urban") after real complaints/workers already had
+    the OLD name baked into their composed `ward` text -- a citizen signing up fresh afterward
+    gets the NEW name, so My Area's old exact-text match found zero of the real complaints
+    genuinely in the same ward (fixed as a one-time production data backfill, then this
+    structural fix so the same class of drift can't silently recur for a different city later).
+    Simulates that exact shape: a citizen whose `ward_id` is set but whose free-text `ward`
+    doesn't match a real complaint's text -- My Area must still find it via the shared ward_id,
+    the same way assignment_service.py's own worker-matching already prefers structured ids over
+    free text."""
+    token, citizen = make_citizen(phone="9000000010", ward="New Name, Some City")
+
+    db = db_session()
+    db.query(User).filter(User.id == citizen["id"]).update({"ward_id": 42})
+    db.add(Complaint(
+        citizen_id=str(citizen["id"]), original_text="a", original_language="en",
+        translated_text="A pothole issue.", summary="s", ward="Old Name, Some City", ward_id=42, status="pending",
+    ))
+    # A second complaint in a genuinely different ward (different ward_id, different text) must
+    # never show up -- proves this isn't just "match everything by texting fuzzily".
+    db.add(Complaint(
+        citizen_id="999", original_text="b", original_language="en",
+        translated_text="A different ward's issue.", summary="s2", ward="Unrelated Ward", ward_id=99, status="pending",
+    ))
+    db.commit()
+    db.close()
+
+    response = client.get("/complaints/area-summary", headers={"Authorization": f"Bearer {token}"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 1
+    assert body["complaints"][0]["display_text"] == "A pothole issue."
+
+
 def test_area_summary_search_and_pagination(client, make_citizen, db_session):
     token, citizen = make_citizen(phone="9000000010", ward="Kothrud")
 
