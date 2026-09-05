@@ -122,11 +122,15 @@ def build_report_data(
         """Same optional-translation-with-fallback shape as the block just above, applied to a
         worker-authored ComplaintUpdate instead of the complaint itself -- see
         complaint_update_translation_cache.py's own docstring for why this needs a DIFFERENT
-        cache/lookup (no "always English" guarantee, source language is approximated per-update
-        from the authoring worker's own preference)."""
+        cache/lookup: NO "always English" guarantee -- `update.text` is stored exactly as the
+        worker typed it, in whatever language that was, so (unlike the complaint-text block just
+        above) `display_language == "en"` is NOT a safe reason to skip translation here.
+        LIVE-REPORTED BUG: this used to skip whenever display_language == "en", on the same wrong
+        assumption -- a Gujarati-typed worker note rendered unchanged, in Gujarati, to an
+        English-reading viewer's report."""
         if update is None:
             return None
-        if not display_language or display_language == "en" or translation_service is None:
+        if not display_language or translation_service is None:
             return update.text
         try:
             return get_display_update_text(db, update, display_language, translation_service)

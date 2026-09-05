@@ -13,7 +13,7 @@ from unittest.mock import Mock
 
 import backend.routes.complaints as complaints_module
 from backend.config import settings
-from backend.models import Complaint, ComplaintEvidence, User
+from backend.models import Complaint, ComplaintEvidence, ComplaintUpdate, User
 from backend.services.auth_service import hash_password
 from tests.image_fixtures import VALID_JPEG_BYTES as _JPEG_BYTES
 from tests.image_fixtures import VALID_PNG_BYTES as _PNG_BYTES
@@ -190,6 +190,49 @@ def test_worker_can_upload_initial_assessment_evidence(client, make_worker, db_s
     # Also returned inline on the update itself (not just the complaint-level list).
     update = next(u for u in detail.json()["updates"] if u["update_type"] == "INITIAL_ASSESSMENT")
     assert len(update["evidence"]) == 1
+
+
+def test_evidence_is_not_shown_if_its_complaint_id_does_not_match_the_update(client, make_worker, db_session):
+    """LIVE-REPORTED BUG: get_evidence_for_update used to filter on update_id alone --
+    complaint_updates.id is a plain global auto-increment, not scoped per-complaint, so a stale
+    evidence row whose update_id happens to collide with a real, unrelated update's id (e.g. a
+    leftover row from an old one-off script, inserted against ids that didn't exist yet at the
+    time) could surface on a completely different citizen's real complaint. Requiring
+    complaint_id to ALSO match closes this -- a row for a different complaint no longer shows up
+    just because its update_id number coincidentally matches."""
+    token_a, worker_a = make_worker(phone="9000000010", ward="Ward 14")
+    complaint_a = _make_complaint(db_session, worker_id=worker_a["id"], status="accepted")
+    response = client.post(
+        f"/complaints/{complaint_a}/start", headers={"Authorization": f"Bearer {token_a}"},
+        data={"assessment": "Checked the site."},
+    )
+    assert response.status_code == 200
+
+    _, worker_b = make_worker(phone="9000000011", ward="Ward 9")
+    complaint_b = _make_complaint(db_session, citizen_id="2", worker_id=worker_b["id"], ward="Ward 9", status="accepted")
+
+    db = db_session()
+    real_update_id = (
+        db.query(ComplaintUpdate)
+        .filter(ComplaintUpdate.complaint_id == complaint_a)
+        .one()
+        .id
+    )
+    # A stale row for a DIFFERENT complaint (complaint_b) that happens to share the same
+    # update_id as complaint_a's real update -- exactly the collision shape found live.
+    db.add(ComplaintEvidence(
+        complaint_id=complaint_b, update_id=real_update_id, uploaded_by=worker_b["id"], uploader_role="worker",
+        file_name="stale.jpg", file_path="stale-file.jpg", file_type="image/jpeg", file_size=287,
+        stage="INITIAL_ASSESSMENT",
+    ))
+    db.commit()
+    db.close()
+
+    detail = client.get(f"/complaints/{complaint_a}", headers={"Authorization": f"Bearer {token_a}"})
+    assert detail.status_code == 200
+    update = next(u for u in detail.json()["updates"] if u["update_type"] == "INITIAL_ASSESSMENT")
+    assert update["evidence"] == []
+    assert not any(e["file_name"] == "stale.jpg" for e in detail.json()["evidence"])
 
 
 def test_worker_can_upload_multiple_progress_evidence_photos(client, make_worker, db_session):
