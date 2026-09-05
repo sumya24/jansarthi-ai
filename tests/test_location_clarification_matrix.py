@@ -65,6 +65,62 @@ def test_ambiguous_state_name_asks_which_city_not_couldnt_recognize(client, monk
     assert _UNRECOGNIZED not in answer_lower
 
 
+# --- LIVE-REPORTED BUG: once an ambiguous-STATE clarification has already fired once (the
+# citizen's own MESSAGE TEXT names it, e.g. "...in Punjab?"), the real frontend resends that same
+# original question alongside the new location_text reply (see AskSarthi.tsx's
+# handleSubmit/handleFollowUpOption) -- _resolve_location's message-text tier was re-scanning that
+# stale, already-ambiguous text on the follow-up turn and re-finding the SAME ambiguous match
+# regardless of what the citizen actually typed into location_text, so a gibberish/numbers/
+# symbols/blank reply to "Which city -- Patiala, Mohali?" just got the identical question back
+# verbatim instead of the honest "couldn't recognize" message the tests below (for the
+# no-location-in-the-question-text case) already covered. Distinct from those: here the message
+# TEXT itself, not just location_text, names an ambiguous place -- the exact shape that slipped
+# through before this fix.
+#
+# A direct unit test of `_resolve_location` rather than a full HTTP/graph round trip: reproducing
+# this live requires the confirmation/clarification prompt's own routing (RAG retrieval scoring
+# for civic-info questions, or worker-ward seeding for complaint-shaped ones) to land exactly on
+# the ambiguous branch, which this suite's smaller test fixtures make unreliable to force --
+# calling the function under test directly, with the REAL gazetteer/extractor (same corpus
+# production uses, nothing faked about the resolution logic itself), pins down the actual
+# regression without depending on that unrelated routing. ---
+
+
+def test_resolve_location_ignores_stale_message_text_once_an_explicit_reply_failed():
+    from pathlib import Path
+
+    from backend.services.location_extractor import LocationExtractor, RagGazetteer
+    from backend.services.location_resolver import LocationResolver
+    from backend.services.orchestration.nodes import GraphDeps, RequestContext, _resolve_location
+
+    gazetteer = RagGazetteer(Path("data/rag_knowledge_base/chunks/chunks.json"))
+    extractor = LocationExtractor(gazetteer)
+
+    # Sanity check on the fixture itself: this message's OWN text really is ambiguous (Punjab has
+    # two real cities in the corpus) -- otherwise this test would pass for the wrong reason.
+    message = "Garbage is not being collected in Vijaynagar, Punjab."
+    assert extractor.resolve_from_text(message).is_ambiguous is True
+
+    class _FakeUser:
+        ward = None  # no home-ward fallback in play -- isolates this to the message-text tier
+
+    deps = GraphDeps(
+        retriever=None,
+        location_extractor=extractor,
+        answer_service=None,
+        complaint_agent=None,
+        location_resolver=LocationResolver(),
+    )
+    ctx = RequestContext(db=None, user=_FakeUser(), latitude=None, longitude=None, location_text="asdkjhaskjdh")
+    config = {"configurable": {"deps": deps, "ctx": ctx}}
+    state = {"normalized_message": message, "user_message": message, "conversation_history": []}
+
+    resolution = _resolve_location(state, config)
+    assert resolution.is_ambiguous is False, "re-discovered the stale ambiguous match from the resent original text"
+    assert resolution.city is None
+    assert resolution.state is None
+
+
 # --- genuinely unrecognizable input, across very different shapes -- all must get the honest
 # "couldn't recognize" message, never the generic "what is the location?" repeat, and never a
 # crash ---
