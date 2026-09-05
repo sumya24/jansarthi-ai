@@ -214,7 +214,12 @@ def _send_lifecycle_email_best_effort(
             logger.error("Complaint %s: failed to translate lifecycle email into %s: %s", complaint.id, lang, exc)
             summary = complaint.summary
     worker_note = worker_update.text if worker_update is not None else None
-    if worker_update is not None and lang != "en":
+    # LIVE-REPORTED BUG (same class as _to_update_response's own matching fix): a ComplaintUpdate
+    # has no "always canonical English" guarantee the way Complaint.summary does (see
+    # complaint_update_translation_cache.py's own docstring) -- a worker's note can itself be
+    # typed in ANY language, so `lang != "en"` is the wrong condition to skip translation on here.
+    # Attempted whenever a worker_update exists at all, regardless of the citizen's own `lang`.
+    if worker_update is not None:
         try:
             worker_note = get_display_update_text(db, worker_update, lang, _translation_service)
         except AIServiceError as exc:
@@ -509,13 +514,25 @@ def _to_update_response(db: Session, update, display_language: str | None = None
     worker's note in raw English while the exact same note, on the same complaint's Resolution
     Report, rendered correctly in Marathi -- the cache/translation mechanism
     (ComplaintUpdateTranslation, complaint_update_translation_cache.py) already existed and
-    already worked; this response just never called it. Same optional-translation-with-fallback
-    shape as _to_response/get_display_text_and_summary: a None/"en" display_language (or a
-    translation failure) returns the stored text exactly as before."""
+    already worked; this response just never called it.
+
+    LIVE-REPORTED BUG, found right after the above fix shipped: the first version of this fix
+    still special-cased `display_language == "en"` as "skip translation" -- the same shortcut
+    _to_response/get_display_text_and_summary safely use for the main Complaint text, which DOES
+    have an "always canonical English" storage guarantee (see Complaint.translated_text). A
+    ComplaintUpdate has NO such guarantee -- complaint_update_translation_cache.py's own docstring
+    states this explicitly: `text` is stored exactly as the worker typed it, in WHATEVER language
+    that was. Live-reproduced: a Gujarati-speaking worker's own-language assessment note rendered
+    to an English-reading citizen exactly as typed, in raw Gujarati, because `display_language ==
+    "en"` skipped translation on the (here, wrong) assumption the raw text was already English.
+    Translation is now attempted whenever `display_language` is set at all, regardless of value --
+    `get_display_update_text`'s own auto-detected-source translation already handles the common
+    case where the worker's language and the viewer's happen to coincide without any special
+    casing needed here."""
     worker = db.query(User).filter(User.id == update.worker_id).first()
-    evidence = [_to_evidence_response(e) for e in evidence_repository.get_evidence_for_update(db, update.id)]
+    evidence = [_to_evidence_response(e) for e in evidence_repository.get_evidence_for_update(db, update.id, update.complaint_id)]
     display_text = update.text
-    if display_language and display_language != "en":
+    if display_language:
         try:
             display_text = get_display_update_text(db, update, display_language, _translation_service)
         except AIServiceError as exc:

@@ -54,13 +54,24 @@ def get_evidence_for_complaint(db: Session, complaint_id: int) -> list[Complaint
     )
 
 
-def get_evidence_for_update(db: Session, update_id: int) -> list[ComplaintEvidence]:
+def get_evidence_for_update(db: Session, update_id: int, complaint_id: int) -> list[ComplaintEvidence]:
     """Evidence attached to one specific worker update -- used to build the response for a
     single just-created update (see routes/complaints.py's add_progress_update/start_work),
-    where fetching the whole complaint's evidence would be needless extra work."""
+    where fetching the whole complaint's evidence would be needless extra work.
+
+    LIVE-REPORTED BUG: filtering on `update_id` alone trusts that value as if it could only ever
+    refer to genuinely-related evidence -- but `complaint_updates.id` is a plain global auto-
+    increment, and SQLite doesn't enforce foreign keys by default, so a handful of stale rows
+    (created by an old one-off script against complaint/update ids that didn't exist yet at the
+    time) later collided with real, unrelated updates once the real id sequence caught up to the
+    same numbers: a real citizen's brand-new streetlight complaint showed a tiny placeholder photo
+    from an unrelated demo row created 11 days earlier, purely because both happened to use
+    update_id 33. Also requiring `complaint_id` to match the update's OWN complaint closes this --
+    a stale row for a complaint that was never real (or a different one) can no longer surface
+    just by reusing the same update_id number."""
     return (
         db.query(ComplaintEvidence)
-        .filter(ComplaintEvidence.update_id == update_id)
+        .filter(ComplaintEvidence.update_id == update_id, ComplaintEvidence.complaint_id == complaint_id)
         .order_by(ComplaintEvidence.created_at.asc())
         .all()
     )

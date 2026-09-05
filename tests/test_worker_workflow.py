@@ -242,6 +242,38 @@ def test_citizen_sees_progress_update_translated_on_read(client, make_citizen, m
     fake_translation_service.translate_auto_detecting_source.assert_called_once_with("i checked and i solved", "mr")
 
 
+def test_citizen_sees_progress_update_translated_to_english_too(client, make_citizen, make_worker, db_session, monkeypatch):
+    """LIVE-REPORTED BUG: a ComplaintUpdate has no "always canonical English" guarantee the way
+    Complaint.translated_text does (see complaint_update_translation_cache.py's own docstring) --
+    `lang == "en"` used to be treated as "skip translation," which is only safe for the complaint's
+    own text, not a worker's update. A worker who typed their update in Gujarati (or any other
+    language) must still have it translated for an English-reading citizen, not shown raw."""
+    citizen_token, citizen = make_citizen(phone="9000000005")
+    worker_token, worker = make_worker(phone="9000000006", ward="Ward 14")
+    complaint_id = _make_complaint(db_session, citizen_id=str(citizen["id"]), worker_id=worker["id"], status="in_progress")
+
+    update = client.post(
+        f"/complaints/{complaint_id}/updates", headers={"Authorization": f"Bearer {worker_token}"},
+        data={"text": "મેં જોયું કે સ્ટ્રીટલાઇટ તૂટેલી છે."},
+    )
+    assert update.status_code == 200
+
+    fake_translation_service = Mock()
+    fake_translation_service.to_language.return_value = "I saw that the streetlight is broken."
+    fake_translation_service.translate_auto_detecting_source.return_value = "I saw that the streetlight is broken."
+    monkeypatch.setattr(complaints_module, "_translation_service", fake_translation_service)
+
+    detail = client.get(
+        f"/complaints/{complaint_id}", params={"lang": "en"}, headers={"Authorization": f"Bearer {citizen_token}"},
+    )
+    assert detail.status_code == 200
+    progress = next(u for u in detail.json()["updates"] if u["update_type"] == "PROGRESS_UPDATE")
+    assert progress["text"] == "I saw that the streetlight is broken."
+    fake_translation_service.translate_auto_detecting_source.assert_called_once_with(
+        "મેં જોયું કે સ્ટ્રીટલાઇટ તૂટેલી છે.", "en"
+    )
+
+
 def test_citizen_sees_progress_update_in_english_when_translation_fails(client, make_citizen, make_worker, db_session, monkeypatch):
     """If on-read translation of a worker update fails, the API must still return the raw,
     as-typed text rather than a broken/empty update -- same fallback contract as
