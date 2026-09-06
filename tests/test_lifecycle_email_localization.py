@@ -11,6 +11,7 @@ localization added on top of that.
 from unittest.mock import Mock
 
 import backend.routes.complaints as complaints_module
+import backend.services.complaint_lifecycle_email as lifecycle_email_module
 from backend.config import settings
 from backend.models import Complaint
 from backend.services.email_service import send_complaint_status_email
@@ -144,7 +145,7 @@ def test_lifecycle_email_uses_the_citizens_own_preferred_language(client, monkey
     not always send English -- so a citizen who set their account to Marathi gets a Marathi email
     for their own complaint, the same way the app's own UI already follows that setting."""
     mock = Mock()
-    monkeypatch.setattr(complaints_module, "send_complaint_status_email", mock)
+    monkeypatch.setattr(lifecycle_email_module, "send_complaint_status_email", mock)
     citizen_token, citizen = make_citizen(phone="9000000001", preferred_language="mr")
     worker_token, worker = make_worker(phone="9000000002", ward="Ward 14")
     complaint_id = _make_assigned_complaint_for_citizen(db_session, citizen["id"], worker["id"])
@@ -163,7 +164,7 @@ def test_lifecycle_email_defaults_to_english_for_a_citizen_without_a_language_pr
     client, monkeypatch, make_citizen, make_worker, db_session
 ):
     mock = Mock()
-    monkeypatch.setattr(complaints_module, "send_complaint_status_email", mock)
+    monkeypatch.setattr(lifecycle_email_module, "send_complaint_status_email", mock)
     citizen_token, citizen = make_citizen(phone="9000000001", preferred_language="en")
     worker_token, worker = make_worker(phone="9000000002", ward="Ward 14")
     complaint_id = _make_assigned_complaint_for_citizen(db_session, citizen["id"], worker["id"])
@@ -187,7 +188,7 @@ def test_lifecycle_email_worker_note_translated_into_citizens_own_language(
     site that had never been fixed. Reuses the same per-update translation cache those other views
     already read through (see _send_lifecycle_email_best_effort's own docstring)."""
     mock = Mock()
-    monkeypatch.setattr(complaints_module, "send_complaint_status_email", mock)
+    monkeypatch.setattr(lifecycle_email_module, "send_complaint_status_email", mock)
     fake_translation_service = Mock()
     fake_translation_service.to_language.return_value = "कचरा उचलला नाही."
     fake_translation_service.translate_auto_detecting_source.return_value = "मी साइटची तपासणी केली, आज दुरुस्त करेन."
