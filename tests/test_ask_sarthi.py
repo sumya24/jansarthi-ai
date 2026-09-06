@@ -293,6 +293,15 @@ def test_status_number_reply_after_being_asked_resolves_the_complaint(client, mo
     token, user = make_citizen(phone="9100000099")
 
     db = db_session()
+    # _COMPLAINT_NUMBER_PATTERN's bare-number fallback requires 2-6 digits (real complaint ids are
+    # already well past that by now, e.g. JM-00165) -- pad with filler rows first so THIS test's
+    # complaint doesn't land on a single-digit id in a fresh test DB, which would make "the number
+    # is {id}" fail to match for a reason unrelated to the bug this test is pinning down.
+    for _ in range(10):
+        db.add(Complaint(
+            citizen_id=str(user["id"]), original_text="filler", original_language="en",
+            translated_text="filler", summary="filler", status="pending",
+        ))
     complaint = Complaint(
         citizen_id=str(user["id"]), original_text="test", original_language="en",
         translated_text="test", summary="test", status="assigned",
@@ -301,6 +310,7 @@ def test_status_number_reply_after_being_asked_resolves_the_complaint(client, mo
     db.commit()
     db.refresh(complaint)
     complaint_id = complaint.id
+    assert complaint_id >= 10  # sanity: the padding above actually worked
     db.close()
 
     turn1 = _ask(client, token, "Can you tell me about my complaint status?")
