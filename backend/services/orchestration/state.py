@@ -133,7 +133,13 @@ class GraphState(TypedDict, total=False):
     # shown, so the stored complaint isn't just the category name verbatim), "CONFIRMED" (explicit
     # confirmation received this turn, complaint created), or "CANCELLED" (explicit cancellation
     # received, OR a citizen-picked replacement location was rejected for belonging to a different
-    # city than their own saved one -- see the same handling). This state is *derived* fresh each
+    # city than their own saved one -- see the same handling). Also reused, despite the field's
+    # name, by the UNRELATED status-check flow: "AWAITING_COMPLAINT_NUMBER" means status_flow_node
+    # just asked "Which complaint would you like the status of?" and is waiting on a bare complaint
+    # number reply (see `_awaiting_complaint_number`) -- kept on this same field/echo mechanism
+    # rather than adding a second one, since the round-trip plumbing (ConversationTurn/
+    # AskSarthiResponse/frontend echo) is already generic and doesn't care what the value means.
+    # This state is *derived* fresh each
     # request from `conversation_history` (see complaint_flow_node's own docstring) -- there is
     # still no server-side session/checkpointer; this field only makes that per-request derivation
     # visible, it is not itself persisted between requests.

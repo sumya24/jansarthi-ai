@@ -279,6 +279,59 @@ def test_type_c_status_routes_to_complaint_api_not_rag(client, monkeypatch, db_s
     assert "assigned" in body["answer"].lower()
 
 
+def test_status_number_reply_after_being_asked_resolves_the_complaint(client, monkeypatch, db_session, make_citizen):
+    """LIVE-REPORTED (complaint JM-00165's own citizen): asking "can you tell me about my
+    complaint status?" (no number given) correctly got "Which complaint would you like the status
+    of? Please give the complaint number..." -- but replying with JUST the number ("165", "the
+    number is 165", "# 165") then got the generic "I'm not sure I understood that" every single
+    time, no matter how it was phrased. status_flow_node's own follow-up set no state at all,
+    unlike every complaint-flow prompt, so a bare numeric reply had no TYPE_C-shaped keyword of its
+    own and classify() called it UNCLEAR. Fixed by having status_flow_node echo
+    complaint_workflow_state="AWAITING_COMPLAINT_NUMBER" and intent_node recognize a reply to it
+    (see _awaiting_complaint_number)."""
+    _install_real_service(monkeypatch)
+    token, user = make_citizen(phone="9100000099")
+
+    db = db_session()
+    # _COMPLAINT_NUMBER_PATTERN's bare-number fallback requires 2-6 digits (real complaint ids are
+    # already well past that by now, e.g. JM-00165) -- pad with filler rows first so THIS test's
+    # complaint doesn't land on a single-digit id in a fresh test DB, which would make "the number
+    # is {id}" fail to match for a reason unrelated to the bug this test is pinning down.
+    for _ in range(10):
+        db.add(Complaint(
+            citizen_id=str(user["id"]), original_text="filler", original_language="en",
+            translated_text="filler", summary="filler", status="pending",
+        ))
+    complaint = Complaint(
+        citizen_id=str(user["id"]), original_text="test", original_language="en",
+        translated_text="test", summary="test", status="assigned",
+    )
+    db.add(complaint)
+    db.commit()
+    db.refresh(complaint)
+    complaint_id = complaint.id
+    assert complaint_id >= 10  # sanity: the padding above actually worked
+    db.close()
+
+    turn1 = _ask(client, token, "Can you tell me about my complaint status?")
+    assert turn1.status_code == 200
+    body1 = turn1.json()
+    assert body1["routed_to"] == "COMPLAINT_STATUS_API"
+    assert body1["complaint_workflow_state"] == "AWAITING_COMPLAINT_NUMBER"
+    assert "which complaint" in body1["answer"].lower()
+
+    history = [
+        ConversationTurn(role="user", content="Can you tell me about my complaint status?").model_dump(),
+        ConversationTurn(role="assistant", content=body1["answer"], complaint_workflow_state=body1.get("complaint_workflow_state")).model_dump(),
+    ]
+    turn2 = _ask(client, token, f"the number is {complaint_id}", conversation_history=history)
+    assert turn2.status_code == 200
+    body2 = turn2.json()
+    assert body2["intent"] == "TYPE_C_STATUS"
+    assert body2["routed_to"] == "COMPLAINT_STATUS_API"
+    assert "assigned" in body2["answer"].lower()
+
+
 def test_type_c_bypasses_rag_even_for_rag_shaped_wording(client, monkeypatch, make_citizen):
     """A status question that ALSO happens to contain civic-complaint-sounding words ("street
     light") must still route to TYPE_C, not accidentally fall through to RAG."""

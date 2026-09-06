@@ -542,6 +542,10 @@ _LOCATION_CHANGE_PROMPT_MARKERS = ("which ward or area would you like to use ins
 # the state field to fall back for) -- same safety-net role as the other MARKERS tuples, matched
 # only when an older/unaware caller doesn't echo `complaint_workflow_state` back at all.
 _DESCRIPTION_PROMPT_MARKERS = ("can you describe the issue in a bit more detail",)
+# Belongs to the STATUS-check flow, not the complaint-filing flow -- deliberately kept OUT of
+# _COMPLAINT_FLOW_PROMPT_MARKERS/_last_turn_invites_complaint_reply below (a reply here must never
+# become eligible for THAT flow's TYPE_A_COMPLAINT promotions). See `_awaiting_complaint_number`.
+_STATUS_NUMBER_PROMPT_MARKERS = ("which complaint would you like the status of",)
 _COMPLAINT_FLOW_PROMPT_MARKERS = (
     _CATEGORY_CLARIFICATION_MARKERS
     + _LOCATION_CLARIFICATION_MARKERS
@@ -682,7 +686,18 @@ def intent_node(state: GraphState, config: RunnableConfig) -> dict[str, Any]:
     # AWAITING_DESCRIPTION means category+location are already resolved and Sarthi is single-
     # mindedly waiting for exactly this reply, nothing else.
     awaiting_description = _awaiting_description(history)
-    if awaiting_description:
+    # LIVE-REPORTED GAP (complaint JM-00165's own citizen): status_flow_node's "Which complaint
+    # would you like the status of?" follow-up used to set no state at all, so a reply like "165"
+    # had zero TYPE_C-shaped keyword signal of its own and fell to UNCLEAR every time, regardless
+    # of phrasing ("165", "the number is 165", "#165"). Gated on the reply actually containing a
+    # recognizable complaint number (not just short/non-question, unlike the general overrides
+    # below) -- narrower and safer: an unrelated reply here has no digits to match and correctly
+    # falls through to whatever classify() already said, same fail-safe principle as every other
+    # override in this function.
+    awaiting_complaint_number = _awaiting_complaint_number(history)
+    if awaiting_complaint_number and _COMPLAINT_NUMBER_PATTERN.search(text):
+        intent = QuestionIntent.TYPE_C_STATUS
+    elif awaiting_description:
         intent = QuestionIntent.TYPE_A_COMPLAINT
     elif intent == QuestionIntent.UNCLEAR and (
         (last_turn_invites_reply and is_continuation_reply) or state.get("has_image") or has_gps
@@ -1176,6 +1191,7 @@ def status_flow_node(state: GraphState, config: RunnableConfig) -> dict[str, Any
             "follow_up_question": "What is your complaint number?",
             "routed_to": "COMPLAINT_STATUS_API",
             "sources": [],
+            "complaint_workflow_state": "AWAITING_COMPLAINT_NUMBER",
         }
 
     complaint_id = int(next(g for g in match.groups() if g))
@@ -1875,6 +1891,24 @@ def _awaiting_description(conversation_history: list[dict]) -> bool:
     if explicit_state is not None:
         return explicit_state == "AWAITING_DESCRIPTION"
     return _last_assistant_turn_matches(conversation_history, _DESCRIPTION_PROMPT_MARKERS)
+
+
+def _awaiting_complaint_number(conversation_history: list[dict]) -> bool:
+    """LIVE-REPORTED GAP: status_flow_node's own "Which complaint would you like the status of?"
+    follow-up used to set no state at all -- unlike every complaint-flow prompt, which echoes
+    `complaint_workflow_state` back so intent_node can recognize a reply as a continuation (see
+    `_awaiting_description` just above). Without that, a bare reply like "165" or "the number is
+    165" carries no TYPE_C-shaped keyword of its own, so classify() called it UNCLEAR and the
+    citizen got the generic "I'm not sure I understood that" every single time, no matter how they
+    phrased the complaint number -- reproduced live (complaint JM-00165's own citizen, asking for
+    its status). Same two-tier shape as every other `_awaiting_*` function here, reusing the same
+    `complaint_workflow_state` echo mechanism even though this is a different flow (see
+    `_STATUS_NUMBER_PROMPT_MARKERS`'s own comment for why it stays out of the complaint-flow
+    marker set)."""
+    explicit_state = _last_assistant_turn_state(conversation_history)
+    if explicit_state is not None:
+        return explicit_state == "AWAITING_COMPLAINT_NUMBER"
+    return _last_assistant_turn_matches(conversation_history, _STATUS_NUMBER_PROMPT_MARKERS)
 
 
 # LIVE-REPORTED GAP: a citizen who replies to "What issue would you like to report?" with just the
