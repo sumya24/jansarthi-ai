@@ -53,6 +53,7 @@ from backend.schemas.rag_knowledge import ServiceCategory
 from backend.services.answer_generation_service import AnswerGenerationService
 from backend.services.assignment_service import assign_next_worker
 from backend.services.complaint_agent import ComplaintAgent
+from backend.services.complaint_lifecycle_email import send_lifecycle_email_best_effort
 from backend.services.evidence_service import SavedFile
 from backend.services.intent_classifier import (
     QuestionIntent,
@@ -2739,6 +2740,12 @@ def complaint_flow_node(state: GraphState, config: RunnableConfig) -> dict[str, 
 
     assign_next_worker(ctx.db, complaint)
     ctx.db.refresh(complaint)
+
+    # LIVE-REPORTED GAP: a complaint filed via the "Report an Issue" form has always sent the
+    # citizen this same "created" lifecycle email (see routes/complaints.py's own call, right
+    # after its own assign_next_worker) -- Ask Sarthi never did, since this whole code path builds
+    # and assigns the complaint independently and simply never called it.
+    send_lifecycle_email_best_effort(ctx.db, complaint, "created", deps.translation_service)
 
     worker_assignment = None
     if complaint.assigned_worker_id is not None:

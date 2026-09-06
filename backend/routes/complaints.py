@@ -32,6 +32,7 @@ from backend.services import metrics as sentry_metrics
 from backend.services.assignment_service import assign_next_worker
 from backend.services.complaint_agent import ComplaintAgent
 from backend.services.complaint_category_service import ComplaintCategoryService
+from backend.services.complaint_lifecycle_email import send_lifecycle_email_best_effort
 from backend.services.complaint_translation_cache import get_display_text_and_summary
 from backend.services.complaint_update_translation_cache import get_display_text as get_display_update_text
 # Relocated to backend/services/evidence_service.py (pure move, no behavior change) so the Ask
@@ -44,8 +45,6 @@ from backend.services.evidence_service import (
     save_photo as _save_photo,
     validate_and_write as _validate_and_write,
 )
-from backend.services.email_service import EmailServiceError, _email_strings, send_complaint_status_email
-from backend.services.location_names import localize_ward_text
 from backend.services.location_resolver import LocationResolver
 from backend.services.notification_render import render_admin_rejection_notification, render_citizen_notification
 from backend.services.sarvam_client import AIServiceError
@@ -179,64 +178,12 @@ def _send_lifecycle_email_best_effort(
     event: Literal["created", "accepted", "started", "resolved"],
     worker_update: ComplaintUpdate | None = None,
 ) -> None:
-    """Fire-and-forget: sends the citizen a real email for one of their complaint's lifecycle
-    moments, if (and only if) they have a verified email -- silently skipped otherwise, exactly
-    the same as every other email_verified check in this codebase, never an error. Never raises:
-    an EmailServiceError (SMTP not configured, or a real send failure) is caught and logged here,
-    not surfaced to the caller -- see send_complaint_status_email's own docstring for why this
-    must never fail the actual accept/start/resolve/create action it's attached to.
-
-    Renders in the citizen's own preferred_language, translating the summary the same way the
-    on-page complaint detail already does for that citizen (get_display_text_and_summary, the
-    exact helper _to_response uses) -- reusing its cache rather than a separate translation path,
-    and falling back to the stored English summary on an AIServiceError exactly like _to_response
-    does, so a translation hiccup degrades to an English email rather than losing the send.
-
-    LIVE-REPORTED, same bug as the on-page Updates timeline and the notification message snippet
-    (see _citizen_notification_message's own docstring): `worker_note` used to be passed straight
-    through untranslated -- "exactly as the worker wrote it" was really just this call site never
-    having been fixed, not a real design choice, since every OTHER citizen-facing view of this
-    exact same worker-authored text (the Updates timeline, the Resolution Report, the in-app
-    notification) already translates it. `worker_update` is now the actual ComplaintUpdate row
-    (start_work()/resolve_complaint() already have it on hand right after creating it) so this
-    reuses the SAME per-update translation cache those other views already read through, instead
-    of a second, uncached translation call for the same row.
-    """
-    citizen = db.query(User).filter(User.id == int(complaint.citizen_id)).first()
-    if citizen is None or not citizen.email or not citizen.email_verified:
-        return
-    lang = citizen.preferred_language or "en"
-    summary = complaint.summary
-    if lang != "en":
-        try:
-            _, summary = get_display_text_and_summary(db, complaint, lang, _translation_service)
-        except AIServiceError as exc:
-            logger.error("Complaint %s: failed to translate lifecycle email into %s: %s", complaint.id, lang, exc)
-            summary = complaint.summary
-    worker_note = worker_update.text if worker_update is not None else None
-    # LIVE-REPORTED BUG (same class as _to_update_response's own matching fix): a ComplaintUpdate
-    # has no "always canonical English" guarantee the way Complaint.summary does (see
-    # complaint_update_translation_cache.py's own docstring) -- a worker's note can itself be
-    # typed in ANY language, so `lang != "en"` is the wrong condition to skip translation on here.
-    # Attempted whenever a worker_update exists at all, regardless of the citizen's own `lang`.
-    if worker_update is not None:
-        try:
-            worker_note = get_display_update_text(db, worker_update, lang, _translation_service)
-        except AIServiceError as exc:
-            logger.error("Complaint %s: failed to translate lifecycle email's worker note into %s: %s", complaint.id, lang, exc)
-            worker_note = worker_update.text
-    cta_url = f"{settings.FRONTEND_BASE_URL}/citizen/complaints/{complaint.id}" if settings.FRONTEND_BASE_URL else None
-    try:
-        # LIVE-REPORTED, same underlying gap as the in-app notification message above:
-        # `complaint.ward` is already-composed text ("Surat (M Corp.) - Ward No.1, Surat"), never a
-        # bare Ward.name, so it stayed English in this email regardless of `lang` until translated
-        # the same way.
-        send_complaint_status_email(
-            citizen.email, event, f"JM-{complaint.id:05d}", summary or "", localize_ward_text(complaint.ward, lang) or "",
-            cta_url=cta_url, lang=lang, worker_note=worker_note,
-        )
-    except EmailServiceError as exc:
-        logger.error("Complaint %s: failed to send '%s' lifecycle email: %s", complaint.id, event, exc)
+    """Thin wrapper binding this route module's own `_translation_service` instance -- see
+    complaint_lifecycle_email.send_lifecycle_email_best_effort for the actual logic, shared with
+    Ask Sarthi's complaint_flow_node (backend/services/orchestration/nodes.py), which calls that
+    same function directly with its own TranslationService instance instead of through this
+    wrapper."""
+    send_lifecycle_email_best_effort(db, complaint, event, _translation_service, worker_update=worker_update)
 
 
 class ComplaintResponse(BaseModel):

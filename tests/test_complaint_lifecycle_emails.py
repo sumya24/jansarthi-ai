@@ -1,18 +1,23 @@
 """Tests for citizen-facing complaint-lifecycle emails (created/accepted/started/resolved) --
-see backend/services/email_service.py's send_complaint_status_email and routes/complaints.py's
-_send_lifecycle_email_best_effort. Every citizen created via the make_citizen fixture already has
-a verified email (mandatory at signup, see tests/test_signup_email_verification.py), so these
-tests don't need any extra email-verification setup of their own.
+see backend/services/complaint_lifecycle_email.py's send_lifecycle_email_best_effort, called from
+both routes/complaints.py's POST /complaints (create/accept/start/resolve) and Ask Sarthi's
+complaint_flow_node (backend/services/orchestration/nodes.py, "created" only -- see
+test_ask_sarthi_sends_a_created_email below for the LIVE-REPORTED gap this closes: filing via Ask
+Sarthi never sent this email at all until this file's own module existed). Every citizen created
+via the make_citizen fixture already has a verified email (mandatory at signup, see
+tests/test_signup_email_verification.py), so these tests don't need any extra email-verification
+setup of their own.
 
-send_complaint_status_email is mocked at its import site in backend.routes.complaints (not
-backend.services.email_service) -- that module does `from ... import send_complaint_status_email`,
-so the name it actually calls lives in its own namespace, same as how complaints_module._agent is
-patched elsewhere in this test suite.
+send_complaint_status_email is mocked at its import site in backend.services.complaint_lifecycle_email
+(not backend.services.email_service) -- that module does `from ... import
+send_complaint_status_email`, so the name it actually calls lives in its own namespace, same as how
+complaints_module._agent is patched elsewhere in this test suite.
 """
 
 from unittest.mock import Mock
 
 import backend.routes.complaints as complaints_module
+import backend.services.complaint_lifecycle_email as lifecycle_email_module
 from backend.models import Complaint
 from backend.services.email_service import EmailServiceError
 
@@ -31,7 +36,7 @@ def _fake_agent_create_complaint(db, citizen_id, language_code, text, audio_chun
 
 def _mock_status_email(monkeypatch) -> Mock:
     mock = Mock()
-    monkeypatch.setattr(complaints_module, "send_complaint_status_email", mock)
+    monkeypatch.setattr(lifecycle_email_module, "send_complaint_status_email", mock)
     return mock
 
 
@@ -140,7 +145,7 @@ def test_lifecycle_email_failure_does_not_fail_the_action(client, monkeypatch, m
     EmailServiceError, the complaint's own status change must still succeed -- see
     _send_lifecycle_email_best_effort's own docstring."""
     monkeypatch.setattr(
-        complaints_module, "send_complaint_status_email",
+        lifecycle_email_module, "send_complaint_status_email",
         Mock(side_effect=EmailServiceError("SMTP is down.")),
     )
     citizen_token, citizen = make_citizen(phone="9000000001")
@@ -166,3 +171,40 @@ def test_no_email_sent_for_a_citizen_without_a_verified_email(client, monkeypatc
     )
     assert response.status_code == 200
     mock.assert_not_called()
+
+
+def test_ask_sarthi_sends_a_created_email(client, monkeypatch, make_citizen, make_worker):
+    """LIVE-REPORTED (complaint JM-00165): a complaint filed through the "Report an Issue" form
+    always sent the citizen a "created" email, via routes/complaints.py's own call right after
+    assign_next_worker -- but Ask Sarthi's complaint_flow_node builds and assigns the complaint
+    independently and never called it, so a citizen who filed entirely by chatting with Ask Sarthi
+    never got any confirmation email at all. Fixed by having complaint_flow_node call the same
+    shared send_lifecycle_email_best_effort right after its own assign_next_worker."""
+    from backend.schemas.ask_sarthi import ConversationTurn
+    from tests.test_ask_sarthi import _ask, _install_real_service
+
+    _install_real_service(monkeypatch)
+    mock = _mock_status_email(monkeypatch)
+    make_worker(phone="9200099081", ward="Mohali")
+    token, user = make_citizen(phone="9200000081")
+
+    turn1 = _ask(client, token, "Street light not working in Mohali.", location_text="Mohali")
+    assert turn1.status_code == 200
+    body1 = turn1.json()
+    assert body1["routed_to"] == "NONE_AWAITING_CONFIRMATION"
+    mock.assert_not_called()  # not yet -- only the confirmed turn actually creates the complaint
+
+    history = [
+        ConversationTurn(role="user", content="Street light not working in Mohali.").model_dump(),
+        ConversationTurn(role="assistant", content=body1["answer"]).model_dump(),
+    ]
+    turn2 = _ask(client, token, "Yes, submit it.", conversation_history=history)
+    assert turn2.status_code == 200
+    body2 = turn2.json()
+    assert body2["routed_to"] == "COMPLAINT_CREATED"
+
+    mock.assert_called_once()
+    args, _kwargs = mock.call_args
+    assert args[0] == user["email"]
+    assert args[1] == "created"
+    assert args[2] == f"JM-{body2['complaint_id']:05d}"
