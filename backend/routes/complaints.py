@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session
 from backend.config import settings
 from backend.database import get_db
 from backend.deps import get_current_user, require_ai_rate_limit, require_role
-from backend.models import ULB, Complaint, ComplaintRejection, ComplaintStatusHistory, ComplaintUpdate, District, State, User
+from backend.models import ULB, Complaint, ComplaintRejection, ComplaintStatusHistory, ComplaintUpdate, District, State, User, to_utc_iso
 from backend.repositories import complaint_workflow_repository, evidence_repository, notification_repository
 from backend.schemas.rag_knowledge import ServiceCategory
 from backend.services import complaint_report_service
@@ -473,7 +473,7 @@ def _to_response(db: Session, complaint: Complaint, display_language: str | None
         rejection_count=rejection_count,
         feedback_rating=complaint.feedback_rating,
         feedback_comment=complaint.feedback_comment,
-        created_at=complaint.created_at.isoformat(),
+        created_at=to_utc_iso(complaint.created_at),
     )
 
 
@@ -544,7 +544,7 @@ def _to_update_response(db: Session, update, display_language: str | None = None
         text=display_text,
         photo_path=update.photo_path,
         worker_name=worker.full_name if worker else None,
-        created_at=update.created_at.isoformat(),
+        created_at=to_utc_iso(update.created_at),
         evidence=evidence,
     )
 
@@ -555,7 +555,7 @@ def _to_history_response(entry) -> StatusHistoryEntryResponse:
         to_status=entry.to_status,
         actor_role=entry.actor_role,
         note=entry.note,
-        created_at=entry.created_at.isoformat(),
+        created_at=to_utc_iso(entry.created_at),
     )
 
 
@@ -570,7 +570,7 @@ def _to_evidence_response(entry) -> EvidenceResponse:
         file_type=entry.file_type,
         file_size=entry.file_size,
         stage=entry.stage,
-        created_at=entry.created_at.isoformat(),
+        created_at=to_utc_iso(entry.created_at),
     )
 
 
@@ -579,7 +579,7 @@ def _to_rejection_response(db: Session, rejection: ComplaintRejection) -> Reject
     return RejectionResponse(
         worker_name=worker.full_name if worker else "Unknown worker",
         reason=rejection.reason,
-        created_at=rejection.created_at.isoformat(),
+        created_at=to_utc_iso(rejection.created_at),
     )
 
 
@@ -746,7 +746,7 @@ def get_area_summary(
             .order_by(ComplaintStatusHistory.created_at.desc())
             .first()
         )
-        status_updated_at = latest_history.created_at.isoformat() if latest_history else c.created_at.isoformat()
+        status_updated_at = to_utc_iso(latest_history.created_at) if latest_history else to_utc_iso(c.created_at)
 
         summaries.append(
             AreaComplaintSummary(
@@ -754,7 +754,7 @@ def get_area_summary(
                 status=c.status,
                 service_category=c.service_category,
                 display_text=display_text,
-                created_at=c.created_at.isoformat(),
+                created_at=to_utc_iso(c.created_at),
                 status_updated_at=status_updated_at,
             )
         )
@@ -1500,7 +1500,7 @@ def view_report(
         display_id=data.display_id,
         service_summary=data.service_summary,
         original_description=data.original_description,
-        created_at=data.created_at.isoformat(),
+        created_at=to_utc_iso(data.created_at),
         location_ward=data.location_ward,
         location_state=data.location_state,
         location_district=data.location_district,
@@ -1508,15 +1508,15 @@ def view_report(
         location_address=data.location_address,
         assigned_worker_name=data.assigned_worker_name,
         initial_assessment=data.initial_assessment,
-        initial_assessment_at=data.initial_assessment_at.isoformat() if data.initial_assessment_at else None,
+        initial_assessment_at=to_utc_iso(data.initial_assessment_at) if data.initial_assessment_at else None,
         progress_updates=[
-            {**u, "created_at": u["created_at"].isoformat()} for u in data.progress_updates
+            {**u, "created_at": to_utc_iso(u["created_at"])} for u in data.progress_updates
         ],
         completion_status=data.completion_status,
         completion_evidence_photo=data.completion_evidence_photo,
-        resolved_at=data.resolved_at.isoformat() if data.resolved_at else None,
+        resolved_at=to_utc_iso(data.resolved_at) if data.resolved_at else None,
         timeline=[
-            {**e, "created_at": e["created_at"].isoformat()} for e in data.timeline
+            {**e, "created_at": to_utc_iso(e["created_at"])} for e in data.timeline
         ],
         citizen_evidence=data.citizen_evidence,
         initial_assessment_evidence=data.initial_assessment_evidence,

@@ -15,6 +15,21 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def to_utc_iso(value: datetime) -> str:
+    """ISO-format a created_at/updated_at value for an API response.
+
+    Every timestamp column here is written as UTC (see _utcnow() above), but SQLite drops
+    tzinfo on the round trip through SQLAlchemy's plain DateTime column -- .isoformat() on the
+    value read back is missing its offset. A JS `new Date(...)` on an offset-less ISO string is
+    parsed as *local* time per the ECMAScript spec, not UTC, so every timestamp in the UI was
+    rendered off by the browser's UTC offset (e.g. ahead by 5:30 for IST). Re-attach the UTC
+    tzinfo before formatting so the string always carries its offset explicitly.
+    """
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.isoformat()
+
+
 class Complaint(Base):
     """A single citizen complaint, tracked through an assignment/accept/reject/resolve lifecycle.
 

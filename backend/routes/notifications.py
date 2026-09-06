@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from backend.database import get_db
 from backend.deps import get_current_user
-from backend.models import Complaint, ComplaintRejection, Notification, User
+from backend.models import Complaint, ComplaintRejection, Notification, User, to_utc_iso
 from backend.repositories import notification_repository
 from backend.services.notification_render import (
     ADMIN_REJECTION_TYPE,
@@ -46,8 +46,8 @@ class NotificationListResponse(BaseModel):
 def _to_response(n: Notification, title: str, message: str) -> NotificationResponse:
     return NotificationResponse(
         id=n.id, type=n.type, title=title, message=message, complaint_id=n.complaint_id,
-        created_at=n.created_at.isoformat(),
-        read_at=n.read_at.isoformat() if n.read_at else None,
+        created_at=to_utc_iso(n.created_at),
+        read_at=to_utc_iso(n.read_at) if n.read_at else None,
     )
 
 
