@@ -1541,3 +1541,38 @@ def test_complaints_trend_counts_accepted_from_status_history_and_rejected_from_
     assert len(matching_days) == 1
     assert matching_days[0]["accepted"] == 1
     assert matching_days[0]["rejected"] == 1
+
+
+def test_status_history_timestamp_carries_explicit_utc_offset(client, make_citizen, db_session):
+    """Real bug (complaint JM-00164): Complaint/ComplaintStatusHistory.created_at is written as
+    UTC, but SQLite drops tzinfo on the round trip through SQLAlchemy's DateTime column -- so
+    entry.created_at.isoformat() produced an offset-less string even though the value is UTC.
+    A JS `new Date(...)` on an offset-less ISO string is parsed as *local* time (not UTC) per the
+    ECMAScript spec, so the citizen's Status Timeline showed a time hours off from when the
+    transition actually happened (off by exactly the browser's UTC offset). The API must always
+    send an explicit UTC offset so the frontend parses it correctly regardless of the viewer's
+    timezone."""
+    token, user = make_citizen(phone="9000000001")
+
+    db = db_session()
+    complaint = Complaint(
+        citizen_id=str(user["id"]), original_text="a", original_language="en",
+        translated_text="Streetlight broken", summary="a", ward="Ward 11",
+        status="assigned",
+    )
+    db.add(complaint)
+    db.flush()
+    complaint_id = complaint.id
+    db.add(ComplaintStatusHistory(
+        complaint_id=complaint_id, from_status="open", to_status="assigned",
+        actor_role="system", note="Assigned to worker.",
+    ))
+    db.commit()
+    db.close()
+
+    response = client.get(f"/complaints/{complaint_id}", headers={"Authorization": f"Bearer {token}"})
+    assert response.status_code == 200
+    body = response.json()
+
+    assert datetime.fromisoformat(body["created_at"]).tzinfo is not None
+    assert datetime.fromisoformat(body["status_history"][0]["created_at"]).tzinfo is not None
