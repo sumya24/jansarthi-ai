@@ -84,7 +84,7 @@ export function formatTime(value: Date | string | number, lang: LangCode, option
 
 type Dict = Record<string, string>;
 
-export const I18N: Record<LangCode, Dict> = {
+export const I18N = {
   en: {
     "landing.login": "Log in",
     "landing.signup": "Sign up",
@@ -1403,6 +1403,7 @@ export const I18N: Record<LangCode, Dict> = {
     "area.filedOn": "दर्ज की गई",
     "area.startedOn": "शुरू हुई",
     "area.completedOn": "पूरी हुई",
+    "admin.aiModelCostsErr": "मॉडल की लागत लोड नहीं हो सकी - ऐसा डिप्लॉय के ठीक बाद थोड़ी देर के लिए हो सकता है। इसे अपने आप ठीक हो जाना चाहिए; अगर यह ठीक नहीं होता है तो पृष्ठ को फिर से लोड करें।",
   },
   mr: {
     "landing.login": "लॉग इन",
@@ -2059,6 +2060,7 @@ export const I18N: Record<LangCode, Dict> = {
     "area.filedOn": "नोंदवली",
     "area.startedOn": "सुरू झाली",
     "area.completedOn": "पूर्ण झाली",
+    "admin.aiModelCostsErr": "मॉडेलचा खर्च लोड होऊ शकला नाही - हे डिप्लॉय केल्यानंतर थोड्या वेळासाठी होऊ शकतं. ते आपोआप ठीक होईल; न झाल्यास पेज पुन्हा लोड करा.",
   },
   or: {
     "landing.login": "ଲଗ୍ ଇନ୍ କରନ୍ତୁ",
@@ -2698,6 +2700,29 @@ export const I18N: Record<LangCode, Dict> = {
     "area.filedOn": "ଦାଖଲ ହୋଇଥିଲା",
     "area.startedOn": "ଆରମ୍ଭ ହୋଇଥିଲା",
     "area.completedOn": "ସମାପ୍ତ ହୋଇଥିଲା",
+    "addWorker.createdToast": "କର୍ମଚାରୀ ଆକାଉଣ୍ଟ ତିଆରି କରାଗଲା |",
+    "admin.aiModelCostsErr": "ମଡେଲ୍ ଖର୍ଚ୍ଚ ଲୋଡ୍ କରିପାରିଲି ନାହିଁ - ଏହା ଡିପ୍ଲଏ ପରେ ସଂକ୍ଷେପରେ ହୋଇପାରେ | ଏହା ସ୍ୱୟଂଚାଳିତ ଭାବରେ ପୁନରୁଦ୍ଧାର ହେବା ଉଚିତ୍; ଯଦି ଏହା ନହୁଏ ତେବେ ପୃଷ୍ଠା ପୁନଃ ଲୋଡ୍ କରନ୍ତୁ |",
+    "auth.panel.point1": "କଥା କୁହନ୍ତୁ କିମ୍ବା ଟାଇପ୍ କରନ୍ତୁ - ଏହା ଆପଣଙ୍କ ପସନ୍ଦ।",
+    "auth.panel.point2": "ଯିଏ ପଢ଼ିବ ତାଙ୍କ ପାଇଁ ସ୍ୱୟଂ-ଅନୁବାଦ କରାଯାଇଛି",
+    "auth.panel.point3": "ସିଧା ତୁମ ୱାର୍ଡର ଦଳକୁ ପଠାଗଲା |",
+    "auth.panel.subtitle": "ଜାନସାର୍ଥୀ AI ନାଗରିକ ଏବଂ ପୌର କର୍ମଚାରୀଙ୍କୁ ସଂଯୋଗ କରେ ଯେଉଁମାନଙ୍କୁ ପରସ୍ପରକୁ ବୁଝିବା ପାଇଁ ଭାଷା ବାଣ୍ଟିବାର ଆବଶ୍ୟକତା ନାହିଁ।",
+    "auth.panel.title": "ଗୋଟିଏ ରିପୋର୍ଟ। ଯେକୌଣସି ଭାଷା।",
+    "citizen.photoPlaceholder": "ଏକ ଫଟୋ ବାଛିବାକୁ କ୍ଲିକ୍ କରନ୍ତୁ, କିମ୍ବା ଏଠାକୁ ଟାଣନ୍ତୁ |",
+    "evidence.citizenPhotos": "ନାଗରିକ ଫଟୋଗୁଡ଼ିକ",
+    "evidence.completionPhotos": "ସମାପ୍ତି ଫଟୋଗୁଡ଼ିକ",
+    "evidence.fromCitizen": "ନାଗରିକଙ୍କ ଠାରୁ",
+    "evidence.fromWorker": "ଶ୍ରମିକଙ୍କ ଠାରୁ",
+    "evidence.initialAssessmentPhotos": "ପ୍ରାରମ୍ଭିକ ଆକଳନ ଫଟୋଗୁଡ଼ିକ",
+    "evidence.progressPhotos": "ପ୍ରଗତି ଫଟୋଗୁଡ଼ିକ",
+    "evidence.viewPhoto": "ଫଟୋ ଦେଖନ୍ତୁ",
+    "notifications.bellAria": "ସୂଚନାଗୁଡ଼ିକ",
+    "notifications.empty": "ଏପର୍ଯ୍ୟନ୍ତ କୌଣସି ବିଜ୍ଞପ୍ତି ନାହିଁ।",
+    "notifications.errLoadFailed": "ନୋଟିଫିକେସନ୍ ଲୋଡ୍ ହୋଇପାରିଲା ନାହିଁ।",
+    "notifications.title": "ସୂଚନାଗୁଡ଼ିକ",
+    "photo.addMore": "ଅଧିକ ଫଟୋ ଯୋଡନ୍ତୁ",
+    "photo.tooLarge": "ଛବିଟି ସର୍ବାଧିକ ଅନୁମତିପ୍ରାପ୍ତ ଆକାର (5ଏମ୍‌.ବି.) ଅତିକ୍ରମ କରୁଛି।",
+    "photo.tooMany": "ଆପଣ ସର୍ବାଧିକ {max} ଟି ଫଟୋ ସଂଲଗ୍ନ କରିପାରିବେ।",
+    "photo.unsupportedType": "ଅସମର୍ଥିତ ଛବି ଫର୍ମାଟ୍ | JPEG କିମ୍ବା PNG ବ୍ୟବହାର କରନ୍ତୁ |",
   },
   gu: {
     "landing.login": "લૉગ ઇન કરો",
@@ -3335,6 +3360,29 @@ export const I18N: Record<LangCode, Dict> = {
     "area.filedOn": "નોંધાઈ",
     "area.startedOn": "શરૂ થઈ",
     "area.completedOn": "પૂર્ણ થઈ",
+    "addWorker.createdToast": "કામદાર ખાતું આના માટે બનાવવામાં આવ્યું છે",
+    "admin.aiModelCostsErr": "મોડેલ ખર્ચ લોડ કરી શકાયું નથી - આ ડિપ્લોય પછી તરત જ થોડા સમય માટે થઈ શકે છે. તે આપમેળે પુનઃપ્રાપ્ત થવું જોઈએ; જો તે ન થાય તો પૃષ્ઠને ફરીથી લોડ કરો.",
+    "auth.panel.point1": "બોલો અથવા લખો - તમારી પસંદગી",
+    "auth.panel.point2": "જે કોઈ પણ વાંચે છે તેના માટે સ્વયં-અનુવાદિત",
+    "auth.panel.point3": "સીધું તમારા વોર્ડની ટીમમાં મોકલવામાં આવ્યું.",
+    "auth.panel.subtitle": "જનસાર્થી એ.આઈ. એવા નાગરિકો અને મ્યુનિસિપલ કામદારોને જોડે છે જેમને એકબીજાને સમજવા માટે ભાષા શેર કરવાની જરૂર નથી.",
+    "auth.panel.title": "એક અહેવાલ. કોઈપણ ભાષા.",
+    "citizen.photoPlaceholder": "ફોટો પસંદ કરવા માટે ક્લિક કરો અથવા અહીં એક ખેંચો.",
+    "evidence.citizenPhotos": "નાગરિકોના ફોટા",
+    "evidence.completionPhotos": "પૂર્ણતાના ફોટા",
+    "evidence.fromCitizen": "નાગરિક તરફથી",
+    "evidence.fromWorker": "કામદાર તરફથી",
+    "evidence.initialAssessmentPhotos": "પ્રારંભિક મૂલ્યાંકન ફોટા",
+    "evidence.progressPhotos": "પ્રગતિના ફોટા",
+    "evidence.viewPhoto": "ફોટો જુઓ",
+    "notifications.bellAria": "સૂચનાઓ",
+    "notifications.empty": "હજી સુધી કોઈ સૂચનાઓ નથી.",
+    "notifications.errLoadFailed": "સૂચનાઓ લોડ કરી શકાઈ નથી.",
+    "notifications.title": "સૂચનાઓ",
+    "photo.addMore": "વધુ ફોટા ઉમેરો",
+    "photo.tooLarge": "છબી મહત્તમ મંજૂર કરેલ કદ (5MB) કરતાં વધી ગઈ છે.",
+    "photo.tooMany": "તમે વધુમાં વધુ {max} ફોટા જોડી શકો છો.",
+    "photo.unsupportedType": "આ ઇમેજ ફોર્મેટ સપોર્ટેડ નથી. JPEG અથવા PNG વાપરો.",
   },
   bn: {
     "landing.login": "লগ ইন করুন",
@@ -3972,11 +4020,61 @@ export const I18N: Record<LangCode, Dict> = {
     "area.filedOn": "দাখিল হয়েছে",
     "area.startedOn": "শুরু হয়েছে",
     "area.completedOn": "সম্পন্ন হয়েছে",
+    "addWorker.createdToast": "কর্মীর অ্যাকাউন্ট তৈরি করা হয়েছে",
+    "admin.aiModelCostsErr": "মডেলের খরচ লোড করা যায়নি — এটি স্থাপনের ঠিক পরেই অল্প সময়ের জন্য হতে পারে। এটি স্বয়ংক্রিয়ভাবে পুনরুদ্ধার হওয়া উচিত; যদি না হয় তবে পৃষ্ঠাটি পুনরায় লোড করুন।",
+    "auth.panel.point1": "বলো অথবা টাইপ করো — তোমার পছন্দ।",
+    "auth.panel.point2": "যেই পড়ে, তার জন্য স্বয়ংক্রিয়ভাবে অনুবাদ করা হয়েছে।",
+    "auth.panel.point3": "সরাসরি আপনার ওয়ার্ডের দলের কাছে পাঠানো হলো।",
+    "auth.panel.subtitle": "জনসারথি এআই নাগরিকদের এবং পৌরকর্মীদের সংযুক্ত করে যাদের একে অপরকে বোঝার জন্য কোনও ভাষা ভাগ করে নেওয়ার প্রয়োজন নেই।",
+    "auth.panel.title": "একটি প্রতিবেদন। যেকোনো ভাষা।",
+    "citizen.photoPlaceholder": "একটি ছবি নির্বাচন করতে ক্লিক করুন, অথবা এখানে একটি টেনে আনুন।",
+    "evidence.citizenPhotos": "নাগরিকের ছবি",
+    "evidence.completionPhotos": "সম্পন্ন হওয়ার ছবি",
+    "evidence.fromCitizen": "নাগরিক থেকে",
+    "evidence.fromWorker": "শ্রমিক থেকে",
+    "evidence.initialAssessmentPhotos": "প্রাথমিক মূল্যায়নের ছবি",
+    "evidence.progressPhotos": "অগ্রগতি বিষয়ক ছবি",
+    "evidence.viewPhoto": "ছবি দেখুন",
+    "notifications.bellAria": "বিজ্ঞপ্তি",
+    "notifications.empty": "এখনো কোনো নোটিফিকেশন নেই।",
+    "notifications.errLoadFailed": "নোটিফিকেশন লোড করা যায়নি।",
+    "notifications.title": "বিজ্ঞপ্তি",
+    "photo.addMore": "আরও ছবি যোগ করুন",
+    "photo.tooLarge": "ছবিটি সর্বোচ্চ অনুমোদিত আকার (5এমবি) অতিক্রম করেছে।",
+    "photo.tooMany": "আপনি সর্বাধিক {max} টি ছবি সংযুক্ত করতে পারেন।",
+    "photo.unsupportedType": "অসমর্থিত চিত্র বিন্যাস। জেপিইজি অথবা পিএনজি ব্যবহার করুন।",
   },
-};
+} satisfies Record<LangCode, Dict>;
+
+// LIVE-REPORTED BUG: auth.panel.* (the pre-login page's whole left-side panel), notifications.*,
+// evidence.*, photo.*, and 2 more keys were entirely missing from or/gu/bn's dictionaries -- t()'s
+// own English fallback (see below) hid this completely: no error, no warning, a real Gujarati
+// citizen just silently saw English text on the login page. `satisfies Record<LangCode, Dict>`
+// above (replacing a plain `: Record<LangCode, Dict>` annotation) keeps I18N.en's own key set
+// precise instead of widening it to `Dict`'s generic `Record<string, string>`, so `EnKeys` below
+// can name it exactly -- turning "a language's dict is missing a key `en` has" into a real
+// `tsc -b` build error (already a required step in `npm run build`) naming the exact language and
+// key, instead of a silent runtime fallback nothing catches.
+type EnKeys = keyof (typeof I18N)["en"];
+const _hiIsComplete: Record<EnKeys, string> = I18N.hi;
+const _mrIsComplete: Record<EnKeys, string> = I18N.mr;
+const _orIsComplete: Record<EnKeys, string> = I18N.or;
+const _guIsComplete: Record<EnKeys, string> = I18N.gu;
+const _bnIsComplete: Record<EnKeys, string> = I18N.bn;
+// Referenced only to exist for the assignments' type-checking above -- never read at runtime.
+void _hiIsComplete;
+void _mrIsComplete;
+void _orIsComplete;
+void _guIsComplete;
+void _bnIsComplete;
 
 export function t(lang: LangCode, key: string): string {
-  return I18N[lang]?.[key] ?? I18N.en[key] ?? key;
+  // `key` is a runtime-arbitrary string (every call site), not one of I18N.en's own literal
+  // keys -- the `satisfies Record<LangCode, Dict>` above (see its own comment) makes each
+  // language's object precisely keyed rather than a generic string-indexed Dict, so this lookup
+  // needs an explicit cast back to Dict to index it by an arbitrary key.
+  const dict = I18N[lang] as Dict | undefined;
+  return dict?.[key] ?? (I18N.en as Dict)[key] ?? key;
 }
 
 /** LIVE-REPORTED BUG: a UI string attached to one specific Ask Sarthi reply ("Please clarify:",
