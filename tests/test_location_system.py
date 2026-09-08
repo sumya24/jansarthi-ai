@@ -493,6 +493,29 @@ def test_ward_text_match_is_case_insensitive(client, monkeypatch, make_citizen, 
     assert body["assigned_worker_name"] == worker_user["full_name"]
 
 
+def test_find_worker_ward_text_matches_a_short_city_name_against_a_longer_official_ulb_name(db_session):
+    """LIVE-REPORTED BUG: a citizen who typed "I want to file a complaint in Pune" got told Sarthi
+    "doesn't currently have workers set up" in Pune -- even after a real worker's ward was set to
+    a Pune ward via the admin ward_id picker (see routes/admin.py's update_worker, which composes
+    `worker.ward` as "Ward N -- Locality, {ulb.name}"). This app's own seeded ULB for Pune is named
+    "Pune Municipal Corporation" (real data, not a stand-in -- same pattern as "S.A.S.Nagar -
+    Mohali"), so `find_worker_ward_text`'s old `city in needle` check (needle="pune", city="pune
+    municipal corporation") could never match: a longer string is never a substring of a shorter
+    one. Direct unit test of the resolver function itself, not the full HTTP round trip -- this is
+    exactly the shape complaint_flow_node calls when a citizen names only a bare city."""
+    db = db_session()
+    worker = User(
+        full_name="Pune Worker", phone="9000000501", password_hash=hash_password("secret123!"),
+        role="worker", preferred_language="en", ward="Ward 1 — Kalas - Dhanori, Pune Municipal Corporation",
+    )
+    db.add(worker)
+    db.commit()
+
+    resolver = LocationResolver()
+    assert resolver.find_worker_ward_text(db, "Pune") == "Ward 1 — Kalas - Dhanori, Pune Municipal Corporation"
+    db.close()
+
+
 # --- Full worker-assignment matrix (spec §10) ---
 
 
