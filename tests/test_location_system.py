@@ -516,6 +516,42 @@ def test_find_worker_ward_text_matches_a_short_city_name_against_a_longer_offici
     db.close()
 
 
+def test_find_worker_ward_text_matches_via_structured_ulb_when_ward_text_is_a_real_government_name(db_session):
+    """SECOND LIVE-REPORTED BUG, found verifying the fix above against real production data: a
+    real Pune worker's `ward` text is "Pune (M Corp) Ward No. 1 Kalas - Dhanori, Pune" -- this
+    app's bulk-imported wards use real government ward names (`Ward.name` =
+    "Pune (M Corp) Ward No. 1 Kalas - Dhanori") that don't start with "Ward N -- " at all, so
+    `_WARD_TEXT_PATTERN` never matches and the previous fix's second tier can't even engage.
+    These workers DO have `ulb_id`/`district_id` backfilled though (confirmed directly against
+    production: `ward_id=40326, ulb_id=1` on a real Pune worker) -- a stale comment on this same
+    method claiming "none of the currently-seeded workers have ward_id backfilled yet" was wrong.
+    The third tier resolves `hint` against the worker's own real ULB/District name directly,
+    sidestepping free-text ward-string parsing entirely."""
+    db = db_session()
+    state = State(name="Maharashtra Test", code="MHT", is_union_territory=False)
+    db.add(state)
+    db.flush()
+    district = District(state_id=state.id, name="Pune District")
+    db.add(district)
+    db.flush()
+    ulb = ULB(district_id=district.id, name="Pune Municipal Corporation", type="Municipal Corporation")
+    db.add(ulb)
+    db.flush()
+
+    worker = User(
+        full_name="Real Pune Worker", phone="9000000502", password_hash=hash_password("secret123!"),
+        role="worker", preferred_language="mr",
+        ward="Pune (M Corp) Ward No. 1 Kalas - Dhanori, Pune",  # real government name, no "Ward N -- " prefix
+        ulb_id=ulb.id, district_id=district.id, state_id=state.id,
+    )
+    db.add(worker)
+    db.commit()
+
+    resolver = LocationResolver()
+    assert resolver.find_worker_ward_text(db, "Pune") == "Pune (M Corp) Ward No. 1 Kalas - Dhanori, Pune"
+    db.close()
+
+
 # --- Full worker-assignment matrix (spec §10) ---
 
 

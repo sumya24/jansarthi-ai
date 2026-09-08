@@ -158,18 +158,20 @@ class LocationResolver:
 
     def find_worker_ward_text(self, db: Session, hint: str) -> str | None:
         """Finds a real, currently-registered worker's exact `ward` string that best matches
-        `hint` -- either an exact (case-insensitive) match, or `hint` naming the same city a
-        worker's ward is in (parsed via this app's own "Ward N -- Locality, City" convention,
-        same as `resolve_ward_by_text` above).
+        `hint` -- an exact (case-insensitive) match, `hint` naming the same city a worker's ward
+        is in (parsed via this app's own "Ward N -- Locality, City" convention, same as
+        `resolve_ward_by_text` above), or -- for a worker with a structured `ulb_id`/`district_id`
+        already backfilled -- `hint` matching that worker's real ULB or District name directly
+        (see the LIVE-REPORTED BUG below for why this third tier exists).
 
         Deliberately returns the WORKER's own `ward` string verbatim, not a `wards` table row's
         `name` column -- that column is bare ("Ward 22", no locality/city suffix; see the wards
         table's actual seeded data), which can never exact-match a worker's full free-text `ward`
         ("Ward 22 -- Kothrud, Pune") again. `assignment_service.py`'s `_candidates()` matches
         workers by EXACT TEXT (`User.ward == complaint.ward`) whenever `ward_id` isn't set on both
-        sides -- true for every currently-seeded worker (none have `ward_id` backfilled yet, see
-        scripts/seed_multi_ward_data.py) -- so whatever this method returns is guaranteed to
-        exact-match a real worker by construction, closing a real bug: `resolve_ward_by_text`
+        sides -- so whatever this method returns is guaranteed to exact-match a real worker by
+        construction (via that text fallback, even when the complaint's own `ward_id` never gets
+        resolved -- see the third tier's own note on this), closing a real bug: `resolve_ward_by_text`
         succeeding and the caller saving its bare `Ward.name` as `complaint.ward` LOOKED like a
         correct structured resolution but silently produced an unassignable complaint anyway
         (caught live: a complaint with `ward="Ward 22"` against a real worker registered as
@@ -178,16 +180,31 @@ class LocationResolver:
         Never guesses beyond substring city-name matching; returns None if nothing lines up (an
         honest "not currently served" is correct there, not a fabricated match).
 
-        LIVE-REPORTED BUG: the substring check below used to be `city in needle` only -- correct
-        when a citizen types the FULL official name, but real ULB names are routinely LONGER than
-        what anyone casually types (e.g. this app's own seeded "Pune Municipal Corporation" for a
-        citizen who just typed "Pune", or "S.A.S.Nagar - Mohali" for "Mohali"). `city in needle`
-        can never succeed when `city` is longer than `needle` -- a longer string is never a
-        substring of a shorter one -- so a real, currently-staffed city could be rejected as "no
-        workers set up" solely because its official ULB name has more words than the citizen's
-        casual mention. Checking both directions (`city in needle or needle in city`) covers a
-        citizen typing the fuller name too (unchanged) AND the far more common case of typing a
-        short/casual name that's a substring of the longer official one.
+        LIVE-REPORTED BUG: the substring check in the second tier below used to be `city in
+        needle` only -- correct when a citizen types the FULL official name, but real ULB names
+        are routinely LONGER than what anyone casually types (e.g. this app's own seeded "Pune
+        Municipal Corporation" for a citizen who just typed "Pune", or "S.A.S.Nagar - Mohali" for
+        "Mohali"). `city in needle` can never succeed when `city` is longer than `needle` -- a
+        longer string is never a substring of a shorter one. Checking both directions (`city in
+        needle or needle in city`) covers a citizen typing the fuller name too (unchanged) AND the
+        far more common case of typing a short/casual name that's a substring of the longer
+        official one.
+
+        SECOND LIVE-REPORTED BUG, found verifying the fix above against real production data: the
+        second tier's fix alone still wasn't enough for a real Pune complaint -- this app's
+        bulk-imported wards use REAL government ward names (e.g. `Ward.name` =
+        "Pune (M Corp) Ward No. 1 Kalas - Dhanori") that don't start with "Ward N -- " at all, so
+        `_WARD_TEXT_PATTERN` never matches them and the second tier can't even engage. These
+        workers DO have `ward_id`/`ulb_id`/`district_id` backfilled though (the comment this
+        replaced, claiming "none of the currently-seeded workers have ward_id backfilled yet",
+        was stale -- confirmed false against real production data during this same investigation)
+        -- so the third tier below resolves `hint` against the worker's OWN real ULB/District name
+        directly, sidestepping free-text ward-string parsing entirely for exactly the workers it
+        can never parse. Doesn't independently re-resolve `resolved_ward`/`chain` for the caller
+        (nodes.py's `_resolve_worker_ward_text`) since `resolve_ward_by_text` has the same parsing
+        limitation on these ward names -- the complaint's own structured `ward_id` may stay
+        unresolved in this path, but assignment itself still succeeds via the exact-text fallback
+        this method's own guarantee (see above) already covers.
         """
         needle = hint.strip().lower()
         if not needle:
@@ -203,6 +220,20 @@ class LocationResolver:
             city = match.group(2).rsplit(",", 1)[-1].strip().lower()
             if city and (city in needle or needle in city):
                 return worker.ward
+        for worker in workers:
+            candidates = []
+            if worker.ulb_id is not None:
+                ulb = db.query(ULB).filter(ULB.id == worker.ulb_id).first()
+                if ulb is not None:
+                    candidates.append(ulb.name)
+            if worker.district_id is not None:
+                district = db.query(District).filter(District.id == worker.district_id).first()
+                if district is not None:
+                    candidates.append(district.name)
+            for name in candidates:
+                city = name.strip().lower()
+                if city and (city in needle or needle in city):
+                    return worker.ward
         return None
 
     def location_chain_for_ward(self, db: Session, ward: Ward) -> dict[str, int | None]:
