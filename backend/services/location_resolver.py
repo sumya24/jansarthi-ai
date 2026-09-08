@@ -177,6 +177,17 @@ class LocationResolver:
 
         Never guesses beyond substring city-name matching; returns None if nothing lines up (an
         honest "not currently served" is correct there, not a fabricated match).
+
+        LIVE-REPORTED BUG: the substring check below used to be `city in needle` only -- correct
+        when a citizen types the FULL official name, but real ULB names are routinely LONGER than
+        what anyone casually types (e.g. this app's own seeded "Pune Municipal Corporation" for a
+        citizen who just typed "Pune", or "S.A.S.Nagar - Mohali" for "Mohali"). `city in needle`
+        can never succeed when `city` is longer than `needle` -- a longer string is never a
+        substring of a shorter one -- so a real, currently-staffed city could be rejected as "no
+        workers set up" solely because its official ULB name has more words than the citizen's
+        casual mention. Checking both directions (`city in needle or needle in city`) covers a
+        citizen typing the fuller name too (unchanged) AND the far more common case of typing a
+        short/casual name that's a substring of the longer official one.
         """
         needle = hint.strip().lower()
         if not needle:
@@ -190,7 +201,7 @@ class LocationResolver:
             if not match or "," not in match.group(2):
                 continue
             city = match.group(2).rsplit(",", 1)[-1].strip().lower()
-            if city and city in needle:
+            if city and (city in needle or needle in city):
                 return worker.ward
         return None
 
