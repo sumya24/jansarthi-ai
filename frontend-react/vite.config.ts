@@ -27,8 +27,8 @@ function bypassRealPageLoads(req: IncomingMessage): string | undefined {
   return undefined;
 }
 
-function proxyTo(target: string): ProxyOptions {
-  return { target, bypass: bypassRealPageLoads };
+function proxyTo(target: string, options: ProxyOptions = {}): ProxyOptions {
+  return { target, bypass: bypassRealPageLoads, ...options };
 }
 
 // https://vite.dev/config/
@@ -54,7 +54,10 @@ export default defineConfig({
       "/complaints": proxyTo("http://127.0.0.1:8000"),
       "/locations": proxyTo("http://127.0.0.1:8000"),
       "/notifications": proxyTo("http://127.0.0.1:8000"),
-      "/ask-sarthi": proxyTo("http://127.0.0.1:8000"),
+      // `ws: true` -- needed for /ask-sarthi/voice/live's WebSocket route (see LiveVoiceOverlay.tsx);
+      // production's Caddy reverse-proxy already upgrades WebSockets transparently for this same
+      // prefix with no extra config (see deploy/Caddyfile), but Vite's dev proxy needs it explicit.
+      "/ask-sarthi": proxyTo("http://127.0.0.1:8000", { ws: true }),
       "/uploads": proxyTo("http://127.0.0.1:8000"),
       "/health": proxyTo("http://127.0.0.1:8000"),
     },

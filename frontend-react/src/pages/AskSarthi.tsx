@@ -14,10 +14,12 @@ import Mascot, { type MascotState } from "../components/Mascot";
 import MicWaveform from "../components/MicWaveform";
 import MultiPhotoUpload from "../components/MultiPhotoUpload";
 import VoiceAssistantOverlay from "../components/VoiceAssistantOverlay";
+import LiveVoiceOverlay from "../components/LiveVoiceOverlay";
+import { useVoiceMode } from "../lib/voiceMode";
 import LocationPicker, { type LocationValue } from "../components/LocationPicker";
 import { useUiLang } from "../lib/uiLang";
 import { useAuth } from "../lib/auth";
-import { formatTime, t, toLangCode, type LangCode } from "../lib/i18n";
+import { formatClockTime, formatDuration, t, toLangCode } from "../lib/i18n";
 import { api, ApiError } from "../lib/api";
 import { useSpeechToText } from "../lib/useSpeechToText";
 import type { AskSarthiResponse, AskSarthiConversationTurn, PhotoEvidenceRef } from "../lib/ragTypes";
@@ -240,25 +242,6 @@ function loadOrCreateConversationId(userId: number | undefined): string {
   return created;
 }
 
-/** "2.3s" under a minute, "1m 12s" at/above one minute -- photo captioning on this deployment's
- * CPU-only vision model can genuinely take several minutes (see runQuery's own comment), so a
- * bare seconds count alone would read strangely for those replies. */
-function formatDuration(ms: number): string {
-  const totalSeconds = ms / 1000;
-  if (totalSeconds < 60) return `${totalSeconds.toFixed(1)}s`;
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = Math.round(totalSeconds % 60);
-  return `${minutes}m ${seconds}s`;
-}
-
-/** Local clock time, e.g. "9:00 AM" -- the citizen's own in-app language, not just whatever the
- * browser/device happens to be set to (was `undefined`, i.e. the browser's own locale --
- * LIVE-REPORTED: every date/time in the app had this exact gap, see lib/i18n.ts's own comment on
- * formatDate/formatDateTime/formatTime). */
-function formatClockTime(ms: number, lang: LangCode): string {
-  return formatTime(ms, lang, { hour: "numeric", minute: "2-digit" });
-}
-
 /** Imperative surface for the one action a parent legitimately needs to trigger from outside --
  * see the `hideNewChatBar` prop below for why. Deliberately just one method, not a general
  * escape hatch: everything else about this chat stays fully encapsulated. */
@@ -308,6 +291,7 @@ export const AskSarthiContent = forwardRef<AskSarthiHandle, AskSarthiContentProp
   const [attachedImage, setAttachedImage] = useState<File[]>([]);
   const [showAttach, setShowAttach] = useState(false);
   const [voiceOverlayOpen, setVoiceOverlayOpen] = useState(false);
+  const { voiceMode, setVoiceMode } = useVoiceMode();
   // True while `question`'s current text came from Mic 1 rather than typing -- sent as
   // `was_voice_input` so the backend's LangSmith metadata can distinguish "TEXT"/"IMAGE" from
   // "STT"/"IMAGE_STT" (see ask_sarthi_service.py). Purely an observability signal; never
@@ -989,6 +973,26 @@ export const AskSarthiContent = forwardRef<AskSarthiHandle, AskSarthiContentProp
             </button>
           )}
 
+          {/* Classic/Live voice-mode toggle -- see voiceMode.tsx's own docstring for why this is
+              a per-device localStorage preference, not an account setting. Doesn't open/close
+              anything itself; only changes which overlay Mic 2 below opens next. */}
+          <button
+            type="button"
+            className="ask-chat-icon-btn"
+            onClick={() => setVoiceMode(voiceMode === "live" ? "classic" : "live")}
+            disabled={loading || voiceOverlayOpen}
+            aria-label={t(lang, voiceMode === "live" ? "ask.liveVoice.toggleToClassic" : "ask.liveVoice.toggleToLive")}
+            title={t(lang, voiceMode === "live" ? "ask.liveVoice.toggleToClassic" : "ask.liveVoice.toggleToLive")}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+              {voiceMode === "live" ? (
+                <circle cx="12" cy="12" r="8" fill="currentColor" />
+              ) : (
+                <circle cx="12" cy="12" r="8" stroke="currentColor" strokeWidth="1.8" />
+              )}
+            </svg>
+          </button>
+
           {/* "Mic 2" -- a genuinely separate control from the mic above (Mic 1, which just fills
               the composer for manual editing/sending). This one opens a dedicated
               spoken-conversation overlay instead -- see VoiceAssistantOverlay.tsx's docstring
@@ -1058,7 +1062,7 @@ export const AskSarthiContent = forwardRef<AskSarthiHandle, AskSarthiContentProp
           like the text/image submit path above does: `imagePreview` tracked in
           `imagePreviewUrlsRef` for the same end-of-life cleanup (see that ref's own docstring),
           `durationMs` on the assistant turn so `formatDuration()` renders it identically. */}
-      {voiceOverlayOpen && (
+      {voiceOverlayOpen && voiceMode === "classic" && (
         <VoiceAssistantOverlay
           onClose={() => setVoiceOverlayOpen(false)}
           initialHistory={messages.map((m) => ({ role: m.role, content: m.text }))}
@@ -1073,6 +1077,26 @@ export const AskSarthiContent = forwardRef<AskSarthiHandle, AskSarthiContentProp
               ...prev,
               { id: nextId(), role: "user", text: question, timestamp: now, imagePreview, photoRef: response.photo_evidence ?? undefined },
               { id: nextId(), role: "assistant", text: response.answer, response, timestamp: now, durationMs },
+            ]);
+          }}
+        />
+      )}
+
+      {/* "Live" mode -- see LiveVoiceOverlay.tsx's own docstring. Reports each completed turn as
+          it happens (not just once on close), same shared-history contract as Classic above --
+          now also carries the turn's own real durationMs (LIVE-REPORTED REQUEST: the same
+          response-time signal Classic already shows), just without imagePreview since Live mode
+          doesn't support attaching a photo in v1. */}
+      {voiceOverlayOpen && voiceMode === "live" && (
+        <LiveVoiceOverlay
+          onClose={() => setVoiceOverlayOpen(false)}
+          initialHistory={messages.map((m) => ({ role: m.role, content: m.text }))}
+          onTurnComplete={(question, answer, durationMs) => {
+            const now = Date.now();
+            setMessages((prev) => [
+              ...prev,
+              { id: nextId(), role: "user", text: question, timestamp: now },
+              { id: nextId(), role: "assistant", text: answer, timestamp: now, durationMs },
             ]);
           }}
         />

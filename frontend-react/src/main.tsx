@@ -8,6 +8,7 @@ import { AuthProvider } from "./lib/auth";
 import { UiLangProvider } from "./lib/uiLang";
 import { ThemeProvider } from "./lib/theme";
 import { ToastProvider } from "./lib/toast";
+import { VoiceModeProvider } from "./lib/voiceMode";
 import CrashFallback from "./components/CrashFallback";
 
 // Error monitoring -- a no-op when VITE_SENTRY_DSN is unset (the default), matching this app's
@@ -37,7 +38,9 @@ createRoot(document.getElementById("root")!).render(
           <UiLangProvider>
             <AuthProvider>
               <ToastProvider>
-                <App />
+                <VoiceModeProvider>
+                  <App />
+                </VoiceModeProvider>
               </ToastProvider>
             </AuthProvider>
           </UiLangProvider>
