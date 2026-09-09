@@ -3,7 +3,7 @@
 import logging
 import secrets
 
-from fastapi import Depends, HTTPException, Request, Response
+from fastapi import Depends, HTTPException, Request, Response, WebSocket
 from sqlalchemy.orm import Session
 
 from backend.config import settings
@@ -112,6 +112,26 @@ def get_current_user(request: Request, db: Session = Depends(get_db)) -> User:
     user = db.query(User).filter(User.id == int(payload["sub"])).first()
     if user is None:
         raise HTTPException(status_code=401, detail="Account no longer exists.")
+    return user
+
+
+def get_current_user_ws(websocket: WebSocket, db: Session) -> User:
+    """WebSocket equivalent of `get_current_user` -- a WS route can't declare `Depends(get_current_user)`
+    directly (that dependency is typed for a plain HTTP `Request`), so this mirrors its exact same
+    two-source token lookup against `WebSocket.headers`/`WebSocket.cookies` (Starlette's `WebSocket`
+    exposes both, same as `Request`) instead. A same-origin browser WebSocket handshake is a plain
+    HTTP GET under the hood, so the `access_token` cookie rides along automatically -- no
+    query-param token workaround needed. Call this once, right after `websocket.accept()`; on
+    failure, close the socket with code 4401 (never leave it open unauthenticated) rather than
+    raising HTTPException, which has no meaning once the connection is already upgraded."""
+    auth_header = websocket.headers.get("Authorization", "")
+    token = auth_header.removeprefix("Bearer ").strip() if auth_header.startswith("Bearer ") else websocket.cookies.get(ACCESS_TOKEN_COOKIE)
+    if not token:
+        raise InvalidTokenError("Missing or malformed Authorization header.")
+    payload = decode_access_token(token)
+    user = db.query(User).filter(User.id == int(payload["sub"])).first()
+    if user is None:
+        raise InvalidTokenError("Account no longer exists.")
     return user
 
 
@@ -235,6 +255,14 @@ def require_otp_rate_limit(request: Request) -> None:
         )
 
 
+def check_ai_rate_limit(user_id: int) -> tuple[bool, int]:
+    """The actual check behind `require_ai_rate_limit` below, factored out so a non-HTTP caller
+    (the `/ask-sarthi/voice/live` WebSocket route, which checks this once per detected utterance
+    rather than once per HTTP request -- see its own docstring) can reuse the exact same limiter/
+    key/settings without going through a FastAPI dependency. Returns (allowed, retry_after)."""
+    return _ai_limiter.check(f"user:{user_id}", settings.AI_RATE_LIMIT, settings.AI_RATE_LIMIT_WINDOW_SECONDS)
+
+
 def require_ai_rate_limit(current_user: User = Depends(get_current_user)) -> None:
     """Dependency for the POST /ask-sarthi* endpoints -- throttles expensive Sarvam/LLM/vision
     calls per authenticated user, shared across all three routes (text/image/voice) so a citizen
@@ -243,9 +271,7 @@ def require_ai_rate_limit(current_user: User = Depends(get_current_user)) -> Non
     any rate-limit bookkeeping happens -- an unauthenticated request never consumes any specific
     user's quota. FastAPI resolves/caches `get_current_user` once per request, so routes that also
     declare it directly don't pay for a second DB lookup."""
-    allowed, retry_after = _ai_limiter.check(
-        f"user:{current_user.id}", settings.AI_RATE_LIMIT, settings.AI_RATE_LIMIT_WINDOW_SECONDS
-    )
+    allowed, retry_after = check_ai_rate_limit(current_user.id)
     if not allowed:
         sentry_metrics.count("rate_limit.exceeded", 1, attributes={"limiter": "ai"})
         raise HTTPException(

@@ -1,0 +1,141 @@
+/* "Live" voice mode -- a full-viewport takeover modeled on ChatGPT's own voice-mode layout (the
+   user's own reference): conversation history scrolls at the top, one large glowing orb sits
+   centered as the sole "what is Sarthi doing" focal point, and a slim bottom bar carries just the
+   phase label and a close control. */
+
+.live-voice-fullscreen {
+  position: fixed; inset: 0; z-index: 150;
+  background: var(--paper);
+  display: flex; flex-direction: column;
+  animation: overlay-in var(--dur) var(--ease-out) both;
+}
+
+.live-voice-header {
+  flex-shrink: 0; padding: 16px 20px 4px;
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  font-weight: 700; font-size: 14px; letter-spacing: 0.01em; color: var(--ink-2);
+}
+
+/* Only grows to fit real content (never eats space the empty orb area needs) -- capped so a long
+   conversation scrolls internally instead of shrinking the orb area away entirely. */
+.live-voice-history {
+  flex: 0 1 auto; max-height: 42vh; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 24px 20px 4px;
+  max-width: 640px; width: 100%; margin: 0 auto;
+}
+
+.live-voice-empty {
+  text-align: center; color: var(--ink-2); font-size: 14px; padding: 8px 0;
+}
+
+.live-voice-turn {
+  max-width: 78%; padding: 10px 14px; border-radius: 14px; font-size: 15px; line-height: 1.45;
+}
+/* Matches the main chat's own .ask-chat-bubble treatment exactly (global.css) instead of a
+   bespoke look, so a citizen who switches between typed chat and Live voice sees one consistent
+   visual language for "mine" vs. "Sarthi's" -- the ai-from/ai-to gradient is reserved app-wide for
+   AI-touched surfaces only (see global.css's "AI visual identity" block), so the user's OWN bubble
+   uses the plain brand accent, not that gradient. */
+.live-voice-turn-user {
+  align-self: flex-end;
+  background: var(--accent); color: var(--accent-ink); border-bottom-right-radius: 4px;
+}
+.live-voice-turn-assistant {
+  align-self: flex-start; position: relative; overflow: hidden;
+  background: color-mix(in srgb, var(--surface) 92%, transparent); color: var(--ink);
+  border-bottom-left-radius: 4px; backdrop-filter: blur(8px);
+}
+.live-voice-turn-assistant::before {
+  content: ""; position: absolute; top: 0; left: 0; right: 0; height: 3px;
+  background: linear-gradient(90deg, var(--ai-from), var(--ai-to));
+}
+.live-voice-turn-partial { opacity: 0.6; font-style: italic; }
+
+/* Reuses .ask-chat-timestamp (global.css) as-is for color/size/opacity -- only the alignment
+   needs restating here since that rule's own right-align selector targets the main chat's
+   .ask-chat-row-user ancestor, which this overlay's turns don't have. */
+.live-voice-turn-user .ask-chat-timestamp { text-align: right; }
+
+/* The orb's own dedicated area -- flex:1 so it always takes and CENTERS in whatever vertical
+   space the (variable-height) history/bottom-bar leave it, instead of getting pushed toward one
+   edge the way a flex-shrink:0 block sandwiched between two others would. */
+.live-voice-center {
+  flex: 1; min-height: 0; position: relative;
+  display: flex; align-items: center; justify-content: center;
+}
+/* A wide, very faint ambient wash behind the orb -- gives the otherwise-empty paper background
+   some atmosphere (closer to the reference's own dark, glowing stage) without the flashy/neon
+   effect this app's own "AI visual identity" convention (global.css) explicitly avoids: it's
+   restrained enough that it reads as lighting, not as a second shape competing with the orb. */
+.live-voice-center::before {
+  content: ""; position: absolute; width: min(520px, 90vw); height: min(520px, 90vw);
+  border-radius: 50%; pointer-events: none;
+  background: radial-gradient(circle, color-mix(in srgb, var(--ai-to) 16%, transparent) 0%, transparent 70%);
+}
+
+/* LIVE-REPORTED FEEDBACK: the first version reused Classic mode's .voice-orb glow (a blurred,
+   mostly-transparent radial gradient) stretched to 220px -- designed as a SUBTLE accent behind a
+   mascot character, it read as an out-of-focus smudge once it became the page's only focal
+   element. This is a real, solid gradient sphere instead: a glossy radial fill (bright highlight
+   near one edge, like a lit sphere) plus a soft ambient glow AROUND it (box-shadow, not the fill
+   itself), so the shape stays crisp at any size. */
+.live-voice-orb {
+  --orb-size: 140px; --orb-breathe-dur: 4.5s; --orb-scale-max: 1.06;
+  width: var(--orb-size); height: var(--orb-size); border-radius: 50%; position: relative;
+  background: radial-gradient(
+    circle at 32% 28%,
+    color-mix(in srgb, var(--ai-from) 55%, white) 0%,
+    var(--ai-from) 32%,
+    var(--ai-to) 78%
+  );
+  box-shadow:
+    0 0 70px 14px color-mix(in srgb, var(--ai-to) 45%, transparent),
+    inset -16px -18px 36px rgba(0, 0, 0, 0.22),
+    inset 14px 14px 28px rgba(255, 255, 255, 0.35);
+  animation: live-voice-orb-breathe var(--orb-breathe-dur) ease-in-out infinite;
+  will-change: transform;
+}
+@keyframes live-voice-orb-breathe {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(var(--orb-scale-max)); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .live-voice-orb { animation: none; }
+}
+
+.live-voice-orb-idle { --orb-breathe-dur: 4.5s; --orb-scale-max: 1.04; }
+.live-voice-orb-listening { --orb-breathe-dur: 1.8s; --orb-scale-max: 1.1; }
+.live-voice-orb-processing { --orb-breathe-dur: 1.4s; --orb-scale-max: 1.05; filter: saturate(1.15); }
+.live-voice-orb-speaking { --orb-breathe-dur: 0.9s; --orb-scale-max: 1.1; }
+.live-voice-orb-error {
+  --ai-from: var(--status-critical); --ai-to: var(--status-critical);
+  --orb-breathe-dur: 5s; --orb-scale-max: 1.01;
+}
+
+/* A floating rounded pill (margin from every edge + real shadow), not a full-width bordered
+   strip -- LIVE-REPORTED FEEDBACK: a bar flush with the screen edges, separated by a plain
+   border line, read as an unfinished status strip rather than a considered part of the page. */
+.live-voice-bottom-pill {
+  flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center; gap: 14px;
+  margin: 0 auto calc(20px + env(safe-area-inset-bottom));
+  padding: 10px 12px 10px 20px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 999px;
+  box-shadow: var(--shadow-md);
+  max-width: calc(100% - 40px);
+}
+
+.live-voice-error {
+  color: var(--status-critical); background: var(--status-critical-bg);
+  border-radius: 999px; padding: 6px 16px; font-size: 13px; text-align: center;
+}
+
+.live-voice-close {
+  width: 40px; height: 40px; border-radius: 50%; flex-shrink: 0; line-height: 1;
+  border: none; background: var(--ink); color: var(--paper);
+  font-size: 20px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  transition: transform var(--dur-fast) var(--ease-out);
+}
+.live-voice-close:hover { transform: scale(1.06); }

@@ -82,6 +82,22 @@ export function formatTime(value: Date | string | number, lang: LangCode, option
   return asDate(value).toLocaleTimeString(localeTag(lang), options);
 }
 
+/** Local clock time, e.g. "9:00 AM" -- moved here from AskSarthi.tsx (its original home) so
+ * LiveVoiceOverlay.tsx can show the same per-message timestamp convention without duplicating it. */
+export function formatClockTime(ms: number, lang: LangCode): string {
+  return formatTime(ms, lang, { hour: "numeric", minute: "2-digit" });
+}
+
+/** "2.3s" under a minute, "1m 12s" at/above one minute -- see formatClockTime's own docstring for
+ * why this lives here now instead of only in AskSarthi.tsx. */
+export function formatDuration(ms: number): string {
+  const totalSeconds = ms / 1000;
+  if (totalSeconds < 60) return `${totalSeconds.toFixed(1)}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = Math.round(totalSeconds % 60);
+  return `${minutes}m ${seconds}s`;
+}
+
 type Dict = Record<string, string>;
 
 export const I18N = {
@@ -747,6 +763,16 @@ export const I18N = {
     "area.filedOn": "Filed",
     "area.startedOn": "Started",
     "area.completedOn": "Completed",
+    "ask.liveVoice.state.idle": "Not connected",
+    "ask.liveVoice.state.connecting": "Connecting...",
+    "ask.liveVoice.state.listening": "Listening...",
+    "ask.liveVoice.state.processing": "Thinking...",
+    "ask.liveVoice.state.speaking": "Speaking...",
+    "ask.liveVoice.state.error": "Something went wrong",
+    "ask.liveVoice.toggleToLive": "Switch to Live voice (beta)",
+    "ask.liveVoice.toggleToClassic": "Switch to Classic voice",
+    "ask.liveVoice.emptyHint": "Say something to get started.",
+    "ask.liveVoice.header": "JanSarthi Live",
   },
   hi: {
     "landing.login": "लॉग इन",
@@ -1404,6 +1430,16 @@ export const I18N = {
     "area.startedOn": "शुरू हुई",
     "area.completedOn": "पूरी हुई",
     "admin.aiModelCostsErr": "मॉडल की लागत लोड नहीं हो सकी - ऐसा डिप्लॉय के ठीक बाद थोड़ी देर के लिए हो सकता है। इसे अपने आप ठीक हो जाना चाहिए; अगर यह ठीक नहीं होता है तो पृष्ठ को फिर से लोड करें।",
+    "ask.liveVoice.state.idle": "कनेक्ट नहीं है",
+    "ask.liveVoice.state.connecting": "कनेक्ट हो रहा है...",
+    "ask.liveVoice.state.listening": "सुन रहा हूं...",
+    "ask.liveVoice.state.processing": "सोच रहा हूं...",
+    "ask.liveVoice.state.speaking": "बोल रहा हूं...",
+    "ask.liveVoice.state.error": "कुछ गलत हो गया",
+    "ask.liveVoice.toggleToLive": "लाइव वॉयस (बीटा) पर स्विच करें",
+    "ask.liveVoice.toggleToClassic": "क्लासिक वॉयस पर स्विच करें",
+    "ask.liveVoice.emptyHint": "शुरू करने के लिए कुछ कहो।",
+    "ask.liveVoice.header": "जन सारथी लाइव",
   },
   mr: {
     "landing.login": "लॉग इन",
@@ -2061,6 +2097,16 @@ export const I18N = {
     "area.startedOn": "सुरू झाली",
     "area.completedOn": "पूर्ण झाली",
     "admin.aiModelCostsErr": "मॉडेलचा खर्च लोड होऊ शकला नाही - हे डिप्लॉय केल्यानंतर थोड्या वेळासाठी होऊ शकतं. ते आपोआप ठीक होईल; न झाल्यास पेज पुन्हा लोड करा.",
+    "ask.liveVoice.state.idle": "कनेक्ट केलेले नाही",
+    "ask.liveVoice.state.connecting": "जोडणी होत आहे...",
+    "ask.liveVoice.state.listening": "ऐकत आहे...",
+    "ask.liveVoice.state.processing": "विचार करत आहे...",
+    "ask.liveVoice.state.speaking": "बोलत आहे...",
+    "ask.liveVoice.state.error": "काहीतरी चूक झाली",
+    "ask.liveVoice.toggleToLive": "लाइव्ह व्हॉइसवर स्विच करा (बीटा)",
+    "ask.liveVoice.toggleToClassic": "क्लासिक व्हॉइसवर स्विच करा.",
+    "ask.liveVoice.emptyHint": "सुरुवात करण्यासाठी काहीतरी बोल.",
+    "ask.liveVoice.header": "जनसर्ती लाईव्ह",
   },
   or: {
     "landing.login": "ଲଗ୍ ଇନ୍ କରନ୍ତୁ",
@@ -2723,6 +2769,16 @@ export const I18N = {
     "photo.tooLarge": "ଛବିଟି ସର୍ବାଧିକ ଅନୁମତିପ୍ରାପ୍ତ ଆକାର (5ଏମ୍‌.ବି.) ଅତିକ୍ରମ କରୁଛି।",
     "photo.tooMany": "ଆପଣ ସର୍ବାଧିକ {max} ଟି ଫଟୋ ସଂଲଗ୍ନ କରିପାରିବେ।",
     "photo.unsupportedType": "ଅସମର୍ଥିତ ଛବି ଫର୍ମାଟ୍ | JPEG କିମ୍ବା PNG ବ୍ୟବହାର କରନ୍ତୁ |",
+    "ask.liveVoice.state.idle": "ସଂଯୁକ୍ତ ନୁହେଁ",
+    "ask.liveVoice.state.connecting": "ସଂଯୋଗ କରାଯାଉଛି...",
+    "ask.liveVoice.state.listening": "ଶୁଣୁଛି...",
+    "ask.liveVoice.state.processing": "ଚିନ୍ତା କରୁଛି...",
+    "ask.liveVoice.state.speaking": "କହୁଛି...",
+    "ask.liveVoice.state.error": "କିଛି ଭୁଲ ହୋଇଗଲା",
+    "ask.liveVoice.toggleToLive": "ଲାଇଭ୍ ଭଏସ୍‌କୁ ସୁଇଚ୍ କରନ୍ତୁ (ବିଟା)",
+    "ask.liveVoice.toggleToClassic": "କ୍ଲାସିକ୍ ଭଏସ୍‌କୁ ବଦଳାନ୍ତୁ |",
+    "ask.liveVoice.emptyHint": "ଆରମ୍ଭ କରିବା ପାଇଁ କିଛି କୁହନ୍ତୁ।",
+    "ask.liveVoice.header": "ଜାନସାର୍ଥୀ ଲାଇଭ୍",
   },
   gu: {
     "landing.login": "લૉગ ઇન કરો",
@@ -3383,6 +3439,16 @@ export const I18N = {
     "photo.tooLarge": "છબી મહત્તમ મંજૂર કરેલ કદ (5MB) કરતાં વધી ગઈ છે.",
     "photo.tooMany": "તમે વધુમાં વધુ {max} ફોટા જોડી શકો છો.",
     "photo.unsupportedType": "આ ઇમેજ ફોર્મેટ સપોર્ટેડ નથી. JPEG અથવા PNG વાપરો.",
+    "ask.liveVoice.state.idle": "જોડાયેલ નથી",
+    "ask.liveVoice.state.connecting": "જોડાણ થઈ રહ્યું છે...",
+    "ask.liveVoice.state.listening": "સાંભળી રહ્યું છે...",
+    "ask.liveVoice.state.processing": "વિચારી રહ્યું છે...",
+    "ask.liveVoice.state.speaking": "બોલી રહ્યું છે...",
+    "ask.liveVoice.state.error": "કંઈક ખોટું થયું",
+    "ask.liveVoice.toggleToLive": "લાઇવ વોઇસ (બીટા) પર સ્વિચ કરો",
+    "ask.liveVoice.toggleToClassic": "ક્લાસિક વૉઇસ પર સ્વિચ કરો",
+    "ask.liveVoice.emptyHint": "શરૂ કરવા માટે કંઈક કહો.",
+    "ask.liveVoice.header": "જાનસાર્થી લાઈવ",
   },
   bn: {
     "landing.login": "লগ ইন করুন",
@@ -4043,6 +4109,16 @@ export const I18N = {
     "photo.tooLarge": "ছবিটি সর্বোচ্চ অনুমোদিত আকার (5এমবি) অতিক্রম করেছে।",
     "photo.tooMany": "আপনি সর্বাধিক {max} টি ছবি সংযুক্ত করতে পারেন।",
     "photo.unsupportedType": "অসমর্থিত চিত্র বিন্যাস। জেপিইজি অথবা পিএনজি ব্যবহার করুন।",
+    "ask.liveVoice.state.idle": "সংযুক্ত নয়",
+    "ask.liveVoice.state.connecting": "সংযোগ করা হচ্ছে...",
+    "ask.liveVoice.state.listening": "শুনছি...",
+    "ask.liveVoice.state.processing": "ভাবছি...",
+    "ask.liveVoice.state.speaking": "বলছি...",
+    "ask.liveVoice.state.error": "কিছু ভুল হয়েছে",
+    "ask.liveVoice.toggleToLive": "সরাসরি ভয়েসে স্যুইচ করুন (বিটা)",
+    "ask.liveVoice.toggleToClassic": "ক্ল্যাসিক ভয়েসে স্যুইচ করুন।",
+    "ask.liveVoice.emptyHint": "শুরু করার জন্য কিছু বলুন।",
+    "ask.liveVoice.header": "জানসারথি লাইভ",
   },
 } satisfies Record<LangCode, Dict>;
 
