@@ -52,7 +52,15 @@ class _FakeFatalErrorTranscriptionSocket:
 class _FakeTranscriptionSocket:
     """`.recv()` yields each of `transcripts` in order as a finalized utterance, then blocks
     "forever" (a long sleep) once exhausted -- mirrors Sarvam's real socket staying open and
-    listening for more speech rather than closing after one utterance."""
+    listening for more speech rather than closing after one utterance.
+
+    A real citizen's utterances are always separated by actual speaking time -- Sarvam can't
+    finalize a second one before the first one physically happens. Every transcript after the
+    first is delayed slightly to model that, so a multi-transcript test gets "one turn finishes,
+    then the next starts" by default rather than "both arrive simultaneously," which (correctly,
+    since barge-in was added) would otherwise interrupt the first turn before it even ran. A test
+    that specifically wants to exercise barge-in's own interruption should not rely on this
+    default gap -- it should model the interruption explicitly instead."""
 
     def __init__(self, transcripts: list[str]) -> None:
         import asyncio
@@ -60,12 +68,16 @@ class _FakeTranscriptionSocket:
         self._asyncio = asyncio
         self._transcripts = list(transcripts)
         self.sent_audio: list[str] = []
+        self._recv_count = 0
 
     async def send_realtime_audio_input(self, message) -> None:
         self.sent_audio.append(message.audio)
 
     async def recv(self):
         if self._transcripts:
+            if self._recv_count > 0:
+                await self._asyncio.sleep(0.1)
+            self._recv_count += 1
             text = self._transcripts.pop(0)
             return RealtimeTranscriptFinal(utterance_idx=0, text=text)
         await self._asyncio.sleep(3600)
@@ -210,6 +222,41 @@ def test_voice_live_sends_thinking_pings_during_a_slow_turn(client, monkeypatch,
         assert seen_thinking >= 2
         assert message["type"] == "answer"
         assert message["answer"] == "Potholes are reported via..."
+
+
+def test_voice_live_barge_in_interrupts_a_still_running_turn_with_a_new_one(client, monkeypatch, make_citizen):
+    """LIVE-REPORTED REQUEST: real barge-in -- talking again before Sarthi's current turn has
+    finished (still thinking, in this case) cancels that turn outright and processes the new
+    utterance instead, "latest utterance wins." The first AskSarthiService.ask() call here is
+    slower than _FakeTranscriptionSocket's own 0.1s gap between transcripts, so the second
+    utterance genuinely arrives while the first is still running -- the real "talked over Sarthi"
+    scenario, not a race the test has to force. Only the SECOND turn's answer should ever reach
+    the client; the first's is never sent (proving it was truly cancelled, not just outraced)."""
+    make_citizen(phone="9100000606")
+    call_count = {"n": 0}
+
+    def _ask(db, user, request):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            time.sleep(0.3)  # slower than the fake socket's 0.1s gap -- gets cancelled first
+            return _fake_response(answer="stale answer from the interrupted turn -- must never be sent")
+        return _fake_response(answer="Your Waste Sanitation complaint has been filed (complaint #2).")
+
+    fake_client = _FakeRealtimeClient(
+        transcripts=["garbage on my street", "actually, potholes instead"], tts_chunks=["ZmFrZQ=="],
+    )
+    monkeypatch.setattr(ask_sarthi_module, "_realtime_client", fake_client)
+    monkeypatch.setattr(ask_sarthi_module._service, "ask", Mock(side_effect=_ask))
+
+    with client.websocket_connect("/ask-sarthi/voice/live?language=en") as ws:
+        ws.send_bytes(b"\x00\x01")
+
+        assert ws.receive_json() == {"type": "turn_started", "transcript": "garbage on my street"}
+        assert ws.receive_json() == {"type": "turn_started", "transcript": "actually, potholes instead"}
+
+        answer_msg = ws.receive_json()
+        assert answer_msg["type"] == "answer"
+        assert answer_msg["answer"] == "Your Waste Sanitation complaint has been filed (complaint #2)."
 
 
 def test_voice_live_rejects_a_connection_with_no_valid_session(client, monkeypatch):
