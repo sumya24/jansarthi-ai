@@ -55,7 +55,13 @@ services:
       PHOENIX_COLLECTOR_ENDPOINT: http://phoenix:6006/v1/traces
     volumes:
       - backend_state:/app/state
-    command: sh -c "mkdir -p /app/state/db /app/state/uploads && exec uvicorn backend.main:app --host 0.0.0.0 --port 8000"
+    # --ws-ping-timeout raised well past uvicorn's 20s default -- this command overrides
+    # backend/Dockerfile's own CMD entirely (Compose's `command:` always wins), so that
+    # Dockerfile's matching flags/comment do nothing here on their own; kept in sync with this
+    # line so a plain `docker run` of the image behaves the same as this deployment does. See
+    # that Dockerfile's own comment for why: Ask Sarthi's real RAG/reasoning-model turnaround is
+    # ~20-25s, so the default keepalive was killing `/ask-sarthi/voice/live` mid-turn.
+    command: sh -c "mkdir -p /app/state/db /app/state/uploads && exec uvicorn backend.main:app --host 0.0.0.0 --port 8000 --ws-ping-interval 20 --ws-ping-timeout 90"
     depends_on:
       - phoenix
     restart: unless-stopped

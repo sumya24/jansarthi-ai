@@ -46,4 +46,10 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
 # `/ask-sarthi/voice/live` WebSocket mid-turn on any request at or past that default, well before
 # the slower end of its own normal latency range. Only this route holds a connection open across
 # a turn that slow; every other WS use in this app is unaffected by raising it.
+#
+# NOTE: docker-compose.prod.yml's backend service sets its own `command:`, which completely
+# replaces this CMD in the actual deployed container (Compose always wins over the image's own
+# CMD) -- this line only matters for a plain `docker run` of the image directly. The matching
+# flags are also set there; keep both in sync (first shipped as a Dockerfile-only change that
+# silently did nothing in production until this note was added).
 CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000", "--ws-ping-interval", "20", "--ws-ping-timeout", "90"]
