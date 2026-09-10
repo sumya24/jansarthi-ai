@@ -10,6 +10,7 @@ complaints API already is.
 
 import asyncio
 import base64
+import contextlib
 import json
 import logging
 import uuid
@@ -313,12 +314,18 @@ async def ask_sarthi_voice_live(websocket: WebSocket, language: str = "en", db: 
     uses (see `_handle_one_live_turn`), then the answer streams back as speech chunk-by-chunk as
     Sarvam synthesizes it, instead of waiting for one fully-stitched audio blob.
 
-    Turn-based, but with no tap required to START a turn -- true mid-response interruption
-    ("barge-in") is explicitly out of scope: the client is expected to stop sending mic audio
-    while a turn's `audio_chunk`s are playing, and resume once `turn_complete` arrives. Full
-    barge-in needs echo-cancelled simultaneous listen+speak handling, a materially larger lift
-    than this feature; revisit only if asked (same honest limitation `VoiceAssistantOverlay.tsx`'s
-    own "Classic" mode already documents about itself).
+    Real barge-in: the client keeps streaming mic audio (with the browser's own
+    echo-cancellation, see useLiveVoiceSession.ts) even while a previous answer's
+    `audio_chunk`s are still playing, so a citizen can talk over Sarthi mid-answer instead of
+    waiting for it to finish. The moment Sarvam's VAD finalizes a NEW utterance,
+    `process_turns()` cancels whatever turn is still in flight (still thinking, or still
+    streaming TTS audio for the interrupted answer) and starts the new one immediately --
+    "latest utterance wins." Depends entirely on the browser's own echo cancellation to keep
+    Sarthi's own voice from being misread as the citizen talking; quality follows the citizen's
+    actual mic/speaker setup (headphones: no echo at all; laptop speakers: as good as the
+    browser's own AEC, not perfect). No true "listen AND speak with our own signal-level echo
+    cancellation" is attempted server-side -- that would be a materially larger lift than relying
+    on the browser's.
 
     Auth: same cookie/header extraction `get_current_user` uses for every other route, adapted
     for `WebSocket` (see `get_current_user_ws`) -- a same-origin browser WebSocket handshake
@@ -393,12 +400,59 @@ async def ask_sarthi_voice_live(websocket: WebSocket, language: str = "en", db: 
                         if event.is_fatal:
                             return
 
+            # A one-element list, not a plain variable -- `process_turns` needs to mutate it and
+            # the outer `finally` below needs to see the CURRENT value, and a plain local rebound
+            # inside a nested function isn't visible to the outer scope without `nonlocal`
+            # gymnastics for something this simple. Holds the one detached in-flight turn task
+            # (see `process_turns`'s own docstring on why it's detached) so connection teardown
+            # cancels it too, instead of leaving it to run orphaned after this function returns.
+            current_turn_task: list[asyncio.Task] = []
+
             async def process_turns() -> None:
+                # LIVE-REPORTED REQUEST: real barge-in -- the citizen can now talk over Sarthi
+                # mid-answer instead of waiting for it to finish (the client no longer mutes the
+                # mic while `speaking`; see useLiveVoiceSession.ts). The moment a NEW utterance is
+                # finalized, whatever turn is still running (still `_service.ask()`-ing, or still
+                # streaming TTS audio for a PREVIOUS answer) is cancelled outright and the new one
+                # starts immediately -- "latest utterance wins," the same model a real
+                # conversation's interruption has. Cancellation is always awaited before starting
+                # the next turn so exactly one task is ever writing to `websocket` at a time
+                # (concurrent sends from two tasks on the same connection is not safe).
+                #
+                # If the cancelled turn had already gotten as far as sending its `answer` (text
+                # arrives before TTS audio starts, see `_handle_one_live_turn`), that text and its
+                # conversation_history entries are already correctly recorded -- only the trailing
+                # audio/turn_complete gets cut off, which is exactly "stop talking, listening to
+                # you now." If it's cancelled earlier (still thinking, no answer yet), nothing was
+                # ever shown or recorded, which is equally correct.
+                def _report_turn_crash(task: asyncio.Task) -> None:
+                    # `current_turn_task[0]` runs detached from this loop between interruptions --
+                    # `process_turns` only re-joins it (via cancel+await above) once a NEXT
+                    # utterance arrives. If it crashes for a REAL reason (not this function's own
+                    # cancellation) and no next utterance ever comes, that exception would
+                    # otherwise be silently lost forever (an asyncio "exception never retrieved"
+                    # warning at best) -- the citizen would just see the session go quiet with no
+                    # error, the exact bug already fixed once for a different cause. A done-
+                    # callback can't `await`, so best-effort error delivery is scheduled as its
+                    # own task instead.
+                    if task.cancelled():
+                        return
+                    exc = task.exception()
+                    if exc is not None:
+                        logger.error("Ask Sarthi live-voice turn crashed unexpectedly", exc_info=exc)
+                        asyncio.create_task(_try_send_error(websocket, _GENERIC_UNAVAILABLE_DETAIL))
+
                 while True:
                     transcript = await transcript_queue.get()
-                    await _handle_one_live_turn(
+                    if current_turn_task and not current_turn_task[0].done():
+                        current_turn_task[0].cancel()
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await current_turn_task[0]
+                    new_task = asyncio.create_task(_handle_one_live_turn(
                         websocket, db, current_user, transcript, conversation_history, conversation_id, language,
-                    )
+                    ))
+                    new_task.add_done_callback(_report_turn_crash)
+                    current_turn_task[:] = [new_task]
 
             tasks = [asyncio.create_task(coro()) for coro in (forward_audio, listen_for_transcripts, process_turns)]
             try:
@@ -410,7 +464,9 @@ async def ask_sarthi_voice_live(websocket: WebSocket, language: str = "en", db: 
             finally:
                 for task in tasks:
                     task.cancel()
-                await asyncio.gather(*tasks, return_exceptions=True)
+                if current_turn_task:
+                    current_turn_task[0].cancel()
+                await asyncio.gather(*tasks, *current_turn_task, return_exceptions=True)
     except WebSocketDisconnect:
         pass
     except AIServiceError as exc:

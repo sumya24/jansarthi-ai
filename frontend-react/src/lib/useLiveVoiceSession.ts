@@ -83,9 +83,17 @@ function base64ToArrayBuffer(base64: string): ArrayBuffer {
 /** Continuous, always-listening voice session against `/ask-sarthi/voice/live` -- the "Live"
  * counterpart to useAudioRecorder.ts's tap-to-record flow. No start/stop-recording gesture: once
  * `start()` resolves, mic audio streams continuously until Sarvam's own VAD (server-side) detects
- * an utterance and the turn runs; the mic is muted here (never sent) while a turn's TTS audio is
- * still playing, so the assistant never hears/transcribes its own voice -- see this feature's own
- * scope note (backend/routes/ask_sarthi.py) on why full barge-in isn't attempted. */
+ * an utterance and the turn runs.
+ *
+ * LIVE-REPORTED REQUEST: real barge-in -- the mic is NEVER muted here, even while a turn's TTS
+ * audio is playing, so the citizen can talk over Sarthi mid-answer instead of waiting for
+ * `turn_complete`. Relies entirely on the browser's own `echoCancellation` constraint (see
+ * `start()` below) to keep Sarthi's own voice, played through the same device's speaker, from
+ * being picked back up by the mic and misread as the citizen talking -- there is no
+ * signal-level echo cancellation of our own. The moment the server finalizes a NEW utterance
+ * (a fresh `turn_started`), `stopCurrentPlayback()` immediately cuts off whatever audio was
+ * still queued/playing from the interrupted answer (see backend/routes/ask_sarthi.py's
+ * `process_turns()` for the matching server-side cancellation of that same interrupted turn). */
 export function useLiveVoiceSession(language: string): LiveVoiceSessionState {
   const [phase, setPhase] = useState<LiveVoicePhase>("idle");
   const [messages, setMessages] = useState<LiveVoiceMessage[]>([]);
@@ -97,7 +105,7 @@ export function useLiveVoiceSession(language: string): LiveVoiceSessionState {
   const audioContextRef = useRef<AudioContext | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
-  const mutedRef = useRef(false); // true while a turn's audio is playing -- see module docstring
+  const activeSourcesRef = useRef<AudioBufferSourceNode[]>([]); // currently queued/playing TTS chunks -- see stopCurrentPlayback()
   const playbackTimeRef = useRef(0); // AudioContext.currentTime cursor for gapless chunk queueing
   const phaseRef = useRef<LiveVoicePhase>("idle");
   const turnStartedAtRef = useRef(0); // performance.now() at "turn_started" -- for the assistant turn's own durationMs
@@ -132,10 +140,30 @@ export function useLiveVoiceSession(language: string): LiveVoiceSessionState {
       const startAt = Math.max(ctx.currentTime, playbackTimeRef.current);
       source.start(startAt);
       playbackTimeRef.current = startAt + buffer.duration;
+      activeSourcesRef.current.push(source);
+      source.onended = () => {
+        activeSourcesRef.current = activeSourcesRef.current.filter((s) => s !== source);
+      };
     }).catch(() => {
       // A single malformed/undecoded chunk must never break the rest of the turn's playback --
       // the text answer already reached the citizen via the "answer" message regardless.
     });
+  }, []);
+
+  // Barge-in: cuts off whatever's still queued/playing from an interrupted answer the instant a
+  // NEW utterance is finalized (see the "turn_started" case below). `.stop()` on an
+  // AudioBufferSourceNode fires its own "ended" event, so the array is cleared here directly
+  // rather than relying on each one's onended handler to empty it one at a time.
+  const stopCurrentPlayback = useCallback(() => {
+    for (const source of activeSourcesRef.current) {
+      try {
+        source.stop();
+      } catch {
+        // Already stopped/ended on its own -- nothing left to interrupt.
+      }
+    }
+    activeSourcesRef.current = [];
+    if (audioContextRef.current) playbackTimeRef.current = audioContextRef.current.currentTime;
   }, []);
 
   const start = useCallback(async (): Promise<boolean> => {
@@ -143,7 +171,14 @@ export function useLiveVoiceSession(language: string): LiveVoiceSessionState {
     setMessages([]);
     setPhaseBoth("connecting");
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1 } });
+      // echoCancellation is what makes barge-in viable at all: it's the browser's own job to keep
+      // whatever's coming out of the speaker (Sarthi's own TTS playback, same AudioContext) from
+      // being picked back up by this same mic stream and misread as the citizen talking. Real
+      // acoustic quality still depends on the citizen's own hardware (headphones sidestep the
+      // problem entirely; laptop speakers rely on the browser's own AEC implementation).
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      });
       streamRef.current = stream;
       const audioContext = new AudioContext({ sampleRate: TARGET_SAMPLE_RATE });
       audioContextRef.current = audioContext;
@@ -160,6 +195,11 @@ export function useLiveVoiceSession(language: string): LiveVoiceSessionState {
             setPartialTranscript(message.text);
             break;
           case "turn_started":
+            // Barge-in: a new utterance was just finalized -- if Sarthi's PREVIOUS answer was
+            // still talking, cut it off right now rather than letting it keep playing over the
+            // citizen's new question (the server has already cancelled that interrupted turn too;
+            // see process_turns()).
+            stopCurrentPlayback();
             setPartialTranscript("");
             setPhaseBoth("processing");
             turnStartedAtRef.current = performance.now();
@@ -172,12 +212,10 @@ export function useLiveVoiceSession(language: string): LiveVoiceSessionState {
             }]);
             break;
           case "audio_chunk":
-            mutedRef.current = true;
             setPhaseBoth("speaking");
             playAudioChunk(message.audio_base64);
             break;
           case "turn_complete":
-            mutedRef.current = false;
             setPhaseBoth("listening");
             break;
           case "error":
@@ -200,7 +238,7 @@ export function useLiveVoiceSession(language: string): LiveVoiceSessionState {
       processorRef.current = processor;
       processor.onaudioprocess = (event) => {
         const input = event.inputBuffer.getChannelData(0);
-        if (mutedRef.current || ws.readyState !== WebSocket.OPEN) return;
+        if (ws.readyState !== WebSocket.OPEN) return;
         setAudioLevel(rms(input));
         const downsampled = downsampleTo16kHz(input, audioContext.sampleRate);
         ws.send(floatTo16BitPCM(downsampled));
@@ -222,7 +260,7 @@ export function useLiveVoiceSession(language: string): LiveVoiceSessionState {
       stop();
       return false;
     }
-  }, [language, playAudioChunk, stop]);
+  }, [language, playAudioChunk, stopCurrentPlayback, stop]);
 
   return { phase, messages, partialTranscript, error, audioLevel, start, stop };
 }
