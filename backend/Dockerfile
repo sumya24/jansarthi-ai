@@ -39,4 +39,11 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
-CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# --ws-ping-timeout raised well past uvicorn's 20s default: LIVE-REPORTED BUG, confirmed via
+# production traceback (websockets.exceptions.ConnectionClosedError: "sent 1011 (internal error)
+# keepalive ping timeout; no close frame received") -- Ask Sarthi's own real RAG/reasoning-model
+# turnaround is documented at ~20-25s, so uvicorn's default keepalive was killing the
+# `/ask-sarthi/voice/live` WebSocket mid-turn on any request at or past that default, well before
+# the slower end of its own normal latency range. Only this route holds a connection open across
+# a turn that slow; every other WS use in this app is unaffected by raising it.
+CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000", "--ws-ping-interval", "20", "--ws-ping-timeout", "90"]
