@@ -31,6 +31,14 @@
 
 .live-voice-turn {
   max-width: 78%; padding: 10px 14px; border-radius: 14px; font-size: 15px; line-height: 1.45;
+  /* LIVE-REPORTED BUG: a flex column's items default to min-height:auto, which lets a flex
+     item shrink BELOW its own content's natural height once the column runs low on space
+     (here, .live-voice-history's max-height:42vh) -- normally harmless (text would just
+     overflow visibly), but combined with .live-voice-turn-assistant's overflow:hidden (added
+     for the top accent-bar clip) that shrinkage silently CLIPPED wrapped answer text after a
+     few turns instead of scrolling. flex-shrink:0 keeps every bubble at its real content
+     height; the column keeps scrolling instead, which was the actual intent. */
+  flex-shrink: 0;
 }
 /* Matches the main chat's own .ask-chat-bubble treatment exactly (global.css) instead of a
    bespoke look, so a citizen who switches between typed chat and Live voice sees one consistent

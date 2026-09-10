@@ -41,6 +41,11 @@ router = APIRouter(prefix="/ask-sarthi", tags=["ask-sarthi"])
 _service = AskSarthiService()
 _realtime_client = SarvamRealtimeClient()
 
+# How often `_handle_one_live_turn` sends a `{"type": "thinking"}` ping while a slow (RAG/
+# reasoning-model) turn is still running -- module-level so tests can shrink it instead of a real
+# multi-second wait. See `_handle_one_live_turn`'s own comment for why this exists.
+_THINKING_PING_INTERVAL_SECONDS = 4.0
+
 _GENERIC_UNAVAILABLE_DETAIL = "Ask Sarthi is temporarily unavailable. Please try again, or use the complaint form directly."
 
 
@@ -252,12 +257,39 @@ async def _handle_one_live_turn(
         question=transcript, language=language, conversation_history=list(conversation_history),
         conversation_id=conversation_id, was_voice_input=True,
     )
+    # LIVE-REPORTED BUG this closes: a knowledge-question turn genuinely can take 20-25s (it's
+    # the only path that calls the reasoning LLM, sarvam-105b -- see AnswerGenerationService;
+    # every other turn here, e.g. complaint filing, never calls it and finishes in a few seconds).
+    # For that whole stretch, nothing at all was sent to the client -- confirmed via a production
+    # traceback that this silence was long enough to trip uvicorn's own WebSocket keepalive and
+    # kill the connection outright (see backend/Dockerfile's --ws-ping-timeout fix, which raises
+    # the ceiling this was hitting). Sending a periodic, harmless `{"type": "thinking"}` ping while
+    # `_service.ask()` is still running keeps real data flowing in BOTH directions the whole time
+    # a slow turn is in progress, instead of relying solely on a longer timeout ceiling -- belt and
+    # suspenders against the same class of failure. The client's `ws.onmessage` switch has no
+    # default case, so an unrecognized message type here is already silently, safely ignored by
+    # every existing frontend build -- no client change needed for this to be effective.
+    ask_task = asyncio.create_task(asyncio.to_thread(_service.ask, db, current_user, request))
     try:
-        response = await asyncio.to_thread(_service.ask, db, current_user, request)
-    except Exception:
-        logger.exception("Ask Sarthi live-voice turn failed unexpectedly")
-        await websocket.send_json({"type": "error", "detail": _GENERIC_UNAVAILABLE_DETAIL})
-        return
+        try:
+            while True:
+                done, _pending = await asyncio.wait({ask_task}, timeout=_THINKING_PING_INTERVAL_SECONDS)
+                if ask_task in done:
+                    break
+                await websocket.send_json({"type": "thinking"})
+            response = ask_task.result()
+        except Exception:
+            logger.exception("Ask Sarthi live-voice turn failed unexpectedly")
+            await websocket.send_json({"type": "error", "detail": _GENERIC_UNAVAILABLE_DETAIL})
+            return
+    finally:
+        # If this coroutine itself got cancelled (or raised) while still waiting above, don't
+        # leave `ask_task` an orphaned, never-awaited pending task -- cancel it explicitly. Note
+        # this only cancels the awaiting side; the underlying thread-pool work inside
+        # asyncio.to_thread() can't actually be interrupted mid-run (a pre-existing, unrelated
+        # limitation of asyncio.to_thread itself, not new here).
+        if not ask_task.done():
+            ask_task.cancel()
 
     await websocket.send_json({"type": "answer", **response.model_dump(mode="json")})
     conversation_history.append(ConversationTurn(role="user", content=transcript))

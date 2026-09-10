@@ -9,6 +9,7 @@ test_ask_sarthi.py/test_ask_sarthi_voice.py. `AskSarthiService.ask()` is mocked 
 same reason (avoids spinning up the real Chroma/embedding stack for a test that isn't about RAG).
 """
 
+import time
 from contextlib import asynccontextmanager
 from unittest.mock import Mock
 
@@ -173,6 +174,42 @@ def test_voice_live_full_turn_streams_answer_and_audio(client, monkeypatch, make
     # orchestration -- proves this route doesn't re-transcribe or otherwise mangle it.
     assert mock_ask.call_args[0][2].question == "Garbage is not being collected in my street."
     assert mock_ask.call_args[0][2].was_voice_input is True
+
+
+def test_voice_live_sends_thinking_pings_during_a_slow_turn(client, monkeypatch, make_citizen):
+    """LIVE-REPORTED BUG this closes: a knowledge-question turn can legitimately take 20-25s (the
+    only path that calls the reasoning LLM) -- the connection sat completely silent that whole
+    time, which was long enough in production to trip uvicorn's own WebSocket keepalive and kill
+    the session outright. `_service.ask()` now runs as a task polled every
+    `_THINKING_PING_INTERVAL_SECONDS`, sending a harmless `{"type": "thinking"}` ping on each
+    poll that doesn't yet see it done -- shrunk here to a few milliseconds so this test doesn't
+    need a real multi-second sleep to prove the loop actually fires more than once."""
+    make_citizen(phone="9100000605")
+    monkeypatch.setattr(ask_sarthi_module, "_THINKING_PING_INTERVAL_SECONDS", 0.05)
+
+    fake_client = _FakeRealtimeClient(transcripts=["How do I report a pothole?"], tts_chunks=["ZmFrZQ=="])
+    monkeypatch.setattr(ask_sarthi_module, "_realtime_client", fake_client)
+
+    def _slow_ask(db, user, request):
+        time.sleep(0.2)  # long enough, relative to the shrunk interval above, for several polls
+        return _fake_response(answer="Potholes are reported via...", intent=QuestionIntent.TYPE_B_SERVICE_INFO, routed_to="RAG")
+
+    monkeypatch.setattr(ask_sarthi_module._service, "ask", Mock(side_effect=_slow_ask))
+
+    with client.websocket_connect("/ask-sarthi/voice/live?language=en") as ws:
+        ws.send_bytes(b"\x00\x01")
+
+        assert ws.receive_json() == {"type": "turn_started", "transcript": "How do I report a pothole?"}
+
+        seen_thinking = 0
+        message = ws.receive_json()
+        while message["type"] == "thinking":
+            seen_thinking += 1
+            message = ws.receive_json()
+
+        assert seen_thinking >= 2
+        assert message["type"] == "answer"
+        assert message["answer"] == "Potholes are reported via..."
 
 
 def test_voice_live_rejects_a_connection_with_no_valid_session(client, monkeypatch):
